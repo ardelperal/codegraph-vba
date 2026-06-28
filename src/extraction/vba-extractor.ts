@@ -187,14 +187,29 @@ export class VbaExtractor {
   }
 
   private detectVbName(src: string): string | null {
-    // First non-empty line containing `Attribute VB_Name = "..."`.
+    // Walk past the Access class metadata header block (VERSION / BEGIN /
+    // MultiUse / END / Attribute …) so VB_Name on a later line is found.
+    // The previous implementation returned null at the first non-Attribute
+    // line, which meant real Access .cls files — which start with
+    // `VERSION 1.0 CLASS / BEGIN / MultiUse = ... / END` before
+    // `Attribute VB_Name = "..."` — always fell through to the basename
+    // fallback. Audit W2 (June 2026).
     for (const line of src.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const m = /^\s*Attribute\s+VB_Name\s*=\s*"([^"]+)"/i.exec(trimmed);
       if (m) return m[1] ?? null;
-      // Stop scanning after the first non-empty, non-VB_Name line — VB_Name
-      // is always the first non-empty line per spec.
+      // Skip known header keywords so we keep scanning.
+      if (
+        /^\s*VERSION\b/i.test(trimmed) ||
+        /^\s*BEGIN\b/i.test(trimmed) ||
+        /^\s*END\b/i.test(trimmed) ||
+        /^\s*(?:MultiUse|Persistable|DataBindingBehavior|DataSourceBehavior)\s*=/i.test(trimmed) ||
+        /^\s*Attribute\s+/i.test(trimmed)
+      ) {
+        continue;
+      }
+      // Any other non-empty line that isn't a known header — stop.
       return null;
     }
     return null;

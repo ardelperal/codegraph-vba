@@ -467,3 +467,40 @@ End Sub`;
     expect(target?.name).toBe('tblÓrdenes');
   });
 });
+
+/**
+ * W2 invariant — `detectVbName` MUST walk past Access class metadata
+ * headers (VERSION / BEGIN / MultiUse / END / Attribute …) to find the
+ * VB_Name attribute. Audit W2 (June 2026): the previous implementation
+ * returned null at the first non-Attribute line, so real Access .cls
+ * files always fell through to the basename fallback.
+ */
+describe('VbaExtractor — detectVbName skips class metadata header (W2 invariant)', () => {
+  it('a .cls with the standard Access header uses VB_Name as the class name', () => {
+    const src = `VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "ACAuditoriaOperaciones"
+Attribute VB_GlobalNameSpace = False
+Attribute VB_Creatable = False
+Attribute VB_PredeclaredId = False
+Attribute VB_Exposed = False
+Implements IAuditable`;
+    const r = extract('src/classes/ACAuditoriaOperaciones.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    expect(cls).toBeDefined();
+    // Class name MUST come from VB_Name (not the file basename).
+    expect(cls?.name).toBe('ACAuditoriaOperaciones');
+  });
+
+  it('a .bas with VB_Name on the first non-empty line still works (regression)', () => {
+    const src = `Attribute VB_Name = "modHelpers"
+Option Explicit
+Public Function DoThing()
+End Function`;
+    const r = extract('src/modules/something.bas', src);
+    const mod = r.nodes.find((n) => n.kind === 'module');
+    expect(mod?.name).toBe('modHelpers');
+  });
+});

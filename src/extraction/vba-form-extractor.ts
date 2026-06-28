@@ -138,11 +138,23 @@ export class VbaFormExtractor {
   }
 
   private detectVbName(src: string): string | null {
+    // Same as VbaExtractor's detectVbName — see audit W2 (June 2026).
+    // Walk past Access form metadata headers (VERSION / BEGIN / END /
+    // Attribute …) so VB_Name on a later line is found.
     for (const line of src.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       const m = /^\s*Attribute\s+VB_Name\s*=\s*"([^"]+)"/i.exec(trimmed);
       if (m) return m[1] ?? null;
+      if (
+        /^\s*VERSION\b/i.test(trimmed) ||
+        /^\s*BEGIN\b/i.test(trimmed) ||
+        /^\s*END\b/i.test(trimmed) ||
+        /^\s*(?:MultiUse|Persistable|DataBindingBehavior|DataSourceBehavior)\s*=/i.test(trimmed) ||
+        /^\s*Attribute\s+/i.test(trimmed)
+      ) {
+        continue;
+      }
       return null;
     }
     return null;

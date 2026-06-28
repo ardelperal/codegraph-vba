@@ -722,3 +722,83 @@ End Sub`;
     expect(fn).toBeDefined();
   });
 });
+
+/**
+ * C2 invariant — every emitted `function` node MUST have `endLine > startLine`
+ * (or equal for the single-line colon-separated case) so `codegraph_explore`
+ * returns the full body, not just the signature line.
+ *
+ * Audit C2 (June 2026): the previous implementation set `endLine = lineNum`
+ * (same as `startLine`), so explore returned only the signature and the
+ * agent fell back to Read for every procedure.
+ */
+describe('VbaExtractor — function nodes carry the full body span (C2 invariant)', () => {
+  it('a multi-line Public Function has endLine on the End Function line', () => {
+    const src = [
+      'Public Function Calc() As Long',                // 1 — startLine = 1
+      '    Dim x As Long',                            // 2
+      '    x = 1',                                    // 3
+      '    Calc = x * 2',                             // 4
+      'End Function',                                 // 5 — endLine = 5
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const fn = r.nodes.find((n) => n.kind === 'function' && n.name === 'Calc');
+    expect(fn).toBeDefined();
+    expect(fn?.startLine).toBe(1);
+    expect(fn?.endLine).toBe(5);
+    expect(fn?.endLine).toBeGreaterThan(fn?.startLine ?? 0);
+  });
+
+  it('a multi-line Sub has endLine on the End Sub line (span covers body)', () => {
+    const src = [
+      "Public Sub DoWork()",                          // 1
+      "    Debug.Print \"a\"",                        // 2
+      "    Debug.Print \"b\"",                        // 3
+      "    Debug.Print \"c\"",                        // 4
+      "End Sub",                                       // 5
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const fn = r.nodes.find((n) => n.kind === 'function' && n.name === 'DoWork');
+    expect(fn).toBeDefined();
+    expect(fn?.startLine).toBe(1);
+    expect(fn?.endLine).toBe(5);
+  });
+
+  it('a single-line colon-separated Sub has endLine == startLine (no body to span)', () => {
+    const src = `Public Sub One(): End Sub`;
+    const r = extract('src/modules/Mod.bas', src);
+    const fn = r.nodes.find((n) => n.kind === 'function' && n.name === 'One');
+    expect(fn).toBeDefined();
+    expect(fn?.startLine).toBe(1);
+    expect(fn?.endLine).toBe(1);
+  });
+
+  it('a real fixture procedure has endLine > startLine (recall probe invariant)', () => {
+    // Index the REAL Dysflow fixture — every REAL procedure there must
+    // have a body span, not just a signature line. (Synthetic function
+    // nodes from qualified-call synthesis are excluded — they represent
+    // call-site expressions, not declarations; that's M1's concern.)
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const fix = path.resolve(
+      __dirname,
+      '..',
+      '__tests__',
+      'fixtures',
+      'vba',
+      'src',
+      'classes',
+      'ACAuditoriaOperaciones.cls',
+    );
+    if (!fs.existsSync(fix)) return; // skip if fixture moved
+    const r = extract(fix, fs.readFileSync(fix, 'utf8'));
+    // Real procedure nodes have a bare name (no `.`) — synthesized
+    // qualified-call nodes do.
+    const realProcs = r.nodes.filter(
+      (n) => n.kind === 'function' && !n.name.includes('.'),
+    );
+    expect(realProcs.length).toBeGreaterThan(5);
+    const noBody = realProcs.filter((n) => n.endLine === n.startLine);
+    expect(noBody).toHaveLength(0);
+  });
+});

@@ -603,6 +603,12 @@ export class VbaExtractor {
     // as dead code (its `procStack` was never read after the loop). One
     // pass suffices.
     const stack: ProcInfo[] = [];
+    // C2 fix: track each procedure's `endLine` (the line containing the
+    // matching `End Sub`/`End Function`/`End Property`) keyed by its
+    // `startLine`. After the loop, we update every function node's
+    // `endLine` so `codegraph_explore` returns the full body span —
+    // not just the signature line.
+    const procEndLines = new Map<number, number>();
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
       const lineNum = i + 1;
@@ -614,7 +620,8 @@ export class VbaExtractor {
         if (bucket && bucket[0]) stack.push(bucket[0]);
         procedureStartLines.add(lineNum);
       } else if (procedureEndRe.test(line) && stack.length > 0) {
-        stack.pop();
+        const ending = stack.pop()!;
+        procEndLines.set(ending.startLine, lineNum);
         continue;
       }
 
@@ -629,6 +636,16 @@ export class VbaExtractor {
       if (stack.length > 0) {
         this.scanSqlInLine(line, lineNum, sqlTargetsThisFile);
       }
+    }
+
+    // Apply endLine to every emitted function node keyed by its startLine.
+    // Functions without a recorded endLine (e.g. malformed VBA without an
+    // `End`) keep their `endLine = startLine` from sweepProcedures —
+    // which is the correct "single line" representation.
+    for (const n of this.nodes) {
+      if (n.kind !== 'function') continue;
+      const end = procEndLines.get(n.startLine);
+      if (end !== undefined) n.endLine = end;
     }
   }
 

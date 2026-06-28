@@ -16,18 +16,29 @@ import {
 } from '../src/extraction/vba-preprocess';
 
 describe('joinLineContinuations', () => {
-  it('joins two lines when the first ends with " _"', () => {
+  // **Contract**: this helper must preserve the source's line count. The
+  // downstream `sweepProcedures` uses `lineNum = i + 1` on the
+  // transformed array to assign `startLine` to every emitted node —
+  // those numbers must align with the original source so
+  // `codegraph_explore` returns the right lines. (See audit finding
+  // C1 in obs `codegraph/audit/vba-extractor-2026-06-28`.)
+  it('joins two lines when the first ends with " _" — preserves line count', () => {
     const src = 'Sub Foo()\n  DoCmd.RunSQL _\n    "SELECT * FROM tbl"';
     const out = joinLineContinuations(src);
-    expect(out).toContain('DoCmd.RunSQL     "SELECT * FROM tbl"');
-    // The original line break must be gone.
-    expect(out).not.toContain('DoCmd.RunSQL _\n');
+    // Line count preserved.
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    // The `_` continuation marker is removed; the newline stays.
+    expect(out).toContain('DoCmd.RunSQL \n');
+    expect(out).not.toContain(' _\n');
+    // The continued line's content is preserved verbatim.
+    expect(out).toContain('"SELECT * FROM tbl"');
   });
 
-  it('joins a Debug.Print continuation across lines', () => {
+  it('joins a Debug.Print continuation across lines — preserves line count', () => {
     const src = 'Debug.Print _\n  "hello"';
     const out = joinLineContinuations(src);
-    expect(out).toBe('Debug.Print   "hello"');
+    expect(out).toBe('Debug.Print \n  "hello"');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
   });
 
   it('returns input unchanged when no line ends with " _"', () => {
@@ -35,17 +46,20 @@ describe('joinLineContinuations', () => {
     expect(joinLineContinuations(src)).toBe(src);
   });
 
-  it('joins multiple chained continuations in one statement', () => {
+  it('joins multiple chained continuations in one statement — preserves line count', () => {
     const src = 'x = a _\n  + b _\n  + c';
     const out = joinLineContinuations(src);
-    expect(out).toContain('x = a   + b   + c');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    // Both `_` markers removed, both newlines preserved.
+    expect(out).toContain('x = a \n  + b \n  + c');
   });
 
-  it('joins continuations across many statements', () => {
+  it('joins continuations across many statements — preserves line count', () => {
     const src = 'A _\n+ 1\nB _\n+ 2';
     const out = joinLineContinuations(src);
-    expect(out).toContain('A + 1');
-    expect(out).toContain('B + 2');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    expect(out).toContain('A \n+ 1\nB \n+ 2');
+    expect(out).not.toContain(' _\n');
   });
 
   it('does not join lines that do not end with " _" (only one trailing space)', () => {
@@ -66,10 +80,11 @@ describe('joinLineContinuations', () => {
     expect(out).toBe(src);
   });
 
-  it('strips the trailing CRLF before the underscore + a single space', () => {
-    // VBA convention: " _\n" → join to next line with one space inserted.
+  it('strips the continuation marker but keeps the newline', () => {
+    // VBA convention: " _\n" → the `_` is consumed and the `\n` stays
+    // so the transformed source has the same line count as the input.
     const src = 'X _\nY';
-    expect(joinLineContinuations(src)).toBe('X Y');
+    expect(joinLineContinuations(src)).toBe('X \nY');
   });
 
   it('does not join when the underscore is mid-line (not at the end)', () => {
@@ -77,20 +92,27 @@ describe('joinLineContinuations', () => {
     expect(joinLineContinuations(src)).toBe(src);
   });
 
-  it('joins even when continuation is followed by indented code', () => {
+  it('joins even when continuation is followed by indented code — preserves line count', () => {
     const src = 'Function Foo() As Long\n  Foo = 1 _\n    + 2\nEnd Function';
     const out = joinLineContinuations(src);
-    expect(out).toContain('Foo = 1     + 2');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    expect(out).toContain('Foo = 1 \n    + 2\nEnd Function');
   });
 
   it('handles a continuation that ends a file (no following line)', () => {
     const src = 'x = 1 _';
     // Defensive: the helper should not throw on a dangling continuation.
-    // Result is `x = 1` (the trailing ` _` is replaced with a single space,
-    // which downstream regex sweeps tolerate; downstream stripVbaComments
-    // and the extractor regex sweep don't anchor on trailing whitespace).
+    // Result keeps the single line (no newline to preserve at EOF; the
+    // dangling ` _` is replaced with a single space).
     expect(() => joinLineContinuations(src)).not.toThrow();
     expect(joinLineContinuations(src)).toBe('x = 1 ');
+  });
+
+  it('handles CRLF line endings — preserves line count', () => {
+    const src = 'Sub X()\r\n  DoCmd.RunSQL _\r\n    "SELECT"\r\nEnd Sub';
+    const out = joinLineContinuations(src);
+    expect(out.split(/\r?\n/).length).toBe(src.split(/\r?\n/).length);
+    expect(out).not.toContain(' _\r\n');
   });
 });
 
@@ -100,9 +122,49 @@ describe('stripVbaComments', () => {
     expect(stripVbaComments(src)).toBe('Dim x As Long');
   });
 
-  it('strips a Rem-prefixed line entirely', () => {
+  it('strips a Rem-prefixed line entirely — preserves line count via empty placeholder', () => {
     const src = 'Rem LegacyComment\nSub X(): End Sub';
-    expect(stripVbaComments(src)).toBe('Sub X(): End Sub');
+    // The Rem line is replaced with an empty placeholder so the line
+    // count matches the original — node `startLine` values computed
+    // downstream as `i + 1` depend on this parity. (Audit C1 fix.)
+    const out = stripVbaComments(src);
+    expect(out).toBe('\nSub X(): End Sub');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+  });
+
+  it('preserves an Option directive line as an empty placeholder (line count parity)', () => {
+    const src = 'Option Explicit\nOption Compare Database\n\nSub X()\nEnd Sub';
+    const out = stripVbaComments(src);
+    // Same number of lines as input; Option content gone.
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    expect(out).not.toContain('Option Explicit');
+    expect(out).not.toContain('Option Compare Database');
+    expect(out).toContain('Sub X()');
+  });
+
+  it('preserves line count across a mixed VBA prelude (Rem + Option + blank + code)', () => {
+    // The exact pattern that broke real fixture files in the audit:
+    // every real Dysflow-exported .bas/.cls has Option Compare Database
+    // + Option Explicit at the top, plus occasional Rem comments.
+    const src = [
+      'Rem ============================================',
+      'Rem Módulo: ACAuditoriaOperaciones',
+      'Rem ============================================',
+      'Option Compare Database',
+      'Option Explicit',
+      '',
+      'Public Function AccionRepetida() As Long',
+      '    AccionRepetida = 1',
+      'End Function',
+    ].join('\n');
+    const out = stripVbaComments(src);
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    expect(out).not.toContain('Rem ');
+    expect(out).not.toContain('Option ');
+    // The Public Function is on line 7 of the original; after stripping
+    // it should be on line 7 of the output too (line count preserved).
+    const lines = out.split('\n');
+    expect(lines[6]).toContain('Public Function AccionRepetida');
   });
 
   it('preserves a single quote inside a double-quoted string', () => {

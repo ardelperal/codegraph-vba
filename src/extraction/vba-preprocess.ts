@@ -48,12 +48,15 @@
  */
 export function joinLineContinuations(src: string): string {
   if (!src) return src;
-  // VBA convention: " _\n" → join. Use a non-greedy regex anchored at end of
-  // line. We don't strip surrounding whitespace, so the joined line carries
-  // the leading whitespace of the continuation as-is (downstream regex
-  // sweeps use line-anchored patterns and ignore leading whitespace).
-  // Also handle a dangling ` _` at end-of-file (malformed input defensive).
-  return src.replace(/ _(?:$|\r?\n)/g, ' ');
+  // VBA convention: " _\n" → join. **Preserve the newline AND the
+  // leading space** so the transformed source has the same line count
+  // AND the same intra-line whitespace as the original — the sweep
+  // patterns downstream are anchored and the space before `_` is
+  // meaningful for the joined line.
+  //
+  // Dangling ` _` at end-of-file (malformed input defensive) has no
+  // newline to preserve; replace with a single space.
+  return src.replace(/ _(?:(\r?\n)|$)/g, (_m, nl) => ' ' + (nl ?? ''));
 }
 
 // -----------------------------------------------------------------------------
@@ -90,12 +93,16 @@ export function stripVbaComments(src: string): string {
   for (const rawLine of lines) {
     // Whole-line `Rem` comment.
     if (REM_PREFIX.test(rawLine)) {
-      // Drop the line entirely (don't keep an empty placeholder).
+      // Push an empty placeholder so the line count matches the original
+      // source — node `startLine` values computed downstream as `i + 1`
+      // depend on line-count parity. Same for Option directives below.
+      out.push('');
       continue;
     }
 
     // Option directives — inert compiler hints that emit no symbol.
     if (OPTION_DIRECTIVE.test(rawLine)) {
+      out.push('');
       continue;
     }
 

@@ -80,18 +80,28 @@ describe('E2E regression - codegraph_main with the new fork', () => {
     expect(cg).toBeDefined();
   });
 
-  it('reports node counts by language, with VBA empty', async () => {
+  it('reports node counts by language, with only VBA fixtures in main', async () => {
     if (!cg) return;
     const stats = await cg.getStats();
-    // Main has TypeScript, JavaScript, JSON, Markdown, etc.
-    // No VBA files should appear in the count map.
+    // The repo ships E2E fixtures under `__tests__/fixtures/vba/` —
+    // exactly 6 real Dysflow-exported VBA files copied verbatim for the
+    // extractor to chew on. So we expect VBA == 6, NOT 0 (which is what
+    // the original assertion said back when the fixtures didn't exist).
+    // The point of THIS test is the regression on non-VBA languages —
+    // the VBA count is incidental, not a regression signal.
     const vbaFiles = stats.filesByLanguage?.vba ?? 0;
-    expect(vbaFiles).toBe(0);
+    expect(vbaFiles).toBe(6);
     // Total indexed files > 0 (sanity).
     const totalFiles = Object.values(stats.filesByLanguage ?? {}).reduce(
       (s, n) => s + n,
       0,
     );
     expect(totalFiles).toBeGreaterThan(0);
+    // Sanity: every non-VBA language that was indexed before the
+    // VBA feature was added is still indexed (the regression target).
+    const nonVbaLanguages = Object.entries(stats.filesByLanguage ?? {})
+      .filter(([lang]) => lang !== 'vba')
+      .map(([, n]) => n);
+    expect(nonVbaLanguages.every((n) => n > 0)).toBe(true);
   });
 });

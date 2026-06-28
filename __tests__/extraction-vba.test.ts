@@ -323,3 +323,82 @@ End Sub`;
     expect(moduleNode?.name).toBe('modHelpers');
   });
 });
+
+/**
+ * C1 invariant — node `startLine` MUST align with the original source line.
+ *
+ * Audit finding C1 (June 2026): preprocessing collapsed lines
+ * (`joinLineContinuations` removed newlines, `stripVbaComments` dropped
+ * Option/Rem lines with `continue`), so every emitted node's `startLine`
+ * drifted further from its real position as the file grew. Live probe
+ * against `ACAuditoriaOperaciones.cls` showed functions pointing at
+ * blank lines or unrelated declarations.
+ *
+ * Fix: the pre-processing helpers now preserve line count (empty-string
+ * placeholders + newline retention). These tests assert the end-to-end
+ * invariant: every emitted node's `startLine` lands on the same line in
+ * the ORIGINAL source as its `startLine` value points to in the
+ * transformed source.
+ */
+describe('VbaExtractor — startLine aligns with original source (C1 invariant)', () => {
+  it('a function preceded by Option directives has startLine on its declaration', () => {
+    // Pattern every real Dysflow-exported .bas/.cls opens with.
+    const src = [
+      'Attribute VB_Name = "modHelpers"',                       // 1
+      '',                                                      // 2
+      'Option Compare Database',                               // 3
+      'Option Explicit',                                       // 4
+      '',                                                      // 5
+      "' Public API",                                          // 6
+      'Public Function Helper() As Long',                      // 7
+      '    Helper = 42',                                       // 8
+      'End Function',                                          // 9
+    ].join('\n');
+    const r = extract('src/modules/modHelpers.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Helper');
+    expect(func).toBeDefined();
+    // `Public Function Helper() As Long` is on line 7 of the original.
+    // startLine must point to that line — not to a blank or unrelated
+    // line caused by preprocessing drift.
+    expect(func?.startLine).toBe(7);
+  });
+
+  it('a function preceded by Rem comment block has startLine on its declaration', () => {
+    const src = [
+      'Attribute VB_Name = "modHelpers"',                       // 1
+      '',                                                      // 2
+      'Rem ============================================',     // 3
+      'Rem Módulo: helpers',                                   // 4
+      'Rem ============================================',     // 5
+      '',                                                      // 6
+      'Public Function Helper() As Long',                      // 7
+      '    Helper = 42',                                       // 8
+      'End Function',                                          // 9
+    ].join('\n');
+    const r = extract('src/modules/modHelpers.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Helper');
+    expect(func).toBeDefined();
+    expect(func?.startLine).toBe(7);
+  });
+
+  it('a function using a line continuation has startLine on its declaration', () => {
+    const src = [
+      'Attribute VB_Name = "modHelpers"',                       // 1
+      '',                                                      // 2
+      'Option Compare Database',                               // 3
+      'Option Explicit',                                       // 4
+      '',                                                      // 5
+      'Public Function Helper() As Long',                      // 6
+      '    Helper = 1 _',                                      // 7
+      '        + 2 _',                                         // 8
+      '        + 3',                                           // 9
+      'End Function',                                          // 10
+    ].join('\n');
+    const r = extract('src/modules/modHelpers.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Helper');
+    expect(func).toBeDefined();
+    // `Public Function Helper() As Long` is on line 6 of the original,
+    // even though the body uses line continuations on lines 7-9.
+    expect(func?.startLine).toBe(6);
+  });
+});

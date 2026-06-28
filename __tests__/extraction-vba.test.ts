@@ -402,3 +402,68 @@ describe('VbaExtractor — startLine aligns with original source (C1 invariant)'
     expect(func?.startLine).toBe(6);
   });
 });
+
+/**
+ * W5 invariant — non-ASCII identifiers (Spanish VBA: Módulo, Cálculo,
+ * Señal) MUST be matched. Audit finding W5 (June 2026): the original
+ * regex used `[A-Za-z_]\w*` (ASCII-only), so unicode identifiers were
+ * silently truncated. Fix: Unicode-aware classes `\p{L}[\p{L}\p{N}_]*`
+ * with the `/u` flag on every regex that matches an identifier.
+ */
+describe('VbaExtractor — Unicode identifier handling (W5 invariant)', () => {
+  it('extracts a function with a Spanish identifier', () => {
+    const src = `Public Function Cálculo() As Long
+    Cálculo = 42
+End Function`;
+    const r = extract('src/modules/modCalculo.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Cálculo');
+    expect(func).toBeDefined();
+    expect(func?.name).toBe('Cálculo');
+  });
+
+  it('extracts a Sub with an accented identifier', () => {
+    const src = `Public Sub Módulo_Iniciar()
+End Sub`;
+    const r = extract('src/modules/modInit.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Módulo_Iniciar');
+    expect(func).toBeDefined();
+  });
+
+  it('extracts a Sub with a ñ character (Módulo1.bas fixture)', () => {
+    const src = `Public Sub Módulo1()
+End Sub`;
+    const r = extract('src/modules/Módulo1.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Módulo1');
+    expect(func).toBeDefined();
+  });
+
+  it('extracts an Implements with an accented interface name', () => {
+    const src = `VERSION 1.0 CLASS
+BEGIN
+  MultiUse = -1  'True
+END
+Attribute VB_Name = "MiClase"
+Attribute VB_GlobalNameSpace = False
+Implements INotificación`;
+    const r = extract('src/classes/MiClase.cls', src);
+    // The class emits from VB_Name; the Implements target is referenced.
+    const implementsEdges = r.edges.filter((e) => e.kind === 'implements');
+    expect(implementsEdges.length).toBeGreaterThan(0);
+    // The referenced target name should be INotificación, not truncated.
+    const targetNode = r.nodes.find((n) => implementsEdges.some((e) => e.target === n.id));
+    expect(targetNode?.name).toBe('INotificación');
+  });
+
+  it('matches a Spanish-named SQL table inside a string', () => {
+    const src = `Sub Q()
+    DoCmd.RunSQL "SELECT * FROM tblÓrdenes"
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblÓrdenes');
+  });
+});

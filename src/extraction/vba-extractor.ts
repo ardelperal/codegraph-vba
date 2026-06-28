@@ -221,7 +221,7 @@ export class VbaExtractor {
 
   /** Sub/Function/Property regex — captures visibility prefix, kind, and name. */
   private static readonly PROC_RE =
-    /^\s*((?:Public|Private|Friend|Static)\s+)?(?:Static\s+)?(Sub|Function|Property(?:\s+(?:Get|Let|Set))?)\s+([A-Za-z_]\w*)/i;
+    /^\s*((?:Public|Private|Friend|Static)\s+)?(?:Static\s+)?(Sub|Function|Property(?:\s+(?:Get|Let|Set))?)\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
   /**
    * Walk the (uncommented, line-joined) source and emit one `function` node
@@ -316,7 +316,7 @@ export class VbaExtractor {
 
   /** Implements regex. */
   private static readonly IMPLEMENTS_RE =
-    /^\s*Implements\s+([A-Za-z_]\w*)/i;
+    /^\s*Implements\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
   /** Edges whose source needs to be set to the module/class id once it exists. */
   private pendingModuleOrClassSource: Edge[] = [];
@@ -368,11 +368,11 @@ export class VbaExtractor {
 
   /** Qualified Dim `Dim x As Foo.Bar` — emits `references` to `Foo`. */
   private static readonly DIM_QUAL_RE =
-    /^\s*(?:Dim|Private|Public)\s+\w+\s+As\s+([A-Za-z_]\w*)\.[A-Za-z_]\w*/i;
+    /^\s*(?:Dim|Private|Public)\s+\p{L}[\p{L}\p{N}_]*\s+As\s+(\p{L}[\p{L}\p{N}_]*)\.(\p{L}[\p{L}\p{N}_]*)/iu;
 
   /** `WithEvents m_X As Form_Foo` — Dim/Private/Public prefix is optional. */
   private static readonly WITHEVENTS_RE =
-    /^\s*(?:(?:Dim|Private|Public)\s+)?WithEvents\s+\w+\s+As\s+([A-Za-z_]\w*)/i;
+    /^\s*(?:(?:Dim|Private|Public)\s+)?WithEvents\s+\p{L}[\p{L}\p{N}_]*\s+As\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
   private sweepDimsAndWithEvents(src: string): number {
     const lines = src.split('\n');
@@ -414,7 +414,7 @@ export class VbaExtractor {
    * (qualified — emit a synthetic node + heuristic edge).
    */
   private static readonly CALL_RE =
-    /(?<![\w.])([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?\s*\(/g;
+    /(?<![\w.])(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?\s*\(/gu;
 
   /** SQL wrapper helpers — order matters because `db.Execute` is a suffix of others. */
   private static readonly SQL_WRAPPERS: ReadonlyArray<{ name: string; re: RegExp }> = [
@@ -426,7 +426,7 @@ export class VbaExtractor {
 
   /** SQL table-name regex scoped to FROM / INTO / UPDATE. */
   private static readonly SQL_TABLE_RE =
-    /\b(?:FROM|INTO|UPDATE)\s+(\[?\w+\]?)/gi;
+    /\b(?:FROM|INTO|UPDATE)\s+(\[?\p{L}[\p{L}\p{N}_]*\]?)/giu;
 
   /** Keywords we never want to match as call receivers. */
   private static readonly CALL_KEYWORD_BLACKLIST = new Set([
@@ -632,7 +632,12 @@ export class VbaExtractor {
       while ((m = localRe.exec(line)) !== null) {
         const sqlString = m[1] ?? '';
         // Scan the captured SQL string for FROM/INTO/UPDATE <table>.
-        const tableRe = new RegExp(VbaExtractor.SQL_TABLE_RE.source, 'gi');
+        // Preserve the source regex's `/u` flag (Unicode property classes)
+        // — hardcoding `'gi'` here would silently break non-ASCII identifiers.
+        const tableRe = new RegExp(
+          VbaExtractor.SQL_TABLE_RE.source,
+          VbaExtractor.SQL_TABLE_RE.flags,
+        );
         let tm: RegExpExecArray | null;
         while ((tm = tableRe.exec(sqlString)) !== null) {
           let table = (tm[1] ?? '').replace(/[\[\]]/g, '');

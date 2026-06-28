@@ -180,7 +180,7 @@ export class VbaFormExtractor {
    * the extra `Begin`/`End` for the form's root block are matched but
    * filtered by the control-type blacklist (see below).
    */
-  private static readonly BEGIN_RE = /^\s*Begin\s+([A-Za-z_]\w*)\s*$/;
+  private static readonly BEGIN_RE = /^\s*Begin\s+(\p{L}[\p{L}\p{N}_]*)\s*$/u;
 
   /** Control types we recognize. Anything else is treated as a property too,
    * but with the type as-given. */

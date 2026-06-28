@@ -1,0 +1,48 @@
+# OpenSpec — codegraph fork (vba-extractor feature)
+# Artifact store: hybrid (this file + Engram copy)
+# Respects SDD session preflight from obs #14698
+
+context: |
+  Personal fork of colbymchenry/codegraph. Branch feature/vba-extractor (from main a4e1bda).
+  Adding VBA/Access regex extractors to index .bas/.cls/.form.txt files in org Access projects.
+  Stack: TypeScript + vitest. Strict TDD active. Review budget NOT enforced.
+
+strict_tdd: true
+
+persistence:
+  mode: both
+  openspec_root: C:\00repos\codigo\00_codegraph_feature-vba-extractor\openspec
+  engram_topic_prefix: sdd/codegraph
+
+testing:
+  runner: vitest
+  command: npm test
+  eval_harness: npm run eval
+  coverage: false
+  layers:
+    unit: true
+    integration: false
+    e2e: false
+  quality:
+    type_checker: tsc
+    linter: false
+    formatter: false
+
+pr_strategy: single-pr-default
+review_budget_lines: not_enforced
+
+phase_rules:
+  propose:
+    require_scope: true
+  spec:
+    require_scenarios: true
+  design:
+    require_nodekind_mapping: true
+  tasks:
+    require_test_before_impl: true
+  apply:
+    strict_tdd_gate: true
+  verify:
+    require_vitest_green: true
+  archive:
+    require_implementation_commits: true

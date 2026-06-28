@@ -54,8 +54,25 @@ export class VbaExtractor {
   private errors: ExtractionError[] = [];
   private unresolvedReferences: UnresolvedReference[] = [];
   private moduleOrClassNode: Node | null = null;
-  /** Map of procedure name (within this file) → ProcInfo for same-file call resolution. */
-  private localProcs = new Map<string, ProcInfo>();
+  /**
+   * Map of procedure name (within this file) → list of ProcInfo. The list
+   * (rather than a single value) is needed because VBA allows multiple
+   * Property accessors with the same name: `Property Get Foo`, `Property
+   * Let Foo`, and `Property Set Foo` all share the name `Foo`. Audit W6
+   * (June 2026): the previous Map<string, ProcInfo> kept only the last
+   * accessor, breaking same-file call resolution and emitting the wrong
+   * `findFunctionNodeByName` match.
+   */
+  private localProcs = new Map<string, ProcInfo[]>();
+
+  /**
+   * Cache: procedure name → first matching function node emitted for that
+   * name. Audit S2 (June 2026): the previous implementation did an O(n)
+   * linear scan of all nodes for every call site; with W6's multimap
+   * the same-name collision can return multiple matches but bare-name
+   * call resolution only needs the first.
+   */
+  private functionNodeByName = new Map<string, Node>();
 
   constructor(filePath: string, source: string) {
     this.filePath = filePath;
@@ -290,10 +307,12 @@ export class VbaExtractor {
         startLine: lineNum,
       };
       procs.push(proc);
-      this.localProcs.set(name, proc);
+      const bucket = this.localProcs.get(name);
+      if (bucket) bucket.push(proc);
+      else this.localProcs.set(name, [proc]);
 
       const nodeId = generateNodeId(this.filePath, 'function', name, lineNum);
-      this.nodes.push({
+      const fnNode: Node = {
         id: nodeId,
         kind: 'function',
         name,
@@ -306,7 +325,13 @@ export class VbaExtractor {
         endColumn: line.length,
         visibility,
         updatedAt: Date.now(),
-      });
+      };
+      this.nodes.push(fnNode);
+      // Cache the first node emitted for this name — `findFunctionNodeByName`
+      // (audit S2) becomes O(1) instead of O(n) per call site.
+      if (!this.functionNodeByName.has(name)) {
+        this.functionNodeByName.set(name, fnNode);
+      }
 
       if (this.moduleOrClassNode) {
         this.edges.push({
@@ -522,26 +547,15 @@ export class VbaExtractor {
 
   private sweepCallsAndSql(src: string): void {
     const lines = src.split('\n');
-    const procStack: ProcInfo[] = [];
     const procedureStartLines = new Set<number>();
     const procedureEndRe = /^\s*End\s+(?:Sub|Function|Property)\b/i;
     const sqlTargetsThisFile = new Set<string>();
 
-    // First pass: build a list of (startLine, proc) so we know which lines are
-    // "inside" a procedure body.
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      const m = VbaExtractor.PROC_RE.exec(line);
-      if (m) {
-        const name = m[3] ?? '';
-        const info = this.localProcs.get(name);
-        if (info) procStack.push(info);
-      } else if (procedureEndRe.test(line) && procStack.length > 0) {
-        procStack.pop();
-      }
-    }
-
-    // Second pass: emit call edges and SQL edges per line. Track current proc.
+    // Walk the source once, emitting call edges and SQL edges per line and
+    // tracking the current procedure stack. The previous implementation
+    // did this in two passes; audit S1 (June 2026) flagged the first pass
+    // as dead code (its `procStack` was never read after the loop). One
+    // pass suffices.
     const stack: ProcInfo[] = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
@@ -550,8 +564,8 @@ export class VbaExtractor {
       const procStart = VbaExtractor.PROC_RE.exec(line);
       if (procStart) {
         const name = procStart[3] ?? '';
-        const info = this.localProcs.get(name);
-        if (info) stack.push(info);
+        const bucket = this.localProcs.get(name);
+        if (bucket && bucket[0]) stack.push(bucket[0]);
         procedureStartLines.add(lineNum);
       } else if (procedureEndRe.test(line) && stack.length > 0) {
         stack.pop();
@@ -594,7 +608,8 @@ export class VbaExtractor {
 
       if (!member) {
         // Bare `Name(...)` — same-file resolution.
-        const local = this.localProcs.get(receiver);
+        const bucket = this.localProcs.get(receiver);
+        const local = bucket?.[0];
         if (!local) continue; // unresolvable — silent per spec R4.
         const localFuncNode = this.findFunctionNodeByName(receiver);
         if (!localFuncNode) continue;
@@ -670,7 +685,11 @@ export class VbaExtractor {
   }
 
   private findFunctionNodeByName(name: string): Node | undefined {
-    return this.nodes.find((n) => n.kind === 'function' && n.name === name);
+    // O(1) via the cache populated as function nodes are emitted in
+    // `sweepProcedures`. Audit S2 (June 2026): the previous
+    // `this.nodes.find(...)` was an O(n) linear scan per call site —
+    // meaningful on real .cls files with hundreds of procedures.
+    return this.functionNodeByName.get(name);
   }
 
   private scanSqlInLine(

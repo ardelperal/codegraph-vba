@@ -575,3 +575,32 @@ End Sub`;
     expect(synthFns).toHaveLength(0);
   });
 });
+
+/**
+ * W6 invariant — Property Get/Let/Set with the same name MUST all be
+ * tracked. Audit W6 (June 2026): the previous Map<string, ProcInfo>
+ * keyed by bare name kept only the last accessor, breaking same-file
+ * call resolution. The fix is a multimap (Map<string, ProcInfo[]>).
+ */
+describe('VbaExtractor — Property Get/Let/Set coexistence (W6 invariant)', () => {
+  it('all three accessors for the same property name are emitted', () => {
+    const src = `VERSION 1.0 CLASS
+BEGIN
+END
+Attribute VB_Name = "Thing"
+
+Public Property Get Name() As String
+    Name = "x"
+End Property
+
+Public Property Let Name(v As String)
+End Property
+
+Public Property Set Name(v As Object)
+End Property`;
+    const r = extract('src/classes/Thing.cls', src);
+    // The class emits 3 function nodes, one per accessor.
+    const nameFns = r.nodes.filter((n) => n.kind === 'function' && n.name === 'Name');
+    expect(nameFns.length).toBe(3);
+  });
+});

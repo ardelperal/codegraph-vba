@@ -1,7 +1,7 @@
 /**
  * VbaExtractor — tests for the `.bas` / `.cls` / `.frm` / `.dsr` regex
  * extractor. Each `it()` corresponds to one or two spec scenarios from
- * `openspec/changes/vba-extractor/specs/vba-code-extraction/spec.md`.
+ * `openspec/specs/vba-code-extraction/spec.md`.
  *
  * Coverage map (scenario id → test name):
  *   REQ-CODE-1  Public Sub in .bas                 → "Public Sub emits function with visibility"

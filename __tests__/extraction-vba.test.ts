@@ -261,6 +261,38 @@ End Sub`;
     expect(target?.name).toBe('tblAudit');
   });
 
+  it('getdb().OpenRecordset with SQL assigned to a variable resolves the table', () => {
+    const src = `Sub Q()
+  Dim m_SQL As String
+  m_SQL = "SELECT * FROM tblCustomers " & _
+          "WHERE Id = " & customerId
+  Set rs = getdb().OpenRecordset(m_SQL)
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblCustomers');
+  });
+
+  it('getdb().Execute with SQL assigned to a variable resolves the table', () => {
+    const src = `Sub U()
+  Dim m_SQL As String
+  m_SQL = "UPDATE tblOrders " & _
+          "SET Status = 1"
+  getdb().Execute m_SQL
+End Sub`;
+    const r = extract('src/modules/U.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblOrders');
+  });
+
   it('SQL inside a VBA comment does not match', () => {
     const src = `' DoCmd.RunSQL "SELECT * FROM tblFake"
 Public Sub DoWork()
@@ -275,6 +307,30 @@ End Sub`;
       return tgt?.name === 'tblFake';
     });
     expect(fakeEdges).toHaveLength(0);
+  });
+
+  it('real Dysflow class fixtures emit SQL table edges for getdb() variable SQL', () => {
+    const fs = require('node:fs') as typeof import('node:fs');
+    const path = require('node:path') as typeof import('node:path');
+    const fixtures = [
+      path.resolve(__dirname, '..', '__tests__', 'fixtures', 'vba', 'src', 'classes', 'ACAuditoriaOperaciones.cls'),
+      path.resolve(__dirname, '..', '__tests__', 'fixtures', 'vba', 'src', 'classes', 'ARAuditoria.cls'),
+    ];
+    const sqlEdges = fixtures.flatMap((fixture) => {
+      if (!fs.existsSync(fixture)) return [];
+      const r = extract(fixture, fs.readFileSync(fixture, 'utf8'));
+      return r.edges
+        .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+        .map((e) => ({ edge: e, nodes: r.nodes }));
+    });
+    expect(sqlEdges.length).toBeGreaterThanOrEqual(5);
+    const targetNames = new Set(
+      sqlEdges
+        .map(({ edge, nodes }) => nodes.find((n) => n.id === edge.target)?.name)
+        .filter(Boolean),
+    );
+    expect(targetNames).toContain('TbNCAuditoriaAccionCorrectivas');
+    expect(targetNames).toContain('TbNCAuditoriaAccionesRealizadas');
   });
 });
 
@@ -571,6 +627,17 @@ End Sub`;
     const r = extract('src/modules/X.bas', src);
     const synthFns = r.nodes.filter(
       (n) => n.kind === 'function' && n.name.includes('Application.'),
+    );
+    expect(synthFns).toHaveLength(0);
+  });
+
+  it('DAO recordset Fields access does not emit a synthetic function node', () => {
+    const src = `Public Sub X()
+    rcdDatos.Fields("ID") = 1
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const synthFns = r.nodes.filter(
+      (n) => n.kind === 'function' && n.name === 'rcdDatos.Fields',
     );
     expect(synthFns).toHaveLength(0);
   });

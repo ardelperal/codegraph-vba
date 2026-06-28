@@ -43,5 +43,5 @@ jobs:
       - name: Run vitest
         run: pnpm test
 
-      - name: Run E2E regression (extract-vba-e2e)
-        run: pnpm exec vitest run __tests__/extraction-vba-e2e.test.ts
+      - name: Run E2E regression (extract-vba-realfixtures)
+        run: pnpm exec vitest run __tests__/extraction-vba-realfixtures.test.ts

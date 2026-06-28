@@ -15,19 +15,19 @@ For each `.bas` source the system MUST emit one `module` node plus one `function
 - GIVEN a `.bas` source containing `Public Sub SaveRecord()` ... `End Sub`
 - WHEN the extractor processes the source with filePath `src/modules/modRepo.bas`
 - THEN it emits one `module` node for the file
-- AND one `function` node named `SaveRecord` with `metadata.visibility === 'Public'`
+- AND one `function` node named `SaveRecord` with `node.visibility === 'public'`
 
 #### Scenario: Private Function in .bas
 
 - GIVEN a `.bas` source containing `Private Function CalcTotal() As Long` ... `End Function`
 - WHEN the extractor processes the source
-- THEN it emits one `function` node named `CalcTotal` with `metadata.visibility === 'Private'`
+- THEN it emits one `function` node named `CalcTotal` with `node.visibility === 'private'`
 
 #### Scenario: Property declaration in .bas
 
 - GIVEN a `.bas` source containing `Property Get Name() As String` ... `End Property`
 - WHEN the extractor processes the source
-- THEN it emits one `function` node named `Name` with `metadata.visibility === 'Public'`
+- THEN it emits one `function` node named `Name` with `node.visibility === 'public'`
 
 ### Requirement: Procedure Declarations In Class Modules
 

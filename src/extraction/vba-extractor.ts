@@ -5,8 +5,9 @@
  *  - one `module` node per `.bas` / one `class` node per `.cls` / one `file`
  *    stub for `.frm` / `.dsr` legacy
  *  - one `function` node per `Sub` / `Function` / `Property Get|Let|Set`
- *    declaration, with `metadata.visibility` set to `'Public'`, `'Private'`,
- *    `'Friend'`, `'Static'`, or `'Public'` (default when no keyword).
+ *    declaration, with `node.visibility` set to the canonical lowercase enum
+ *    (`'public'` / `'private'`; `Friend`, `Static`, and missing visibility fold
+ *    to `'public'`).
  *  - `contains` edges from the module/class node to each function node.
  *  - `calls` edges from a procedure to a same-file procedure (`Sub Outer()` →
  *    `Inner()`); qualified cross-module calls carry `provenance: 'heuristic'`
@@ -16,9 +17,10 @@
  *    tagged `synthesizedBy: 'vba-name-resolution'`.
  *  - `references` edges for `WithEvents m_X As Form_Foo` tagged
  *    `synthesizedBy: 'vba-withevents'`.
- *  - `references` edges for SQL table names found inside string literals
- *    passed to `DoCmd.RunSQL`, `CurrentDb.OpenRecordset`, `CurrentDb.Execute`,
- *    or `db.Execute`, tagged `synthesizedBy: 'vba-sql-table'`.
+ *  - `references` edges for SQL table names found inside string literals passed
+ *    directly to SQL wrappers, or assigned to variables before
+ *    `getdb().OpenRecordset(...)` / `getdb().Execute ...`, tagged
+ *    `synthesizedBy: 'vba-sql-table'`.
  *
  * Rejects `.form.txt` / `.report.txt` (REQ-CODE-9 — the form UI extractor
  * owns those). `Option ...` directives are inert — `stripVbaComments()`
@@ -36,6 +38,7 @@ import { generateNodeId } from './tree-sitter-helpers';
 import {
   joinLineContinuations,
   stripVbaComments,
+  extractStringLiterals,
 } from './vba-preprocess';
 
 interface ProcInfo {
@@ -505,6 +508,14 @@ export class VbaExtractor {
     { name: 'db.Execute', re: /\bdb\.Execute\s+"((?:[^"]|"")*)"/g },
   ];
 
+  /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
+  private static readonly SQL_VAR_ASSIGN_RE =
+    /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*(.*)$/iu;
+
+  /** SQL wrapper called with a variable, e.g. `getdb().Execute m_SQL`. */
+  private static readonly SQL_VAR_EXEC_RE =
+    /\b(?:getdb\(\)|CurrentDb|db)\.(?:OpenRecordset|Execute)\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
+
   /** SQL table-name regex scoped to FROM / INTO / UPDATE. */
   private static readonly SQL_TABLE_RE =
     /\b(?:FROM|INTO|UPDATE)\s+(\[?\p{L}[\p{L}\p{N}_]*\]?)/giu;
@@ -584,6 +595,8 @@ export class VbaExtractor {
     // Late-binding factories (return IDispatch — not user code)
     'CreateObject',
     'GetObject',
+    // DAO/ADO recordset field collection access (e.g. rcdDatos.Fields("ID"))
+    'Fields',
   ]);
 
   private sweepCallsAndSql(src: string): void {
@@ -603,6 +616,7 @@ export class VbaExtractor {
     // as dead code (its `procStack` was never read after the loop). One
     // pass suffices.
     const stack: ProcInfo[] = [];
+    const sqlVariables = new Map<string, string>();
     // C2 fix: track each procedure's `endLine` (the line containing the
     // matching `End Sub`/`End Function`/`End Property`) keyed by its
     // `startLine`. After the loop, we update every function node's
@@ -634,7 +648,8 @@ export class VbaExtractor {
       // SQL wrappers — only inside a procedure (don't pollute module scope
       // with a stray string literal).
       if (stack.length > 0) {
-        this.scanSqlInLine(line, lineNum, sqlTargetsThisFile);
+        this.trackSqlVariableAssignment(lines, i, sqlVariables);
+        this.scanSqlInLine(line, lineNum, sqlTargetsThisFile, sqlVariables);
       }
 
       // H1 fix: detect statement-form Sub calls (no parens, no `Call`
@@ -851,30 +866,76 @@ export class VbaExtractor {
     line: string,
     lineNum: number,
     dedupe: Set<string>,
+    sqlVariables: Map<string, string>,
   ): void {
     for (const { re } of VbaExtractor.SQL_WRAPPERS) {
       // Each wrapper regex is stateful (has /g); reset before use.
       const localRe = new RegExp(re.source, re.flags);
       let m: RegExpExecArray | null;
       while ((m = localRe.exec(line)) !== null) {
-        const sqlString = m[1] ?? '';
-        // Scan the captured SQL string for FROM/INTO/UPDATE <table>.
-        // Preserve the source regex's `/u` flag (Unicode property classes)
-        // — hardcoding `'gi'` here would silently break non-ASCII identifiers.
-        const tableRe = new RegExp(
-          VbaExtractor.SQL_TABLE_RE.source,
-          VbaExtractor.SQL_TABLE_RE.flags,
-        );
-        let tm: RegExpExecArray | null;
-        while ((tm = tableRe.exec(sqlString)) !== null) {
-          let table = (tm[1] ?? '').replace(/[\[\]]/g, '');
-          if (!table) continue;
-          const key = `${lineNum}:${table}`;
-          if (dedupe.has(key)) continue;
-          dedupe.add(key);
-          this.emitReference(table, lineNum, 0, 'vba-sql-table');
-        }
+        this.emitSqlTableReferences(m[1] ?? '', lineNum, dedupe);
       }
+    }
+
+    const localRe = new RegExp(
+      VbaExtractor.SQL_VAR_EXEC_RE.source,
+      VbaExtractor.SQL_VAR_EXEC_RE.flags,
+    );
+    let vm: RegExpExecArray | null;
+    while ((vm = localRe.exec(line)) !== null) {
+      const varName = (vm[1] ?? '').toLowerCase();
+      const sqlString = sqlVariables.get(varName);
+      if (!sqlString) continue;
+      this.emitSqlTableReferences(sqlString, lineNum, dedupe);
+    }
+  }
+
+  private trackSqlVariableAssignment(
+    lines: string[],
+    lineIndex: number,
+    sqlVariables: Map<string, string>,
+  ): void {
+    const line = lines[lineIndex] ?? '';
+    const m = VbaExtractor.SQL_VAR_ASSIGN_RE.exec(line);
+    if (!m) return;
+    const varName = (m[1] ?? '').toLowerCase();
+    const sqlText = this.collectStringLiteralText(lines, lineIndex);
+    if (!sqlText) return;
+    sqlVariables.set(varName, sqlText);
+  }
+
+  private collectStringLiteralText(lines: string[], startIndex: number): string {
+    const fragments: string[] = [];
+    for (let i = startIndex; i < lines.length; i++) {
+      const line = lines[i] ?? '';
+      for (const lit of extractStringLiterals(line)) {
+        fragments.push(lit.text);
+      }
+      if (!line.trimEnd().endsWith('&')) break;
+    }
+    return fragments.join(' ');
+  }
+
+  private emitSqlTableReferences(
+    sqlString: string,
+    lineNum: number,
+    dedupe: Set<string>,
+  ): void {
+    // Scan the SQL string for FROM/INTO/UPDATE <table>.
+    // Preserve the source regex's `/u` flag (Unicode property classes)
+    // — hardcoding `'gi'` here would silently break non-ASCII identifiers.
+    const tableRe = new RegExp(
+      VbaExtractor.SQL_TABLE_RE.source,
+      VbaExtractor.SQL_TABLE_RE.flags,
+    );
+    let tm: RegExpExecArray | null;
+    while ((tm = tableRe.exec(sqlString)) !== null) {
+      let table = (tm[1] ?? '').replace(/[\[\]]/g, '');
+      if (!table) continue;
+      const key = `${lineNum}:${table}`;
+      if (dedupe.has(key)) continue;
+      dedupe.add(key);
+      this.emitReference(table, lineNum, 0, 'vba-sql-table');
     }
   }
 

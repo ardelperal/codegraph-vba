@@ -8,26 +8,26 @@ Indexes Dysflow-exported `.bas`/`.cls` VBA source into codegraph. Emits `module`
 
 ### Requirement: Procedure Declarations In Standard Modules
 
-For each `.bas` source the system MUST emit one `module` node plus one `function` node per `Sub`/`Function`/`Property` declaration. The function node MUST carry `metadata.visibility` set to the declared keyword (`'Public'`, `'Private'`, `'Friend'`, `'Static'`) or `'Public'` when no visibility keyword is present.
+For each `.bas` source the system MUST emit one `module` node plus one `function` node per `Sub`/`Function`/`Property` declaration. The function node MUST carry `node.visibility` set to `'public'` (for `Public`, `Friend`, `Static`, or no visibility keyword — VBA's `Static` is a storage specifier, not a visibility modifier; `Friend` is not in the canonical `Node.visibility` enum and folds to `'public'`) or `'private'` (for `Private`).
 
 #### Scenario: Public Sub in .bas
 
 - GIVEN a `.bas` source containing `Public Sub SaveRecord()` ... `End Sub`
 - WHEN the extractor processes the source with filePath `src/modules/modRepo.bas`
 - THEN it emits one `module` node for the file
-- AND one `function` node named `SaveRecord` with `metadata.visibility === 'Public'`
+- AND one `function` node named `SaveRecord` with `node.visibility === 'public'`
 
 #### Scenario: Private Function in .bas
 
 - GIVEN a `.bas` source containing `Private Function CalcTotal() As Long` ... `End Function`
 - WHEN the extractor processes the source
-- THEN it emits one `function` node named `CalcTotal` with `metadata.visibility === 'Private'`
+- THEN it emits one `function` node named `CalcTotal` with `node.visibility === 'private'`
 
 #### Scenario: Property declaration in .bas
 
 - GIVEN a `.bas` source containing `Property Get Name() As String` ... `End Property`
 - WHEN the extractor processes the source
-- THEN it emits one `function` node named `Name` with `metadata.visibility === 'Public'`
+- THEN it emits one `function` node named `Name` with `node.visibility === 'public'`
 
 ### Requirement: Procedure Declarations In Class Modules
 
@@ -37,7 +37,7 @@ For each `.cls` source the system MUST emit one `class` node plus one `function`
 
 - GIVEN a `.cls` source containing `Public Function Calc() As Long` ... `End Function`
 - WHEN the extractor processes the source with filePath `src/classes/CalcEngine.cls`
-- THEN it emits one `class` node and one `function` node named `Calc` with `metadata.visibility === 'Public'`
+- THEN it emits one `class` node and one `function` node named `Calc` with `node.visibility === 'public'`
 - AND one `contains` edge from the class node to the `Calc` function node
 
 ### Requirement: Class Initializer Marker

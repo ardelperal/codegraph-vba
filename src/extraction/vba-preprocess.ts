@@ -1,7 +1,7 @@
 /**
  * VBA pre-processing pipeline.
  *
- * Three pure helpers run in order at the top of `VbaExtractor.extract()`:
+ * Pure helpers used by `VbaExtractor` before and during regex extraction:
  *
  *   1. joinLineContinuations(src)
  *      VBA uses a trailing ` _` (space + underscore) at the end of a line to
@@ -17,10 +17,11 @@
  *      character-by-character so a `'` inside `"..."` is preserved.
  *
  *   3. extractStringLiterals(src)
- *      Walks the source once and returns every `"..."` span with its 1-based
- *      line and 0-based column. VBA doubles `"` inside literals (`""`) as the
- *      escape for a single `"` — the escape is consumed, the literal is
- *      returned without the doubling.
+ *      Used by SQL-variable tracking to read literal fragments from assignments
+ *      such as `m_SQL = "SELECT ..." & ...`. It returns every `"..."` span
+ *      with its 1-based line and 0-based column. VBA doubles `"` inside literals
+ *      (`""`) as the escape for a single `"` — the escape is consumed, the
+ *      literal is returned without the doubling.
  *
  * Each helper is < 50 LOC, pure, and tested in isolation in
  * `__tests__/extraction-vba-preprocess.test.ts`.

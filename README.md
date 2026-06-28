@@ -244,9 +244,10 @@ The reliable, universal payoff is **surgical context and speed**: CodeGraph coll
 | **Full-Text Search** | Find code by name instantly across your entire codebase, powered by FTS5 |
 | **Impact Analysis** | Trace callers, callees, and the full impact radius of any symbol before making changes |
 | **Always Fresh** | File watcher uses native OS events (FSEvents/inotify/ReadDirectoryChangesW) with debounced auto-sync — the graph stays current as you code, zero config |
-| **20+ Languages** | TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Objective-C, Swift, Kotlin, Scala, Dart, Lua, Luau, R, Svelte, Vue, Astro, Liquid, Pascal/Delphi |
+| **20+ Languages** | TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Objective-C, Swift, Kotlin, Scala, Dart, Lua, Luau, R, Svelte, Vue, Astro, Liquid, Pascal/Delphi, **VBA / Access** |
 | **Framework-aware Routes** | Recognizes web-framework routing files and links URL patterns to their handlers across 17 frameworks |
 | **Mixed iOS / React Native / Expo** | Closes cross-language flows that static parsing misses: Swift ↔ ObjC bridging, React Native legacy bridge + TurboModules + Fabric view components, native → JS event emitters, Expo Modules |
+| **VBA / Access + Dysflow** | Indexes the Dysflow-exported source tree (`.bas`/`.cls` + `.form.txt`/`.report.txt`) of Microsoft Access projects so agents can navigate VBA code the same way they navigate TypeScript or Python |
 | **100% Local** | No data leaves your machine. No API keys. No external services. SQLite database only |
 
 <details>
@@ -330,6 +331,30 @@ Real iOS and React Native codebases live across multiple languages — a Swift c
 | Fabric / Paper views | [react-native-segmented-control](https://github.com/react-native-segmented-control/segmented-control) | [react-native-screens](https://github.com/software-mansion/react-native-screens) | [react-native-skia](https://github.com/Shopify/react-native-skia) |
 
 Each bridge emits edges tagged `provenance:'heuristic'` with `metadata.synthesizedBy:` set to a stable channel name (e.g. `swift-objc-bridge`, `rn-event-channel`, `fabric-native-impl`, `expo-module-extract`), so the agent can tell at a glance how a hop got into the graph.
+
+---
+
+## VBA / Access + Dysflow integration
+
+Microsoft Access projects managed via Dysflow live as `.accdb` binaries on one side and a Dysflow-exported source tree on the other — `.bas` (standard modules), `.cls` (class modules + form code-behind), `.form.txt` and `.report.txt` (Dysflow's canonical SaveAsText format for form/report UI). CodeGraph indexes that source tree so agents can navigate Access code the same way they navigate TypeScript or Python projects — and so the existing TypeScript/Java/Python code surrounding an Access codebase (when applicable) stays queryable in the same graph.
+
+The two are **sibling tools**: Dysflow owns the Access binary round-trip (sync, compile, schema-first TDD, fixtures, sandbox), CodeGraph owns the knowledge graph. They meet at the source tree.
+
+| Pattern | `.bas` / `.cls` side | `.form.txt` / `.report.txt` side | How |
+|---|---|---|---|
+| **Form code ↔ UI binding** | `.cls` class node (canonical form code) | `.form.txt` module node + `property` nodes per control | `UnresolvedReference` with `synthesizedBy: 'vba-form-binding'`; resolver wires form module → sibling `.cls` class at index time |
+| **`Implements IFoo`** | `.cls` declares `Implements IFoo` | — | Emits an `implements` edge from the class to `IFoo` |
+| **`Dim x As Foo.Bar`** | `.bas`/`.cls` qualified type reference | — | `references` edge to `Foo` with `synthesizedBy: 'vba-name-resolution'`; silent when unresolvable |
+| **`WithEvents m_X As Form_Foo`** | `.cls` listener declaration | — | `references` edge to `Form_Foo` with `synthesizedBy: 'vba-withevents'` — closes the event-driven form flow |
+| **`New Clase(...)`** | `.bas`/`.cls` instantiation | — | `references` edge with `synthesizedBy: 'vba-new-binding'` |
+| **SQL in VBA strings** | `.bas`/`.cls` SQL inside `DoCmd.RunSQL` / `CurrentDb.OpenRecordset` / `CurrentDb.Execute` / `db.Execute` | — | Table names extracted from `FROM`/`INTO`/`UPDATE <table>` → `references` edges with `synthesizedBy: 'vba-sql-table'` |
+
+**Hard invariants** enforced by the extractor and verified by tests:
+
+- **`.cls` is the canonical source for form code.** `.form.txt` emits **zero** `function` / `sub` / `class` nodes — only the form-level `module` node and `property` nodes per control. Dysflow overwrites `.form.txt`'s embedded code on the next import, so emitting code from there would be both wrong and ephemeral.
+- **A `.bas` with only `Public Const` declarations** (no Subs, Functions, Properties, Implements, or Dim) emits the `file` node only — no `module` / `class` per REQ-CODE-10.
+
+**Scope:** Dysflow-managed projects only (Dysflow's `.form.txt` / `.report.txt` SaveAsText format). Legacy `.frm` / `.dsr` Access binary formats are not in scope.
 
 ---
 

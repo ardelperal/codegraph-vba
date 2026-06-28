@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- VBA / Access language support: codegraph now parses `.bas`/`.cls` files (emitting `function`/`class`/`module` nodes with `calls`, `implements`, `references`, and `contains` edges) and Dysflow-canonical `.form.txt`/`.report.txt` form layout files (emitting `module` and `property` nodes), so agents can explore VBA code structure in Access projects the same way they explore TypeScript or Python today.
+
 
 ## [1.1.2] - 2026-06-28
 

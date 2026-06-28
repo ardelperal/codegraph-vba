@@ -1,0 +1,325 @@
+/**
+ * VbaExtractor — tests for the `.bas` / `.cls` / `.frm` / `.dsr` regex
+ * extractor. Each `it()` corresponds to one or two spec scenarios from
+ * `openspec/changes/vba-extractor/specs/vba-code-extraction/spec.md`.
+ *
+ * Coverage map (scenario id → test name):
+ *   REQ-CODE-1  Public Sub in .bas                 → "Public Sub emits function with visibility"
+ *   REQ-CODE-1  Private Function in .bas          → "Private Function emits function with visibility"
+ *   REQ-CODE-1  Property declaration in .bas      → "Property Get emits function node"
+ *   REQ-CODE-2  Method in .cls                     → "Public Function in .cls emits class+function+contains"
+ *   REQ-CODE-3  Public Sub New sets marker        → "Public Sub New sets class initializer marker"
+ *   REQ-CODE-3  Private Sub New sets marker       → "Private Sub New sets class initializer marker"
+ *   REQ-CODE-3  Missing Sub New leaves unset      → "missing Sub New leaves hasClassInitializer unset"
+ *   REQ-CODE-4  Same-file call emits plain calls  → "same-file call emits plain calls edge"
+ *   REQ-CODE-4  Cross-module qualified call       → "cross-module qualified call carries synthesizedBy"
+ *   REQ-CODE-4  Unresolvable call is silent        → "unresolvable call emits no edge and does not throw"
+ *   REQ-CODE-5  Implements IFoo emits edge        → "Implements IFoo emits implements edge"
+ *   REQ-CODE-6  Qualified Dim references outer    → "qualified Dim As references outer type"
+ *   REQ-CODE-6  Unqualified Dim does not emit     → "unqualified Dim does not emit edge"
+ *   REQ-CODE-7  WithEvents emits synthesized ref  → "WithEvents emits synthesized reference"
+ *   REQ-CODE-8  FROM clause resolves table        → "DoCmd.RunSQL with FROM clause resolves table"
+ *   REQ-CODE-8  UPDATE statement resolves table   → "CurrentDb.Execute UPDATE resolves table"
+ *   REQ-CODE-8  INTO clause resolves table        → "DoCmd.RunSQL INSERT INTO resolves table"
+ *   REQ-CODE-8  SQL inside VBA comment not match  → "SQL inside a VBA comment does not match"
+ *   REQ-CODE-9  .form.txt input rejected          → "VbaExtractor on a .form.txt file emits zero code nodes"
+ *   REQ-CODE-10 Option directives are inert       → "Option Explicit alone emits nothing"
+ *   REQ-CODE-11 VB_Name attribute is used         → "Attribute VB_Name sets module name"
+ *   REQ-CODE-11 Filename is used when VB_Name abs → "missing VB_Name falls back to file basename"
+ */
+import { describe, it, expect } from 'vitest';
+import { VbaExtractor } from '../src/extraction/vba-extractor';
+
+function extract(filePath: string, source: string) {
+  return new VbaExtractor(filePath, source).extract();
+}
+
+describe('VbaExtractor — procedure declarations in .bas (REQ-CODE-1)', () => {
+  it('Public Sub emits function with visibility', () => {
+    const src = `Public Sub SaveRecord()
+End Sub`;
+    const r = extract('src/modules/modRepo.bas', src);
+    const moduleNode = r.nodes.find((n) => n.kind === 'module');
+    expect(moduleNode).toBeDefined();
+    expect(moduleNode?.name).toBe('modRepo');
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'SaveRecord');
+    expect(func).toBeDefined();
+    expect(func?.visibility).toBe('public');
+    expect(func?.language).toBe('vba');
+  });
+
+  it('Private Function emits function with visibility', () => {
+    const src = `Private Function CalcTotal() As Long
+  CalcTotal = 1
+End Function`;
+    const r = extract('src/modules/modCalc.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'CalcTotal');
+    expect(func).toBeDefined();
+    expect(func?.visibility).toBe('private');
+  });
+
+  it('Property Get emits function node', () => {
+    const src = `Property Get Name() As String
+  Name = "x"
+End Property`;
+    const r = extract('src/modules/modName.bas', src);
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Name');
+    expect(func).toBeDefined();
+    // No visibility keyword → 'public' default.
+    expect(func?.visibility).toBe('public');
+  });
+});
+
+describe('VbaExtractor — methods in .cls (REQ-CODE-2)', () => {
+  it('Public Function in .cls emits class+function+contains edge', () => {
+    const src = `Public Function Calc() As Long
+  Calc = 1
+End Function`;
+    const r = extract('src/classes/CalcEngine.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const func = r.nodes.find((n) => n.kind === 'function' && n.name === 'Calc');
+    expect(cls).toBeDefined();
+    expect(cls?.name).toBe('CalcEngine');
+    expect(func).toBeDefined();
+    expect(func?.visibility).toBe('public');
+    // contains edge from class to function
+    const edge = r.edges.find((e) => e.kind === 'contains' && e.source === cls?.id && e.target === func?.id);
+    expect(edge).toBeDefined();
+  });
+});
+
+describe('VbaExtractor — Sub New class initializer marker (REQ-CODE-3)', () => {
+  it('Public Sub New sets class initializer marker', () => {
+    const src = `Public Sub New()
+End Sub`;
+    const r = extract('src/classes/Customer.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    expect(cls).toBeDefined();
+    const md = cls?.metadata as Record<string, unknown> | undefined;
+    expect(md?.hasClassInitializer).toBe(true);
+    expect(md?.initializerName).toBe('New');
+  });
+
+  it('Private Sub New sets class initializer marker', () => {
+    const src = `Private Sub New()
+End Sub`;
+    const r = extract('src/classes/Internal.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const md = cls?.metadata as Record<string, unknown> | undefined;
+    expect(md?.hasClassInitializer).toBe(true);
+  });
+
+  it('missing Sub New leaves hasClassInitializer unset', () => {
+    const src = `Public Function DoWork() As Long
+  DoWork = 1
+End Function`;
+    const r = extract('src/classes/Worker.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const md = cls?.metadata as Record<string, unknown> | undefined;
+    expect(md?.hasClassInitializer).toBeFalsy();
+    expect(md?.initializerName).toBeFalsy();
+  });
+});
+
+describe('VbaExtractor — call sites (REQ-CODE-4)', () => {
+  it('same-file call emits plain calls edge', () => {
+    const src = `Sub Outer()
+  Call Inner()
+End Sub
+
+Sub Inner()
+End Sub`;
+    const r = extract('src/modules/SameFile.bas', src);
+    const outer = r.nodes.find((n) => n.kind === 'function' && n.name === 'Outer');
+    const inner = r.nodes.find((n) => n.kind === 'function' && n.name === 'Inner');
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.source === outer?.id && e.target === inner?.id,
+    );
+    expect(edge).toBeDefined();
+    expect(edge?.provenance).toBeUndefined();
+    expect(edge?.metadata).toBeUndefined();
+  });
+
+  it('cross-module qualified call carries synthesizedBy', () => {
+    const src = `Sub RunIt()
+  Call modHelpers.CalcTotal()
+End Sub`;
+    const r = extract('src/modules/Caller.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(edge).toBeDefined();
+    expect(edge?.provenance).toBe('heuristic');
+    // Target name should include the qualified receiver.
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toContain('modHelpers');
+  });
+
+  it('unresolvable call emits no edge and does not throw', () => {
+    // A bare qualified reference (no parens) is not a call expression;
+    // the CALL_RE requires `\s*\(` so this source emits zero edges.
+    const src = `Sub RunIt()
+  UnknownExternal.Whatever
+End Sub`;
+    const r = extract('src/modules/Solo.bas', src);
+    // No edge should target anything starting with "UnknownExternal".
+    const edgesToUnknown = r.edges.filter((e) => {
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name?.startsWith('UnknownExternal');
+    });
+    expect(edgesToUnknown).toHaveLength(0);
+    expect(r.errors).toHaveLength(0);
+  });
+});
+
+describe('VbaExtractor — Implements (REQ-CODE-5)', () => {
+  it('Implements IFoo emits implements edge', () => {
+    const src = `Implements IFoo
+
+Public Sub IFoo_Do() Implements IFoo: End Sub`;
+    const r = extract('src/classes/Bar.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const edge = r.edges.find(
+      (e) => e.kind === 'implements' && e.source === cls?.id,
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('IFoo');
+  });
+});
+
+describe('VbaExtractor — qualified Dim (REQ-CODE-6)', () => {
+  it('qualified Dim As references outer type', () => {
+    const src = `Dim m_Calc As CalcEngine.Helper`;
+    const r = extract('src/modules/UseCalc.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('CalcEngine');
+  });
+
+  it('unqualified Dim does not emit edge', () => {
+    const src = `Dim m_Count As Long`;
+    const r = extract('src/modules/Counter.bas', src);
+    const refEdges = r.edges.filter((e) => e.kind === 'references');
+    expect(refEdges).toHaveLength(0);
+  });
+});
+
+describe('VbaExtractor — WithEvents (REQ-CODE-7)', () => {
+  it('WithEvents emits synthesized reference', () => {
+    const src = `WithEvents m_Form As Form_Main`;
+    const r = extract('src/classes/FormListener.cls', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-withevents',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('Form_Main');
+  });
+});
+
+describe('VbaExtractor — SQL in strings (REQ-CODE-8)', () => {
+  it('DoCmd.RunSQL with FROM clause resolves table', () => {
+    const src = `Sub Q()
+  DoCmd.RunSQL "SELECT * FROM tblCustomers"
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblCustomers');
+  });
+
+  it('CurrentDb.Execute UPDATE resolves table', () => {
+    const src = `Sub U()
+  CurrentDb.Execute "UPDATE tblOrders SET Status = 1"
+End Sub`;
+    const r = extract('src/modules/U.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblOrders');
+  });
+
+  it('DoCmd.RunSQL INSERT INTO resolves table', () => {
+    const src = `Sub A()
+  DoCmd.RunSQL "INSERT INTO tblAudit (Id) VALUES (1)"
+End Sub`;
+    const r = extract('src/modules/A.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblAudit');
+  });
+
+  it('SQL inside a VBA comment does not match', () => {
+    const src = `' DoCmd.RunSQL "SELECT * FROM tblFake"
+Public Sub DoWork()
+End Sub`;
+    const r = extract('src/modules/Commented.bas', src);
+    const target = r.nodes.find((n) => n.kind === 'file' || n.name === 'tblFake');
+    // No reference target should be named "tblFake".
+    const fakeNodes = r.nodes.filter((n) => n.name === 'tblFake');
+    expect(fakeNodes).toHaveLength(0);
+    const fakeEdges = r.edges.filter((e) => {
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'tblFake';
+    });
+    expect(fakeEdges).toHaveLength(0);
+  });
+});
+
+describe('VbaExtractor — .form.txt rejection (REQ-CODE-9)', () => {
+  it('emits zero function/class/module nodes when given a .form.txt input', () => {
+    const src = `Sub Form_Load()
+End Sub`;
+    const r = extract('src/forms/Form_X.form.txt', src);
+    const codeNodes = r.nodes.filter(
+      (n) => n.kind === 'function' || n.kind === 'class' || n.kind === 'module',
+    );
+    expect(codeNodes).toHaveLength(0);
+  });
+});
+
+describe('VbaExtractor — Option directives are inert (REQ-CODE-10)', () => {
+  it('Option Explicit alone emits nothing beyond the file node', () => {
+    const src = `Option Explicit
+Option Compare Database`;
+    const r = extract('src/modules/Empty.bas', src);
+    // No module/class/function nodes emitted for an option-directive-only file.
+    const symbols = r.nodes.filter((n) =>
+      n.kind === 'function' || n.kind === 'class' || n.kind === 'module',
+    );
+    expect(symbols).toHaveLength(0);
+  });
+});
+
+describe('VbaExtractor — VB_Name attribute (REQ-CODE-11)', () => {
+  it('Attribute VB_Name sets module name', () => {
+    const src = `Attribute VB_Name = "modHelpers"
+Public Sub DoThing()
+End Sub`;
+    const r = extract('src/modules/something.bas', src);
+    const moduleNode = r.nodes.find((n) => n.kind === 'module');
+    expect(moduleNode).toBeDefined();
+    expect(moduleNode?.name).toBe('modHelpers');
+  });
+
+  it('missing VB_Name falls back to file basename', () => {
+    const src = `Public Sub DoThing()
+End Sub`;
+    const r = extract('src/modules/modHelpers.bas', src);
+    const moduleNode = r.nodes.find((n) => n.kind === 'module');
+    expect(moduleNode).toBeDefined();
+    expect(moduleNode?.name).toBe('modHelpers');
+  });
+});

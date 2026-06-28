@@ -10,7 +10,7 @@ import * as path from 'path';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
 
-export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'astro' | 'liquid' | 'razor' | 'yaml' | 'twig' | 'xml' | 'properties' | 'unknown'>;
+export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'astro' | 'liquid' | 'razor' | 'yaml' | 'twig' | 'xml' | 'properties' | 'vba' | 'unknown'>;
 
 /**
  * WASM filename map — maps each language to its .wasm grammar file
@@ -108,6 +108,16 @@ export const EXTENSION_MAP: Record<string, Language> = {
   '.luau': 'luau',
   '.m': 'objc',
   '.mm': 'objc',
+  // VBA / Microsoft Access — `VbaExtractor` (`.bas`/`.cls`/legacy `.frm`/`.dsr`)
+  // emits module/class/function nodes + heuristic edges with `synthesizedBy`.
+  // `.form.txt` and `.report.txt` are two-segment extensions and need the
+  // `detectVbaFormFile()` pre-check in `detectLanguage`/`isSourceFile` —
+  // `path.extname()` collapses them to `.txt`, which would mis-map every
+  // text file as VBA. Don't add `.txt` to this map.
+  '.bas': 'vba',
+  '.cls': 'vba',
+  '.frm': 'vba',
+  '.dsr': 'vba',
   // XML: file-level tracking; the MyBatis extractor matches `<mapper namespace="...">`
   // shape and emits SQL-statement nodes (other XML returns empty).
   '.xml': 'xml',
@@ -129,6 +139,9 @@ export const EXTENSION_MAP: Record<string, Language> = {
 export function isSourceFile(filePath: string, overrides?: Record<string, Language>): boolean {
   if (isPlayRoutesFile(filePath)) return true; // Play `conf/routes` is extensionless
   if (isShopifyLiquidJson(filePath)) return true; // Shopify OS 2.0 JSON templates / section groups
+  // VBA form/report UI files are two-segment extensions; the extname lookup
+  // would otherwise collapse them to `.txt`.
+  if (detectVbaFormFile(filePath)) return true;
   const dot = filePath.lastIndexOf('.');
   if (dot < 0) return false;
   const ext = filePath.slice(dot).toLowerCase();
@@ -157,6 +170,29 @@ export function isPlayRoutesFile(filePath: string): boolean {
     filePath.endsWith('/conf/routes') ||
     filePath.endsWith('.routes')
   );
+}
+
+/**
+ * Dysflow exports Access/VBA form/report UI as `.form.txt` and `.report.txt`
+ * (two-segment extensions). `path.extname()` collapses them to `.txt`, which
+ * would falsely classify every text file as VBA. This helper recognizes the
+ * two-segment shape by checking the basename's last 9 or 11 characters.
+ *
+ * Used as a pre-check BEFORE `path.extname()` in both `detectLanguage()` and
+ * `isSourceFile()`. Returns true for `.form.txt` / `.report.txt` (any depth,
+ * forward or backslash separators); false for everything else.
+ *
+ * Trailing whitespace, case differences, and bare `.form`/`.report` (no .txt)
+ * are all treated as non-VBA — Dysflow always writes the `.txt` suffix.
+ */
+export function detectVbaFormFile(filePath: string): boolean {
+  if (!filePath) return false;
+  // Normalize path separators and grab the basename. Windows backslashes
+  // must be honored.
+  const basename = filePath.split(/[\\/]/).pop() ?? '';
+  if (!basename) return false;
+  const lower = basename.toLowerCase();
+  return lower.endsWith('.form.txt') || lower.endsWith('.report.txt');
 }
 
 /**
@@ -281,6 +317,9 @@ export function detectLanguage(filePath: string, source?: string, overrides?: Re
   // Play `conf/routes` has no grammar — route through the no-symbol path; the
   // Play framework resolver extracts route nodes from it.
   if (isPlayRoutesFile(filePath)) return 'yaml';
+  // VBA form/report UI files are two-segment extensions; the extname lookup
+  // would otherwise collapse them to `.txt` and route them to `unknown`.
+  if (detectVbaFormFile(filePath)) return 'vba';
   const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
   // Shopify OS 2.0 JSON templates / section groups → the Liquid extractor (it
   // links each section `"type"` to its `sections/<type>.liquid`).
@@ -327,6 +366,7 @@ export function isLanguageSupported(language: Language): boolean {
   if (language === 'twig') return true; // file-level tracking only
   if (language === 'xml') return true; // MyBatis mapper extractor
   if (language === 'properties') return true; // Spring config keys
+  if (language === 'vba') return true; // VbaExtractor + VbaFormExtractor (no WASM grammar needed)
   if (language === 'unknown') return false;
   return language in WASM_GRAMMAR_FILES;
 }
@@ -338,6 +378,7 @@ export function isGrammarLoaded(language: Language): boolean {
   if (language === 'svelte' || language === 'vue' || language === 'astro' || language === 'liquid' || language === 'razor') return true;
   if (language === 'yaml' || language === 'twig') return true; // no WASM grammar needed
   if (language === 'xml' || language === 'properties') return true; // no WASM grammar needed
+  if (language === 'vba') return true; // no WASM grammar needed — regex extractors only
   return languageCache.has(language);
 }
 
@@ -358,7 +399,7 @@ export function isFileLevelOnlyLanguage(language: Language): boolean {
  * Get all supported languages (those with grammar definitions).
  */
 export function getSupportedLanguages(): Language[] {
-  return [...(Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[]), 'svelte', 'vue', 'astro', 'liquid'];
+  return [...(Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[]), 'svelte', 'vue', 'astro', 'liquid', 'vba'];
 }
 
 /**
@@ -436,6 +477,7 @@ export function getLanguageDisplayName(language: Language): string {
     twig: 'Twig',
     xml: 'XML',
     properties: 'Java properties',
+    vba: 'VBA / Access',
     unknown: 'Unknown',
   };
   return names[language] || language;

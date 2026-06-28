@@ -91,6 +91,7 @@ export const LANGUAGES = [
   'luau',
   'objc',
   'r',
+  'vba',
   'yaml',
   'twig',
   'xml',
@@ -176,6 +177,15 @@ export interface Node {
 
   /** When the node was last updated */
   updatedAt: number;
+
+  /**
+   * Optional metadata bag for language-/extractor-specific annotations.
+   * Used by VBA to carry `hasClassInitializer` / `initializerName` on class
+   * nodes and `controlType` on form property nodes; reserved by other
+   * extractors for similar per-language extras. Mirrors the
+   * `Edge.metadata` shape (`Record<string, unknown>`).
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -313,6 +323,16 @@ export interface UnresolvedReference {
 
   /** Possible qualified names it might resolve to */
   candidates?: string[];
+
+  /**
+   * Optional metadata bag for language-/extractor-specific annotations on
+   * unresolved references. Used by VBA to carry
+   * `synthesizedBy: 'vba-form-binding'` on the form → sibling-`.cls`
+   * reference so downstream resolvers can render the provenance inline.
+   * Mirrors `Edge.metadata` and `Node.metadata` shapes
+   * (`Record<string, unknown>`).
+   */
+  metadata?: Record<string, unknown>;
 }
 
 // =============================================================================

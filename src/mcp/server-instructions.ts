@@ -67,6 +67,26 @@ calls; a grep/read exploration is dozens.
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
+
+## Supported Languages
+
+The indexer recognizes a fixed set of languages; if you ask about symbols in a
+file with an unsupported extension, codegraph will report the project isn't
+indexed for that file and you should fall back to Read/Grep. The fork-specific
+addition beyond upstream codegraph is **VBA / Access** (Dysflow export
+format):
+
+- **VBA / Access** - Dysflow exports Access/VBA source as \`.bas\`/\`.cls\`/
+  \`.form.txt\`/\`.report.txt\`. Codegraph extracts \`.bas\`/\`.cls\` as \`module\`/
+  \`class\`/\`function\` nodes with \`calls\`/\`implements\`/\`references\` edges
+  (procedural-level; regex-based, not full AST). Cross-module calls, qualified
+  \`Dim As\`, \`WithEvents\`, and SQL table references inside string literals
+  emit synthesized edges tagged \`metadata.synthesizedBy\` (\`vba-name-resolution\`,
+  \`vba-withevents\`, \`vba-sql-table\`). \`.form.txt\` and \`.report.txt\` are
+  extracted as a \`module\` plus one \`property\` per Access control - **no**
+  \`function\`/\`sub\`/\`class\` nodes come from form files; the canonical code
+  lives in the sibling \`.cls\`, parsed by the same extractor on that file.
+  Pass \`projectPath\` to a codegraph index that includes VBA files.
 `;
 
 /**

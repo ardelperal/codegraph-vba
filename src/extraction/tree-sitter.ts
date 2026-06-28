@@ -15,7 +15,7 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, detectVbaFormFile } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import { FN_REF_SPECS, captureFnRefCandidates, type FnRefSpec, type FnRefCandidate } from './function-ref';
 import { isGeneratedFile } from './generated-detection';
@@ -28,6 +28,8 @@ import { AstroExtractor } from './astro-extractor';
 import { DfmExtractor } from './dfm-extractor';
 import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
+import { VbaExtractor } from './vba-extractor';
+import { VbaFormExtractor } from './vba-form-extractor';
 import {
   getAllFrameworkResolvers,
   getApplicableFrameworks,
@@ -5685,6 +5687,20 @@ export function extractFromSource(
   ) {
     // Use custom extractor for DFM/FMX form files
     const extractor = new DfmExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (detectedLanguage === 'vba' && detectVbaFormFile(filePath)) {
+    // VBA form/report UI — Dysflow SaveAsText format. Two-segment
+    // extensions (`.form.txt`/`.report.txt`) collapse to `.txt` under
+    // `path.extname()`, so the dispatch uses `detectVbaFormFile()` rather
+    // than checking `fileExtension`. Zero code nodes; `property` nodes
+    // per control + one `references` edge to sibling `.cls`. See
+    // `vba-form-ui-extraction` spec (REQ-FORM-1..4).
+    const extractor = new VbaFormExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (detectedLanguage === 'vba') {
+    // VBA standard/class/legacy modules — `.bas`, `.cls`, `.frm`, `.dsr`.
+    // See `vba-code-extraction` spec (REQ-CODE-1..11).
+    const extractor = new VbaExtractor(filePath, source);
     result = extractor.extract();
   } else {
     const extractor = new TreeSitterExtractor(filePath, source, detectedLanguage);

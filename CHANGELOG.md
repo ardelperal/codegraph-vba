@@ -11,7 +11,13 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
-- VBA / Access language support: codegraph now parses `.bas`/`.cls` files (emitting `function`/`class`/`module` nodes with `calls`, `implements`, `references`, and `contains` edges) and Dysflow-canonical `.form.txt`/`.report.txt` form layout files (emitting `module` and `property` nodes), so agents can explore VBA code structure in Access projects the same way they explore TypeScript or Python today.
+- Access forms are now first-class in the graph. Every control declared in a `.form.txt` — a `CommandButton`, `Label`, `TextBox`, `OptionGroup`, or any other control type — is now a queryable symbol with the real `Name = "..."` you wrote. `codegraph query` finds every place a control is referenced (including `Me.lblTitulo.Caption = "..."` style accesses in `.cls` code), `codegraph callers` walks back from any click handler to the button it reacts to, and renaming a control or refactoring its handler is now safe to do against the graph. Form layout (`.form.txt`) and form code (`.cls`) are separate nodes — no more confusion between "this is the layout" and "this is the class module". Access projects get the same query, explore, and node experience as TypeScript and Python.
+
+- Built-in Access form navigation calls like `DoCmd.OpenForm "MyForm"` are now modeled as edges from the calling line to a stub node named after the target form, so `codegraph callers` shows every place that opens a given form without grepping each `.cls` by hand. The first release covers `OpenForm` only; `OpenReport`, `OpenQuery`, and the rest of the family are a follow-up.
+
+### Fixes
+
+- A form-level event like `Form_Load` now reports its full qualified name (`Form_TestForm.Form_Load`), so a search that hits it across many forms returns each form separately instead of one mixed bucket where you can't tell which form each hit belongs to.
 
 
 ## [1.1.2] - 2026-06-28

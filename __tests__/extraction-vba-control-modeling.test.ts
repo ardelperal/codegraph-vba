@@ -102,3 +102,48 @@ describe('hueco-2: .form.txt exposes control NAME (not just TYPE)', () => {
     ).toEqual([]);
   });
 });
+
+// =============================================================================
+// HUECO 3 — event-handler edge from control → handler Sub
+// =============================================================================
+describe('hueco-3: event-handler edge from control to Sub', () => {
+  it('ComandoAltaPM_Click debe tener arista al control ComandoAltaPM', () => {
+    // Cross-extract: the .cls emits the Click handler function; the
+    // .form.txt emits the control node. Today the bridge between them is
+    // missing — the resolver has no way to walk from a control to its
+    // event handlers.
+    //
+    // We look across the union of both extracts because that's what a real
+    // index pass would do.
+
+    const cls = new VbaExtractor(TEST_FORM_CLS, readFixture(TEST_FORM_CLS)).extract();
+    const form = new VbaFormExtractor(
+      TEST_FORM_TXT,
+      readFixture(TEST_FORM_TXT),
+    ).extract();
+
+    const clickHandler = cls.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'ComandoAltaPM_Click',
+    );
+    const control = form.nodes.find((n) => n.name === 'ComandoAltaPM');
+
+    expect(clickHandler, 'expected function node for ComandoAltaPM_Click').toBeDefined();
+    expect(control, 'expected control node named ComandoAltaPM').toBeDefined();
+
+    // Phase B will emit an edge with kind === 'event-handler' from the
+    // control to the handler (or vice-versa). Today no such edge exists.
+    //
+    // NOTE: 'event-handler' is NOT in EdgeKind today. We compare as strings
+    // so the test compiles cleanly and the assertion is a runtime RED
+    // rather than a compile error.
+    const EVT_KIND = 'event-handler';
+    const allEdges = [...cls.edges, ...form.edges];
+    const bridge = allEdges.find(
+      (e) =>
+        (e.kind as string) === EVT_KIND &&
+        ((e.source === control?.id && e.target === clickHandler?.id) ||
+          (e.source === clickHandler?.id && e.target === control?.id)),
+    );
+    expect(bridge, 'expected event-handler edge between control and Sub').toBeDefined();
+  });
+});

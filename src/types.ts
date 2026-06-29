@@ -38,6 +38,17 @@ export const NODE_KINDS = [
   'export',
   'route',
   'component',
+  // --- VBA form-control modeling (added 2026-06-29, Phase B1) ---
+  // 'form-layout' — the form-level container node emitted from a
+  // `.form.txt` / `.report.txt` (formerly mis-emitted as `module`).
+  // 'form-instance-control' — a single Access control instance declared
+  // in a `.form.txt`, identified by its `Name = "..."` attribute. Carries
+  // `metadata.controlType` for the Access control type (Label, TextBox,
+  // CommandButton, etc.) and is the bridge target for `event-handler`
+  // edges synthesized from `<Control>_<Event>` handler Subs in the
+  // sibling `.cls`.
+  'form-layout',
+  'form-instance-control',
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -57,7 +68,18 @@ export type EdgeKind =
   | 'returns'         // Function returns type
   | 'instantiates'    // Creates instance of class
   | 'overrides'       // Method overrides parent method
-  | 'decorates';      // Decorator applied to symbol
+  | 'decorates'       // Decorator applied to symbol
+  // --- VBA form-control modeling (added 2026-06-29, Phase B1) ---
+  // 'event-handler' — synthesized from a `<Control>_<Event>` handler Sub
+  // in a `.cls` to the matching `form-instance-control` node in the
+  // sibling `.form.txt`. Carries `metadata.eventName` (e.g. 'Click').
+  // Provenance: 'heuristic' (a naming convention, not a static parse fact).
+  // 'opens-form' — `DoCmd.OpenForm "<FormName>"` modeled as an edge from
+  // the calling function to a target form module. Carries
+  // `metadata.targetFormName` until the target `.cls`/`.form.txt` is
+  // indexed and resolved.
+  | 'event-handler'
+  | 'opens-form';
 
 /**
  * Supported programming languages. See NODE_KINDS for why this is a

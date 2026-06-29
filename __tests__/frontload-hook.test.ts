@@ -12,12 +12,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { planFrontload, findIndexedSubprojectRoots, isStructuralPrompt, hasStructuralKeyword, extractCodeTokens } from '../src/directory';
+import { planFrontload, findIndexedSubprojectRoots, isStructuralPrompt, hasStructuralKeyword, extractCodeTokens, CODEGRAPH_DIR } from '../src/directory';
 
-/** Make `dir` look indexed (isInitialized needs `.codegraph/codegraph.db`). */
+/** Make `dir` look indexed (isInitialized needs `<CODEGRAPH_DIR>/codegraph.db`). */
 function mkIndexed(dir: string): string {
-  fs.mkdirSync(path.join(dir, '.codegraph'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.codegraph', 'codegraph.db'), '');
+  fs.mkdirSync(path.join(dir, CODEGRAPH_DIR), { recursive: true });
+  fs.writeFileSync(path.join(dir, CODEGRAPH_DIR, 'codegraph.db'), '');
   return dir;
 }
 /** A workspace-root manifest so the down-scan gate (looksLikeProjectRoot) passes. */

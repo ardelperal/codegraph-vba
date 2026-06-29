@@ -4,7 +4,7 @@
 // npm thin-installer launcher for CodeGraph.
 //
 // The heavy artifact (a vendored Node runtime + the app) ships as a per-platform
-// optionalDependency: @colbymchenry/codegraph-<platform>-<arch>. npm installs
+// optionalDependency: codegraph-vba-<platform>-<arch>. npm installs
 // only the one matching the host, via each package's `os`/`cpu` fields (the
 // esbuild pattern). This shim — run by the user's OWN Node — locates that bundle
 // and execs its launcher, so the real work always runs on the bundled Node 24
@@ -32,9 +32,9 @@ var os = require('os');
 var path = require('path');
 
 var target = process.platform + '-' + process.arch; // e.g. darwin-arm64, linux-x64
-var pkg = '@colbymchenry/codegraph-' + target;
+var pkg = 'codegraph-vba-' + target;
 var isWindows = process.platform === 'win32';
-var REPO = 'colbymchenry/codegraph';
+var REPO = 'ardelperal/codegraph';
 
 main().catch(function (e) {
   process.stderr.write('codegraph: ' + (e && e.message ? e.message : String(e)) + '\n');
@@ -111,7 +111,7 @@ async function selfHealBundle() {
     fail('the network fallback is disabled (CODEGRAPH_NO_DOWNLOAD is set).');
   }
 
-  var asset = 'codegraph-' + target + (isWindows ? '.zip' : '.tar.gz');
+  var asset = 'codegraph-vba-' + target + (isWindows ? '.zip' : '.tar.gz');
   var base = process.env.CODEGRAPH_DOWNLOAD_BASE || ('https://github.com/' + REPO + '/releases/download');
   var url = base + '/v' + version + '/' + asset;
 
@@ -238,7 +238,7 @@ function fail(reason) {
     'A registry mirror (e.g. npmmirror/cnpm) that did not mirror the per-platform\n' +
     'package is the usual cause. Fixes:\n' +
     '  - install from the official registry:\n' +
-    '      npm i -g @colbymchenry/codegraph --registry=https://registry.npmjs.org\n' +
+    '      npm i -g codegraph-vba --registry=https://registry.npmjs.org\n' +
     '  - or use the standalone installer (no Node required):\n' +
     '      curl -fsSL https://raw.githubusercontent.com/' + REPO + '/main/install.sh | sh\n'
   );

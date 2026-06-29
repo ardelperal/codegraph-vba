@@ -26,9 +26,11 @@ Begin
     End
 End`;
     const r = extract('src/forms/Form_Main.form.txt', src);
-    const moduleNode = r.nodes.find((n) => n.kind === 'module');
-    expect(moduleNode).toBeDefined();
-    expect(moduleNode?.name).toBe('Form_Main');
+    // B2 (hueco 4): the file-level node is now `kind: 'form-layout'`,
+    // not `module`. `.bas` standard modules keep emitting `module`.
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    expect(formNode).toBeDefined();
+    expect(formNode?.name).toBe('Form_Main');
     // The sibling-class binding is emitted as an UnresolvedReference (so
     // REQ-FORM-4 — no class nodes from form UI — is honored). It carries
     // synthesizedBy: vba-form-binding.
@@ -37,7 +39,7 @@ End`;
     );
     expect(binding).toBeDefined();
     expect(binding?.referenceName).toBe('Form_Main');
-    expect(binding?.fromNodeId).toBe(moduleNode?.id);
+    expect(binding?.fromNodeId).toBe(formNode?.id);
   });
 
   it('Form module named from filename when VB_Name absent', () => {
@@ -47,9 +49,9 @@ End`;
     End
 End`;
     const r = extract('src/forms/Form_Main.form.txt', src);
-    const moduleNode = r.nodes.find((n) => n.kind === 'module');
-    expect(moduleNode).toBeDefined();
-    expect(moduleNode?.name).toBe('Form_Main');
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    expect(formNode).toBeDefined();
+    expect(formNode?.name).toBe('Form_Main');
   });
 });
 
@@ -94,9 +96,11 @@ Begin
     End
 End`;
     const r = extract('src/reports/Report_Orders.report.txt', src);
-    const moduleNode = r.nodes.find((n) => n.kind === 'module');
-    expect(moduleNode).toBeDefined();
-    expect(moduleNode?.name).toBe('Report_Orders');
+    // B2 (hueco 4): the file-level node is now `kind: 'form-layout'`,
+    // not `module`. The `.report.txt` path shares the same rename.
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    expect(formNode).toBeDefined();
+    expect(formNode?.name).toBe('Report_Orders');
     const binding = r.unresolvedReferences.find(
       (u) => u.metadata?.synthesizedBy === 'vba-form-binding',
     );
@@ -118,11 +122,15 @@ Begin
     End
 End`;
     const r = extract('src/forms/Form_Main.form.txt', src);
+    // B2 (hueco 4): a `.form.txt` MUST NOT emit `module` nodes at all
+    // (the form-level node is now `form-layout`). The `module` branch
+    // of the filter is therefore vacuously true and only `function`
+    // and `class` need to be checked.
     const codeNodes = r.nodes.filter(
       (n) =>
         n.kind === 'function' ||
         n.kind === 'class' ||
-        (n.kind === 'module' && n.name !== 'Form_Main'),
+        n.kind === 'module',
     );
     expect(codeNodes).toHaveLength(0);
     // Class nodes also forbidden by REQ-FORM-4.
@@ -130,11 +138,12 @@ End`;
     expect(classes).toHaveLength(0);
   });
 
-  it('empty form file still emits module + sibling-binding reference', () => {
+  it('empty form file still emits form-layout + sibling-binding reference', () => {
     const r = extract('src/forms/Form_Main.form.txt', '');
-    const moduleNode = r.nodes.find((n) => n.kind === 'module');
-    expect(moduleNode).toBeDefined();
-    expect(moduleNode?.name).toBe('Form_Main');
+    // B2 (hueco 4): the file-level node is `kind: 'form-layout'` now.
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    expect(formNode).toBeDefined();
+    expect(formNode?.name).toBe('Form_Main');
     const props = r.nodes.filter((n) => n.kind === 'property');
     expect(props).toHaveLength(0);
     const binding = r.unresolvedReferences.find(

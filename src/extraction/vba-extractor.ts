@@ -58,6 +58,22 @@ export class VbaExtractor {
   private unresolvedReferences: UnresolvedReference[] = [];
   private moduleOrClassNode: Node | null = null;
   /**
+   * Class-name prefix for `qualifiedName` composition.
+   *
+   * B3 (hueco 5): for `.cls` files every function node's `qualifiedName`
+   * is composed as `${className}.${procName}` (e.g. `Form_TestForm.Form_Load`)
+   * so cross-class callers can disambiguate which form each `Form_Load`
+   * belongs to. For `.bas` files this is `null` — module-scoped procs
+   * keep their bare-name `qualifiedName` (e.g. `DoThing`), preserving
+   * the pre-hueco-5 behavior and every existing qualifiedName-based
+   * assertion in `extraction-vba.test.ts`.
+   *
+   * Resolved once per `extract()` from `isCls` + `vbName` (both already
+   * computed for `createModuleOrClassNode`); `sweepProcedures` reads it
+   * to set `ProcInfo.qualifiedName` and the function node's qualifiedName.
+   */
+  private classNamePrefix: string | null = null;
+  /**
    * Map of procedure name (within this file) → list of ProcInfo. The list
    * (rather than a single value) is needed because VBA allows multiple
    * Property accessors with the same name: `Property Get Foo`, `Property
@@ -117,6 +133,19 @@ export class VbaExtractor {
 
       // Detect VB_Name attribute (first non-empty line).
       const vbName = this.detectVbName(this.source);
+
+      // B3 (hueco 5): compute the class-name prefix used to compose every
+      // `function` node's `qualifiedName` in this file. For `.cls` files
+      // the prefix is the resolved VB_Name (or the file basename when
+      // VB_Name is absent), producing qualifiedNames like
+      // `Form_TestForm.Form_Load`. For `.bas` (and `.frm`/`.dsr`) files
+      // the prefix is null, preserving the bare-name qualifiedName that
+      // every existing test asserts.
+      const fallbackName = path
+        .basename(this.filePath)
+        .replace(/\.[^.]+$/, '');
+      const className = isCls ? (vbName ?? fallbackName) : null;
+      this.classNamePrefix = className;
 
       // Module/class node — created lazily so a file containing only
       // Option directives (REQ-CODE-10: "emits nothing") doesn't carry a
@@ -312,7 +341,13 @@ export class VbaExtractor {
 
       const proc: ProcInfo = {
         name,
-        qualifiedName: name,
+        // B3 (hueco 5): when this file is a `.cls`, prefix the
+        // qualifiedName with the resolved class name so cross-class
+        // queries (e.g. `Form_Load`) match only the owning class.
+        // `.bas` files leave `qualifiedName === name`.
+        qualifiedName: this.classNamePrefix
+          ? `${this.classNamePrefix}.${name}`
+          : name,
         kind,
         visibility,
         startLine: lineNum,
@@ -327,7 +362,12 @@ export class VbaExtractor {
         id: nodeId,
         kind: 'function',
         name,
-        qualifiedName: name,
+        // B3 (hueco 5): same prefix rule as the ProcInfo above — class
+        // methods get `${className}.${name}`, module-level Subs keep
+        // their bare name.
+        qualifiedName: this.classNamePrefix
+          ? `${this.classNamePrefix}.${name}`
+          : name,
         filePath: this.filePath,
         language: 'vba',
         startLine: lineNum,
@@ -346,6 +386,82 @@ export class VbaExtractor {
       // Fix 1: also index by startLine so Property Get/Let/Set with the same
       // name can each be found by their exact declaration line.
       this.functionNodeByStartLine.set(lineNum, fnNode);
+
+      // Hueco 3: synthesize the event-handler edge for Access naming
+      // convention `<ControlName>_<EventName>` (e.g. `ComandoAltaPM_Click`,
+      // `MotivoBorrado_AfterUpdate`). The `<X>_<Y>` shape is split on the
+      // LAST underscore so multi-word events like `BeforeDelConfirm` parse
+      // correctly. Form-level events (`Form_Load`, `Form_Open`,
+      // `Form_Unload`, …) are NOT control handlers — they fire on the
+      // form object itself, not on a control — so they are skipped here
+      // (the form module node is the conceptual source for those).
+      //
+      // Scope guard: only emit when this .cls looks like a form code-
+      // behind (`Form_*.cls`). Without this guard, regular service classes
+      // whose methods happen to have underscores in their names
+      // (e.g. `InformeRiesgoPDFServicio.cls` declares
+      // `GenerarHTML_Principal`, `GetEstilosCSS_PDF`,
+      // `Class_Initialize`) would synthesize ~550 spurious
+      // `form-instance-control` stubs in real Dysflow projects. The
+      // `Form_` prefix is the canonical Access code-behind naming
+      // convention and matches the .form.txt siblings' basename.
+      //
+      // Cross-file synthesis caveat: the edge's source is a
+      // `form-instance-control` node that lives in the sibling .form.txt,
+      // not this .cls file. Two consequences:
+      //   1. We also emit a STUB form-instance-control node locally with
+      //      the deterministic id so the per-file edge filter
+      //      (`insertedIds.has(source)`) accepts the edge. When the
+      //      sibling .form.txt is later indexed, VbaFormExtractor emits
+      //      the real form-instance-control node with the same id; the
+      //      `INSERT OR REPLACE` semantics in queries.ts:insertNode
+      //      overwrite the stub with the real one (preserving the
+      //      metadata.controlType, filePath, line range, etc.).
+      //   2. When the .form.txt is processed FIRST (alphabetically
+      //      unlikely but possible), the real node exists in the DB
+      //      before this edge is committed; insertEdges's DB-level
+      //      endpoint check passes the edge naturally without the stub.
+      //      Either order converges on the same final state.
+      // See vba-form-extractor.ts:findControlName for the matching real
+      // form-instance-control node emission.
+      const handler = parseEventHandlerName(name);
+      const isFormCodeBehind = /Form_[^/\\]*\.cls$/i.test(this.filePath);
+      if (handler && isFormCodeBehind) {
+        const formFilePath = this.filePath.replace(/\.cls$/i, '.form.txt');
+        const controlNodeId = generateNodeId(
+          formFilePath,
+          'form-instance-control',
+          handler.controlName,
+          0,
+        );
+        // Stub form-instance-control: local so the per-file edge filter
+        // passes the event-handler edge. Overwritten by the real node
+        // emitted from the sibling .form.txt at index time (same id, same
+        // schema, INSERT OR REPLACE). No metadata.controlType here — the
+        // .form.txt side carries the real control type.
+        this.nodes.push({
+          id: controlNodeId,
+          kind: 'form-instance-control',
+          name: handler.controlName,
+          qualifiedName: `${formFilePath}::${handler.controlName}`,
+          filePath: formFilePath,
+          language: 'vba',
+          startLine: 0,
+          endLine: 0,
+          startColumn: 0,
+          endColumn: 0,
+          updatedAt: Date.now(),
+        });
+        this.edges.push({
+          source: controlNodeId,
+          target: nodeId,
+          kind: 'event-handler',
+          provenance: 'heuristic',
+          metadata: { eventName: handler.eventName },
+          line: lineNum,
+          column: 0,
+        });
+      }
 
       if (this.moduleOrClassNode) {
         this.edges.push({
@@ -560,6 +676,29 @@ export class VbaExtractor {
     { name: 'getdb().OpenRecordset', re: /\bgetdb\(\)\.OpenRecordset\s+"((?:[^"]|"")*)"/g },
   ];
 
+  /**
+   * `DoCmd.OpenForm "<FormName>"` modelling regex — B4 (hueco 6).
+   *
+   * Real VBA idiom (matches both forms):
+   *   `DoCmd.OpenForm "MyForm"`
+   *   `DoCmd.OpenForm "MyForm", acNormal, , , acFormEdit`
+   *
+   * Captures the form NAME (group 1) so the extractor can synthesize an
+   * `opens-form` heuristic edge from the calling Sub to a stub for the
+   * target form. The trailing positional args (`acNormal`, `acFormEdit`,
+   * etc.) are intentionally NOT captured — the orchestrator's scope decision
+   * was to cover ONLY `OpenForm` for this commit; `OpenReport`, `OpenQuery`,
+   * `OpenTable`, … are flagged in the commit body as follow-up work.
+   *
+   * Why a separate dispatch: `DoCmd` is in `RUNTIME_RECEIVER_BLACKLIST`
+   * (R4 invariant), so `DoCmd.OpenForm` is intentionally SKIPPED by the
+   * generic `CALL_RE` path that would otherwise emit a junk `calls` edge
+   * to a synthetic `function` node for `DoCmd.OpenForm`. This regex
+   * matches BEFORE the call-site scan and uses its own dispatch to emit
+   * the `opens-form` edge instead — sharing no logic with CALL_RE.
+   */
+  private static readonly OPEN_FORM_RE = /\bDoCmd\.OpenForm\s+"([^"]+)"/g;
+
   /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
   private static readonly SQL_VAR_ASSIGN_RE =
     /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*(.*)$/iu;
@@ -571,6 +710,32 @@ export class VbaExtractor {
   /** SQL table-name regex scoped to FROM / INTO / UPDATE. */
   private static readonly SQL_TABLE_RE =
     /\b(?:FROM|INTO|UPDATE)\s+(\[?\p{L}[\p{L}\p{N}_]*\]?)/giu;
+
+  /**
+   * `Me.<ControlName>` reference capture — hole 1 of VBA control-modeling.
+   *
+   * Real VBA idiom:
+   *   `Me.lblTitulo.Caption = "Hello"`            ← property assignment
+   *   `Me.txtDescripcion.Value = "World"`          ← property assignment
+   *   `Me.ComandoGrabar.Enabled = True`           ← property assignment
+   *   `If Nz(Me.MotivoBorrado, "") = "" Then`      ← read in expression
+   *
+   * The existing call-site scanner (CALL_RE) only fires on `Name(`
+   * (paren form) and `Me` is in its keyword blacklist anyway, so
+   * `Me.<Control>` references are silently invisible. This regex matches
+   * the FIRST identifier after `Me.` regardless of what follows (a
+   * property, an index, an assignment, a call argument, etc.) so the
+   * form → control binding is surfaced as an UnresolvedReference for the
+   * resolver to pick up later. Subsequent segments (`.Caption`, `.Value`,
+   * `.Enabled`) are intentionally NOT captured — they are properties of
+   * the control, not new symbols.
+   *
+   * Provenance: `metadata.synthesizedBy = 'vba-me-control'`. Mirrors the
+   * `vba-form-binding` (form→sibling-`.cls`) and `vba-name-resolution`
+   * (qualified Dim) patterns already documented on `UnresolvedReference.metadata`
+   * in `src/types.ts`.
+   */
+  private static readonly ME_CONTROL_RE = /\bMe\.(\p{L}[\p{L}\p{N}_]*)/gu;
 
   /** Keywords we never want to match as call receivers. */
   private static readonly CALL_KEYWORD_BLACKLIST = new Set([
@@ -764,6 +929,15 @@ export class VbaExtractor {
         this.scanCallSites(callScanLine, stack[stack.length - 1]!, lineNum);
       }
 
+      // Hueco 1: capture `Me.<Control>` references (property assignments,
+      // read expressions, method calls, anything after `Me.`). Only inside
+      // procedures because `Me` is only meaningful inside a form's class
+      // module. Skipped on the proc-declaration line for the same reason as
+      // the call-site scan above.
+      if (!procedureStartLines.has(lineNum) && stack.length > 0) {
+        this.scanMeControlReferences(callScanLine, stack[stack.length - 1]!, lineNum);
+      }
+
       // SQL wrappers — only inside a procedure (don't pollute module scope
       // with a stray string literal).  Use the ORIGINAL line — SQL is inside
       // string literals, so the masked line would strip the SQL content.
@@ -798,6 +972,29 @@ export class VbaExtractor {
             this.emitQualifiedStatementCallEdge(caller, qualStmt.receiver, qualStmt.member, lineNum);
           }
         }
+
+        // B4 (hueco 6): `DoCmd.OpenForm "FormName"` modelling.
+        //
+        // The literal form name lives INSIDE a string literal, so we
+        // scan the ORIGINAL (unmasked) line — `callScanLine` has its
+        // string content replaced with spaces. The receiver is the same
+        // proc-stack frame so we attribute the edge to the calling Sub,
+        // not the file-level module.
+        //
+        // Cross-file edge filter note: the synthesized stub node is
+        // emitted locally (same file's extraction result), so the
+        // per-file filter at `index.ts:insertedIds.has(source/target)`
+        // passes the edge naturally — no exemption to the filter is
+        // required. The real form-layout node, when VbaFormExtractor
+        // later processes the matching .form.txt file, gets a DIFFERENT
+        // node id (it uses the real .form.txt path); the stub and the
+        // real node coexist harmlessly — the edge from THIS file still
+        // references the stub. Future work can collapse the stub once
+        // the indexer learns to re-resolve cross-file edges to the real
+        // node id (the same pattern the cross-file incoming-edges
+        // snapshot already uses at `index.ts:getCrossFileIncomingEdges`).
+        const caller2 = stack[stack.length - 1]!;
+        this.scanOpenFormCalls(line, caller2, lineNum);
       }
     }
 
@@ -895,6 +1092,47 @@ export class VbaExtractor {
   private procNodeIdCache = new Map<string, string>();
   private callDedupe = new Set<string>();
   private synthFunctionNodeIds = new Set<string>();
+  /**
+   * B4 (hueco 6): cache of stub `form-layout` node ids we've already emitted
+   * for a given target form name in this file. Avoids emitting duplicate
+   * stubs when `DoCmd.OpenForm "FormTest"` shows up N times across N calls.
+   * Keyed by the lowercased form name so `FormTest` / `formtest` collapse.
+   */
+  private opensFormStubIdsByName = new Map<string, string>();
+
+  /**
+   * Hueco 1: scan a line for `Me.<ControlName>` patterns and emit one
+   * UnresolvedReference per occurrence, tagged
+   * `metadata.synthesizedBy: 'vba-me-control'`.
+   *
+   * Operates on the masked `callScanLine` (string-literal content already
+   * replaced with spaces) so `Me.X` inside a string literal is not falsely
+   * captured. Per-site emission — every `Me.lblTitulo` reference site
+   * produces its own UnresolvedReference carrying the line/column; the
+   * resolver fans them out into multiple `references` edges at index time
+   * once the matching `form-instance-control` node exists.
+   *
+   * `fromNodeId` is the current procedure's function node — that's the
+   * "owner" of the reference (the Sub body that wrote `Me.lblTitulo = …`).
+   */
+  private scanMeControlReferences(line: string, from: ProcInfo, lineNum: number): void {
+    VbaExtractor.ME_CONTROL_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = VbaExtractor.ME_CONTROL_RE.exec(line)) !== null) {
+      const controlName = m[1] ?? '';
+      if (!controlName) continue;
+      this.unresolvedReferences.push({
+        fromNodeId: this.findOrCreateFunctionNodeId(from),
+        referenceName: controlName,
+        referenceKind: 'references',
+        line: lineNum,
+        column: m.index + 3, // +3 to skip the `Me.` prefix
+        filePath: this.filePath,
+        language: 'vba',
+        metadata: { synthesizedBy: 'vba-me-control' },
+      });
+    }
+  }
 
   private findOrCreateFunctionNodeId(proc: ProcInfo): string {
     // Fix 1: key the cache by `name:startLine` so Property Get/Let/Set
@@ -1107,6 +1345,124 @@ export class VbaExtractor {
     });
   }
 
+  /**
+   * B4 (hueco 6): scan one line of VBA source for `DoCmd.OpenForm "X"`
+   * calls. For each match, emit:
+   *  - a stub `form-layout` node for the target form (cached by name so
+   *    the same form referenced from N sites emits exactly ONE stub),
+   *  - an `opens-form` heuristic edge from the calling Sub to that stub.
+   *
+   * Both endpoints are pushed into `this.nodes` / `this.edges`, so the
+   * per-file edge filter at `index.ts:insertedIds.has(source) &&
+   * insertedIds.has(target)` passes the edge naturally without any
+   * exemption to the filter.
+   *
+   * Why a stub and not a direct lookup: the target form lives in a
+   * DIFFERENT file (its own `.form.txt`), and the extractor doesn't have
+   * DB access at parse time. The stub's synthetic file path
+   * (`synthetic:opensFormStub/<FormName>.form.txt`) guarantees a
+   * deterministic node id so re-indexes collapse to the same stub.
+   * When the consumer's `.form.txt` is later indexed, the real
+   * `form-layout` node carries a different id (it uses the real file
+   * path); the stub and the real coexist harmlessly. The orchestrator
+   * flagged this as acceptable for B4 — only `OpenForm` is in scope.
+   * `OpenReport`, `OpenQuery`, `OpenTable`, … are follow-up work.
+   *
+   * Scope note: this regex matches ONLY the literal-string form
+   * `DoCmd.OpenForm "X"`. Variable-form calls like
+   * `DoCmd.OpenForm m_FormName` are intentionally NOT captured here
+   * because resolving the variable to a concrete form name would
+   * require data-flow analysis that is out of scope.
+   */
+  private scanOpenFormCalls(
+    line: string,
+    caller: ProcInfo,
+    lineNum: number,
+  ): void {
+    // Each regex has /g so we MUST reset `lastIndex` before use; cloning
+    // the regex is the simplest way to avoid leaking state across lines.
+    const localRe = new RegExp(
+      VbaExtractor.OPEN_FORM_RE.source,
+      VbaExtractor.OPEN_FORM_RE.flags,
+    );
+    let m: RegExpExecArray | null;
+    while ((m = localRe.exec(line)) !== null) {
+      const targetFormName = (m[1] ?? '').trim();
+      if (!targetFormName) continue;
+      this.emitOpensFormEdge(caller, targetFormName, lineNum, m.index);
+    }
+  }
+
+  /**
+   * B4 (hueco 6): emit a stub `form-layout` node for `targetFormName`
+   * (cached so duplicates collapse) and an `opens-form` heuristic edge
+   * from `caller` to that stub.
+   *
+   * The edge carries:
+   *  - `kind: 'opens-form'`                — new cross-file edge kind
+   *  - `provenance: 'heuristic'`           — synthesized, not parsed
+   *  - `metadata.targetFormName`           — the captured literal
+   *  - `metadata.synthesizedBy: 'vba-opens-form'` — distinguishes this
+   *    synthesis from the dim/sql/event-handler families
+   *
+   * The stub's `metadata.stub: true` flag lets downstream UI render
+   * unresolved references distinctly (e.g. with a dashed border) and
+   * gives later re-resolution pass a hook for collapse. The stub is
+   * line-independent (`line = 0`) so re-indexes produce identical ids.
+   */
+  private emitOpensFormEdge(
+    caller: ProcInfo,
+    targetFormName: string,
+    lineNum: number,
+    column: number,
+  ): void {
+    const key = targetFormName.toLowerCase();
+    let stubId = this.opensFormStubIdsByName.get(key);
+    if (!stubId) {
+      // Synthetic file path keeps the stub's id deterministic AND
+      // disambiguates it from any real `.form.txt` indexed later.
+      // The directory prefix (`synthetic:opensFormStub/`) is intentionally
+      // not a real filesystem path — it just namespaces the id space.
+      const syntheticFilePath = `synthetic:opensFormStub/${targetFormName}.form.txt`;
+      stubId = generateNodeId(
+        syntheticFilePath,
+        'form-layout',
+        targetFormName,
+        0,
+      );
+      this.opensFormStubIdsByName.set(key, stubId);
+      this.nodes.push({
+        id: stubId,
+        kind: 'form-layout',
+        name: targetFormName,
+        // Convention: form module names in Access are `Form_<Name>`.
+        // We follow the same convention in the synthetic stub's
+        // qualifiedName so cross-file lookups can find it consistently.
+        qualifiedName: `Form_${targetFormName}`,
+        filePath: syntheticFilePath,
+        language: 'vba',
+        startLine: lineNum,
+        endLine: lineNum,
+        startColumn: 0,
+        endColumn: 0,
+        metadata: { stub: true },
+        updatedAt: Date.now(),
+      });
+    }
+    this.edges.push({
+      source: this.findOrCreateFunctionNodeId(caller),
+      target: stubId,
+      kind: 'opens-form',
+      provenance: 'heuristic',
+      metadata: {
+        synthesizedBy: 'vba-opens-form',
+        targetFormName,
+      },
+      line: lineNum,
+      column,
+    });
+  }
+
   private scanSqlInLine(
     line: string,
     lineNum: number,
@@ -1244,4 +1600,31 @@ export class VbaExtractor {
    * typed as a SIMPLE (non-qualified, non-primitive) identifier emit edges.
    */
   private localVarTypeMap = new Map<string, { outer: string; qualified: boolean }>();
+}
+
+/**
+ * Hueco 3 helper: parse an Access event-handler Sub name into its
+ * `<ControlName>_<EventName>` components. Returns null when the name does
+ * not match the convention, when the split yields an empty segment, or
+ * when the control name is `Form` (form-level events are NOT control
+ * handlers — `Form_Load` is the form's own lifecycle event, not a
+ * command-button click).
+ *
+ * Splitting on the LAST underscore (rather than the first) lets
+ * multi-word event names parse correctly: `ComandoAltaPM_BeforeDelConfirm`
+ * yields control=`ComandoAltaPM`, event=`BeforeDelConfirm`, not
+ * control=`ComandoAlta`, event=`PM_BeforeDelConfirm`.
+ */
+function parseEventHandlerName(
+  name: string,
+): { controlName: string; eventName: string } | null {
+  if (!name) return null;
+  const lastUnderscore = name.lastIndexOf('_');
+  if (lastUnderscore <= 0) return null; // no underscore OR starts with underscore
+  const controlName = name.slice(0, lastUnderscore);
+  const eventName = name.slice(lastUnderscore + 1);
+  if (!controlName || !eventName) return null;
+  // Form-level events live on the form, not on a control.
+  if (controlName.toLowerCase() === 'form') return null;
+  return { controlName, eventName };
 }

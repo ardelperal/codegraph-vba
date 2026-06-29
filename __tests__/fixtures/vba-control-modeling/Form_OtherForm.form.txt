@@ -1,0 +1,17 @@
+Version =21
+VersionRequired =20
+PublishOption =1
+Checksum =-987654321
+Begin Form
+    Caption ="Form_OtherForm"
+    Width =5000
+    Height =3000
+    Begin Label
+        Name ="lblTitulo"
+        Caption ="Otro titulo"
+        Left =200
+        Top =200
+        Width =2000
+        Height =300
+    End
+End

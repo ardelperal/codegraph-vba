@@ -16,8 +16,8 @@
 #     node-version:  e.g. v24.16.0 (default below; pin for reproducible builds)
 #
 # Output:
-#   unix:    release/codegraph-<target>.tar.gz   (launcher: bin/codegraph)
-#   windows: release/codegraph-<target>.zip      (launcher: bin/codegraph.cmd)
+#   unix:    release/codegraph-vba-<target>.tar.gz   (launcher: bin/codegraph)
+#   windows: release/codegraph-vba-<target>.zip      (launcher: bin/codegraph.cmd)
 set -euo pipefail
 
 TARGET="${1:?usage: build-bundle.sh <target> [node-version]}"
@@ -60,7 +60,7 @@ echo "[bundle] building app"
 ( cd "$ROOT" && npm run build >/dev/null )
 
 # 3. Stage: app + production-only deps (pure JS/wasm → portable across platforms).
-STAGE="$WORK/codegraph-${TARGET}"
+STAGE="$WORK/codegraph-vba-${TARGET}"
 mkdir -p "$STAGE/lib" "$STAGE/bin"
 cp -R "$ROOT/dist" "$STAGE/lib/dist"
 cp "$ROOT/package.json" "$ROOT/package-lock.json" "$STAGE/lib/"
@@ -107,12 +107,12 @@ fi
 # 5. Archive (.zip for Windows, .tar.gz otherwise).
 mkdir -p "$OUT"
 if [ "$OSFAM" = "win32" ]; then
-  ARCHIVE="$OUT/codegraph-${TARGET}.zip"
+  ARCHIVE="$OUT/codegraph-vba-${TARGET}.zip"
   rm -f "$ARCHIVE"
-  ( cd "$WORK" && zip -rqX "$ARCHIVE" "codegraph-${TARGET}" )
+  ( cd "$WORK" && zip -rqX "$ARCHIVE" "codegraph-vba-${TARGET}" )
 else
-  ARCHIVE="$OUT/codegraph-${TARGET}.tar.gz"
+  ARCHIVE="$OUT/codegraph-vba-${TARGET}.tar.gz"
   # --no-xattrs: don't embed macOS xattrs that make GNU tar warn on Linux.
-  tar --no-xattrs -czf "$ARCHIVE" -C "$WORK" "codegraph-${TARGET}"
+  tar --no-xattrs -czf "$ARCHIVE" -C "$WORK" "codegraph-vba-${TARGET}"
 fi
 echo "[bundle] wrote ${ARCHIVE} ($(du -h "$ARCHIVE" | cut -f1))"

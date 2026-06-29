@@ -11,7 +11,7 @@
  * per-scenario shape; this E2E verifies the integrated tool works end-to-end
  * against real fixtures — same patterns, real bytes.
  *
- * The `.codegraph/` index is created in the fixtures folder during this test
+ * The `.codegraph-vba/` index is created in the fixtures folder during this test
  * and removed in afterAll so subsequent runs are idempotent.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -25,10 +25,10 @@ const FORM_BASENAME = 'Form_FormNCAuditoriaMotivoEliminado';
 describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
   let cg: CodeGraph | null = null;
   let initializedByTest = false;
-  const codeGraphDir = path.join(FIXTURES_DIR, '.codegraph');
+  const codeGraphDir = path.join(FIXTURES_DIR, '.codegraph-vba');
 
   beforeAll(async () => {
-    // Clean slate: remove any prior .codegraph/ left by a previous run so
+    // Clean slate: remove any prior .codegraph-vba/ left by a previous run so
     // init() doesn't refuse to re-initialize.
     if (fs.existsSync(codeGraphDir)) {
       fs.rmSync(codeGraphDir, { recursive: true, force: true });
@@ -46,7 +46,7 @@ describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
         // ignore close errors
       }
     }
-    // Clean up the .codegraph/ we created so subsequent runs are clean.
+    // Clean up the .codegraph-vba/ we created so subsequent runs are clean.
     if (initializedByTest && fs.existsSync(codeGraphDir)) {
       fs.rmSync(codeGraphDir, { recursive: true, force: true });
     }
@@ -138,7 +138,7 @@ describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
     expect(fromFormTxt).toHaveLength(0);
   });
 
-  it('NON-NEGOTIABLE: .form.txt emits exactly one module node + property nodes for controls', () => {
+  it('NON-NEGOTIABLE: .form.txt emits exactly one form-layout node + property nodes for controls', () => {
     if (!cg) return;
     const formResults = cg.searchNodes(FORM_BASENAME, {
       languages: ['vba'],
@@ -146,31 +146,33 @@ describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
     const fromFormTxt = formResults.filter((n) =>
       n.node.filePath.endsWith('.form.txt'),
     );
-    const modules = fromFormTxt.filter((n) => n.node.kind === 'module');
+    // B2 (hueco 4): the file-level node is now `form-layout`, not
+    // `module`. We still assert exactly one such node per `.form.txt`.
+    const formLayouts = fromFormTxt.filter((n) => n.node.kind === 'form-layout');
     const properties = fromFormTxt.filter((n) => n.node.kind === 'property');
-    // Exactly one form-level module node (no sub-modules).
-    expect(modules).toHaveLength(1);
+    // Exactly one form-level form-layout node (no sub-modules).
+    expect(formLayouts).toHaveLength(1);
     // Real Access forms always have at least one control.
     expect(properties.length).toBeGreaterThan(0);
   });
 
-  it('NON-NEGOTIABLE: .form.txt module has a references edge to its sibling .cls', () => {
+  it('NON-NEGOTIABLE: .form.txt form-layout has a references edge to its sibling .cls', () => {
     if (!cg) return;
     const formResults = cg.searchNodes(FORM_BASENAME, {
       languages: ['vba'],
-      kinds: ['module'],
+      kinds: ['form-layout'],
     });
-    const formModule = formResults
+    const formLayout = formResults
       .filter((n) => n.node.filePath.endsWith('.form.txt'))
       .at(0);
-    expect(formModule).toBeDefined();
-    if (!formModule) return;
-    const outgoing = cg.getOutgoingEdges(formModule.node.id);
-    // REQ-FORM-1: at least one references edge from the form module toward
-    // the sibling .cls. The edge may carry metadata.synthesizedBy =
-    // 'vba-form-binding' if the resolver preserves the provenance, or it
-    // may be a plain resolved references edge — either way at least one
-    // references-kind edge must exist.
+    expect(formLayout).toBeDefined();
+    if (!formLayout) return;
+    const outgoing = cg.getOutgoingEdges(formLayout.node.id);
+    // REQ-FORM-1: at least one references edge from the form-layout node
+    // toward the sibling .cls. The edge may carry metadata.synthesizedBy
+    // = 'vba-form-binding' if the resolver preserves the provenance, or
+    // it may be a plain resolved references edge — either way at least
+    // one references-kind edge must exist.
     const refs = outgoing.filter((e) => e.kind === 'references');
     expect(refs.length).toBeGreaterThan(0);
     // If metadata.synthesizedBy is preserved, it must be 'vba-form-binding'.

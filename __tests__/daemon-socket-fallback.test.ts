@@ -74,7 +74,7 @@ describe('getDaemonSocketCandidates (#997)', () => {
     const root = path.join(os.tmpdir(), 'cg-cand-short');
     const candidates = getDaemonSocketCandidates(root);
     expect(candidates).toHaveLength(2);
-    expect(candidates[0]).toBe(path.join(root, '.codegraph', 'daemon.sock'));
+    expect(candidates[0]).toBe(path.join(root, '.codegraph-vba', 'daemon.sock'));
     expect(candidates[1]!.startsWith(os.tmpdir())).toBe(true);
     expect(path.basename(candidates[1]!)).toMatch(/^codegraph-[0-9a-f]{16}\.sock$/);
   });

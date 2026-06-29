@@ -1,0 +1,78 @@
+Version =21
+VersionRequired =20
+PublishOption =1
+Checksum =-1234567890
+Begin Form
+    Caption ="Form_TestForm"
+    Width =10000
+    Height =6000
+    Begin CommandButton
+        Name ="ComandoAltaPM"
+        Caption ="Alta PM"
+        Left =1000
+        Top =1000
+        Width =1500
+        Height =400
+    End
+    Begin CommandButton
+        Name ="ComandoBajaPM"
+        Caption ="Baja PM"
+        Left =2600
+        Top =1000
+        Width =1500
+        Height =400
+    End
+    Begin Label
+        Name ="lblTitulo"
+        Caption ="Titulo"
+        Left =200
+        Top =200
+        Width =3000
+        Height =300
+    End
+    Begin Label
+        Name ="lblDescripcion"
+        Caption ="Descripcion"
+        Left =200
+        Top =600
+        Width =3000
+        Height =300
+    End
+    Begin TextBox
+        Name ="txtDescripcion"
+        Value =""
+        Left =3300
+        Top =600
+        Width =3000
+    End
+    Begin TextBox
+        Name ="txtCodigo"
+        Value =""
+        Left =3300
+        Top =200
+        Width =1500
+    End
+    Begin OptionGroup
+        Name ="grpEstado"
+        Left =1000
+        Top =2000
+        Width =3000
+        Height =600
+    End
+    Begin Rectangle
+        Name ="recMarco"
+        Left =100
+        Top =100
+        Width =9800
+        Height =5800
+    End
+    Begin ListBox
+        Name ="lstRiesgos"
+        RowSourceType ="Table/Query"
+        RowSource ="SELECT Id, Descripcion FROM TbRiesgos"
+        Left =1000
+        Top =3000
+        Width =4000
+        Height =2000
+    End
+End

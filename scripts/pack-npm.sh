@@ -3,23 +3,23 @@
 # Assemble the npm thin-installer packages from built bundles (esbuild pattern).
 #
 # Produces, under release/npm/:
-#   codegraph-<target>/   one per built bundle — the vendored Node + app, tagged
-#                         with os/cpu so npm installs only the matching one.
-#   main/                 the @colbymchenry/codegraph shim package: a tiny bin
-#                         that execs the matching platform bundle, with every
-#                         platform package in optionalDependencies.
+#   codegraph-vba-<target>/   one per built bundle — the vendored Node + app, tagged
+#                            with os/cpu so npm installs only the matching one.
+#   main/                    the codegraph-vba shim package: a tiny bin
+#                            that execs the matching platform bundle, with every
+#                            platform package in optionalDependencies.
 #
 # The release pipeline then `npm publish`es each dir. This does NOT touch the
 # repo's package.json — the dev/from-source path keeps working; the *published*
 # main package's shape is generated here.
 #
-# Prereq: run build-bundle.sh for each target first (release/codegraph-*.tar.gz).
+# Prereq: run build-bundle.sh for each target first (release/codegraph-vba-*.tar.gz).
 # Usage:  scripts/pack-npm.sh [version]    (default: version from package.json)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION="${1:-$(node -p "require('$ROOT/package.json').version")}"
-SCOPE="@colbymchenry"
+PKG="codegraph-vba"
 REL="$ROOT/release"
 NPM="$REL/npm"
 
@@ -27,17 +27,17 @@ rm -rf "$NPM"
 mkdir -p "$NPM/main"
 
 shopt -s nullglob
-archives=("$REL"/codegraph-*.tar.gz "$REL"/codegraph-*.zip)
+archives=("$REL"/codegraph-vba-*.tar.gz "$REL"/codegraph-vba-*.zip)
 [ ${#archives[@]} -gt 0 ] || { echo "[pack-npm] no bundles in $REL — run build-bundle.sh first" >&2; exit 1; }
 
 targets=()
 for archive in "${archives[@]}"; do
   fname="$(basename "$archive")"
   case "$fname" in
-    *.tar.gz) base="${fname%.tar.gz}" ;;   # codegraph-<target>
+    *.tar.gz) base="${fname%.tar.gz}" ;;   # codegraph-vba-<target>
     *.zip)    base="${fname%.zip}" ;;
   esac
-  target="${base#codegraph-}"             # <target>, e.g. darwin-arm64 / win32-x64
+  target="${base#codegraph-vba-}"         # <target>, e.g. darwin-arm64 / win32-x64
   os="${target%-*}"                       # darwin | linux | win32
   arch="${target##*-}"                    # arm64 | x64
   pkgdir="$NPM/$base"
@@ -46,7 +46,7 @@ for archive in "${archives[@]}"; do
     *.zip)
       tmpx="$(mktemp -d)"
       unzip -q "$archive" -d "$tmpx"
-      mv "$tmpx/codegraph-${target}"/* "$pkgdir"/
+      mv "$tmpx/codegraph-vba-${target}"/* "$pkgdir"/
       rm -rf "$tmpx"
       nodefile="node.exe"
       ;;
@@ -55,11 +55,11 @@ for archive in "${archives[@]}"; do
       nodefile="node"
       ;;
   esac
-  VERSION="$VERSION" SCOPE="$SCOPE" TARGET="$target" OSV="$os" ARCHV="$arch" NODEFILE="$nodefile" \
+  VERSION="$VERSION" PKG="$PKG" TARGET="$target" OSV="$os" ARCHV="$arch" NODEFILE="$nodefile" \
     node -e '
       const fs=require("fs");
       fs.writeFileSync(process.argv[1], JSON.stringify({
-        name: `${process.env.SCOPE}/codegraph-${process.env.TARGET}`,
+        name: `${process.env.PKG}-${process.env.TARGET}`,
         version: process.env.VERSION,
         description: `CodeGraph self-contained bundle for ${process.env.TARGET}`,
         os: [process.env.OSV], cpu: [process.env.ARCHV],
@@ -68,7 +68,7 @@ for archive in "${archives[@]}"; do
       }, null, 2) + "\n");
     ' "$pkgdir/package.json"
   targets+=("$target")
-  echo "[pack-npm] ${SCOPE}/codegraph-${target}@${VERSION}"
+  echo "[pack-npm] ${PKG}-${target}@${VERSION}"
 done
 
 # Main shim package.
@@ -92,17 +92,17 @@ ROOT="$ROOT" DEST="$NPM/main" node -e '
   }});
 '
 
-VERSION="$VERSION" SCOPE="$SCOPE" TARGETS="${targets[*]}" \
+VERSION="$VERSION" PKG="$PKG" TARGETS="${targets[*]}" \
   node -e '
     const fs=require("fs");
     const opt={};
     for (const t of process.env.TARGETS.split(/\s+/).filter(Boolean))
-      opt[`${process.env.SCOPE}/codegraph-${t}`]=process.env.VERSION;
+      opt[`${process.env.PKG}-${t}`]=process.env.VERSION;
     fs.writeFileSync(process.argv[1], JSON.stringify({
-      name: `${process.env.SCOPE}/codegraph`,
+      name: process.env.PKG,
       version: process.env.VERSION,
       description: "Local-first code intelligence for AI agents (MCP). Self-contained — bundles its own runtime.",
-      bin: { codegraph: "npm-shim.js" },
+      bin: { "codegraph-vba": "npm-shim.js" },
       main: "npm-sdk.js",
       types: "dist/index.d.ts",
       exports: {
@@ -115,5 +115,5 @@ VERSION="$VERSION" SCOPE="$SCOPE" TARGETS="${targets[*]}" \
     }, null, 2) + "\n");
   ' "$NPM/main/package.json"
 
-echo "[pack-npm] ${SCOPE}/codegraph@${VERSION} (${#targets[@]} platform packages in optionalDependencies)"
+echo "[pack-npm] ${PKG}@${VERSION} (${#targets[@]} platform packages in optionalDependencies)"
 echo "[pack-npm] output: $NPM"

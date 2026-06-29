@@ -8,19 +8,22 @@
  *    not here. Dysflow overwrites `.form.txt`'s embedded `CodeBehindForm`
  *    block on the next import, so any code emitted from this file would be
  *    wrong AND ephemeral.
- *  - It emits one `module` node per file (named per `Attribute VB_Name`
- *    when present, otherwise the file basename).
+ *  - It emits one `form-layout` node per file (named per `Attribute VB_Name`
+ *    when present, otherwise the file basename). The `form-layout` kind
+ *    (B2 hueco 4) replaces what was historically emitted as `kind: 'module'`
+ *    so consumers can dispatch on a UI-specific kind and avoid confusing
+ *    form/report UI files with `.bas` modules. `module` remains the kind
+ *    for `.bas` standard modules emitted by `VbaExtractor`.
  *  - It emits one `property` node per Access control declaration with
  *    `metadata.controlType` set to the control type (e.g. `'TextBox'`,
  *    `'CommandButton'`).
- *  - It emits one `references` edge from the form module to a node whose
- *    name matches the sibling `.cls` basename, so `codegraph_explore` can
- *    resolve form → class at lookup time. Tagged
- *    `metadata.synthesizedBy: 'vba-form-binding'`.
+ *  - It emits one unresolved reference (synthesizedBy=vba-form-binding) from
+ *    the form-layout node to the sibling `.cls` basename, so
+ *    `codegraph_explore` can resolve form → class at lookup time.
  *
- * Hard invariant (REQ-FORM-4): ZERO `function`/`sub`/`class` nodes from
- * `.form.txt` / `.report.txt`. The form-side behavior lives in
- * `vba-form-ui-extraction`; the code-side lives in `vba-code-extraction`.
+ * Hard invariant (REQ-FORM-4): ZERO `function`/`sub`/`class`/`module`
+ * nodes from `.form.txt` / `.report.txt`. The form-side behavior lives
+ * in `vba-form-ui-extraction`; the code-side lives in `vba-code-extraction`.
  */
 import * as path from 'path';
 import {
@@ -64,9 +67,14 @@ export class VbaFormExtractor {
       const basename = this.basenameWithoutExtension();
       const moduleName = vbName ?? basename;
 
-      // Form/report module node — NEVER a `class` node.
-      const moduleNode = this.createModuleNode(moduleName);
-      this.nodes.push(moduleNode);
+      // Form/report file-level node — `form-layout` (NOT `module`). B2
+      // hueco 4 promoted this from `module` to `form-layout` so the form
+      // UI is dispatched on its own kind and never confused with a `.bas`
+      // standard module. The `metadata.containerKind` preserves the
+      // historical `module` label so downstream tooling that still keys on
+      // it has a back-compat path; new code should test `kind === 'form-layout'`.
+      const formLayoutNode = this.createFormLayoutNode(moduleName);
+      this.nodes.push(formLayoutNode);
 
       // Sibling `.cls` binding (REQ-FORM-1, REQ-FORM-3). Emit an
       // UnresolvedReference rather than a hardcoded `references` edge with
@@ -75,7 +83,7 @@ export class VbaFormExtractor {
       // for downstream resolution to match it. The unresolved reference is
       // resolved at index time when the actual sibling `.cls` is processed.
       this.unresolvedReferences.push({
-        fromNodeId: moduleNode.id,
+        fromNodeId: formLayoutNode.id,
         referenceName: basename,
         referenceKind: 'references',
         line: 1,
@@ -160,11 +168,23 @@ export class VbaFormExtractor {
     return null;
   }
 
-  private createModuleNode(name: string): Node {
+  /**
+   * Build the per-file node for a `.form.txt` / `.report.txt` source.
+   * Emits `kind: 'form-layout'` (B2 hueco 4), replacing the historical
+   * `kind: 'module'` so consumers can dispatch on a UI-specific kind.
+   *
+   * The deterministic id formula `generateNodeId(filePath, 'form-layout',
+   * name, 1)` is preserved so cross-extractor stubs (e.g. event-handler
+   * synthesis on the `.cls` side) can produce a matching id when needed
+   * — though the immediate use case is the `module` → `form-layout`
+   * rename. `metadata.containerKind` keeps the historical `'module'`
+   * label as a back-compat marker; consumers should prefer `node.kind`.
+   */
+  private createFormLayoutNode(name: string): Node {
     const lines = this.source.split('\n');
     return {
-      id: generateNodeId(this.filePath, 'module', name, 1),
-      kind: 'module',
+      id: generateNodeId(this.filePath, 'form-layout', name, 1),
+      kind: 'form-layout',
       name,
       qualifiedName: name,
       filePath: this.filePath,
@@ -173,7 +193,7 @@ export class VbaFormExtractor {
       endLine: lines.length,
       startColumn: 0,
       endColumn: 0,
-      metadata: {},
+      metadata: { containerKind: 'module' },
       updatedAt: Date.now(),
     };
   }
@@ -195,6 +215,15 @@ export class VbaFormExtractor {
   private static readonly BEGIN_RE = /^\s*Begin\s+(\p{L}[\p{L}\p{N}_]*)\s*$/u;
 
   /**
+   * `Name = "..."` attribute line — emits the Access control instance name
+   * (e.g. `lblTitulo`, `ComandoAltaPM`). Capture group 1 is the name.
+   * The Dysflow SaveAsText format always wraps the value in double quotes
+   * — even when the name is a simple identifier — so we anchor on `"…"`
+   * without trying to handle unquoted forms.
+   */
+  private static readonly NAME_RE = /^\s*Name\s*=\s*"([^"]+)"\s*$/u;
+
+  /**
    * Control type tokens that are NOT user-visible Access controls and must be
    * filtered out so they don't appear as `property` nodes.
    *
@@ -207,6 +236,17 @@ export class VbaFormExtractor {
     'Form',
     'Section',
   ]);
+
+  /**
+   * Maximum scan window for the `Name = "..."` attribute after a
+   * `Begin <Type>` line. Real Dysflow exports have at most a handful of
+   * whitespace-only lines and the `Name` line within the first 3–6 lines
+   * of the block. 16 is a generous bound; if `Name` is missing within
+   * that window, the control is treated as a nameless container and only
+   * the legacy `property` node is emitted (preserves REQ-FORM-2 for
+   * pre-Name `.form.txt` files exported by older Dysflow versions).
+   */
+  private static readonly NAME_SCAN_WINDOW = 16;
 
   private sweepControls(src: string): void {
     const lines = src.split('\n');
@@ -223,6 +263,11 @@ export class VbaFormExtractor {
       // [A-Za-z_]\w* — it starts with `{`, so the regex naturally rejects
       // it.
       const lineNum = i + 1;
+
+      // ---- Legacy `property` node (REQ-FORM-2, unchanged). ---------------
+      // This node's `name` is the control TYPE (e.g. "CommandButton"). Kept
+      // intact for the 11 existing extraction-vba-form.test.ts tests and
+      // for the 4 realfixture tests that assert on property-kind counts.
       const nodeId = generateNodeId(
         this.filePath,
         'property',
@@ -243,6 +288,88 @@ export class VbaFormExtractor {
         metadata: { controlType },
         updatedAt: Date.now(),
       });
+
+      // ---- Hueco 2: emit a `form-instance-control` node per NAME. -------
+      // Scan ahead up to NAME_SCAN_WINDOW lines for the first
+      // `Name = "..."` attribute. The control's `Name` (e.g. "lblTitulo",
+      // "ComandoAltaPM") is what the .cls side references via
+      // `Me.<ControlName>` (hueco 1) and what event handlers are wired to
+      // via the `<ControlName>_<Event>` naming convention (hueco 3).
+      // line=0 in the generated id keeps the id STABLE across re-indexes
+      // of the same control — the VbaExtractor side synthesizes the
+      // matching event-handler edge using the same id formula (see
+      // vba-extractor.ts: synthesizeEventHandlerEdge).
+      const { name: controlName, nameLine } = this.findControlName(
+        lines,
+        i,
+        lineNum,
+      );
+      if (!controlName) continue;
+
+      const controlNodeId = generateNodeId(
+        this.filePath,
+        'form-instance-control',
+        controlName,
+        0,
+      );
+      this.nodes.push({
+        id: controlNodeId,
+        kind: 'form-instance-control',
+        name: controlName,
+        qualifiedName: `${this.filePath}::${controlName}`,
+        filePath: this.filePath,
+        language: 'vba',
+        startLine: lineNum,
+        endLine: nameLine, // spans from Begin to the Name attribute line
+        startColumn: 0,
+        endColumn: 0,
+        metadata: { controlType },
+        updatedAt: Date.now(),
+      });
     }
+  }
+
+  /**
+   * Scan ahead from a `Begin <Type>` line for the first `Name = "…"`
+   * attribute. Returns the captured name and the line number where it
+   * was found, or `{ name: '', nameLine: 0 }` when no Name is present
+   * within the scan window (e.g. the `Begin Form` root block which has
+   * `Caption = "..."` but no `Name`, or pre-Name legacy exports).
+   *
+   * Stops at the next `Begin` or `End` boundary so a misaligned scan
+   * never crosses into a sibling control's attribute block.
+   */
+  private findControlName(
+    lines: string[],
+    beginLineIndex: number,
+    beginLineNum: number,
+  ): { name: string; nameLine: number } {
+    const end = Math.min(
+      lines.length,
+      beginLineIndex + 1 + VbaFormExtractor.NAME_SCAN_WINDOW,
+    );
+    for (let j = beginLineIndex + 1; j < end; j++) {
+      const line = lines[j] ?? '';
+      // Boundary check: a sibling Begin or End closes this block. Don't
+      // look past it (a missing Name line is the common case for the
+      // root `Begin Form` block — its `Caption` is the visible label,
+      // not a `Name`).
+      if (/^\s*(Begin|End)\b/i.test(line)) break;
+      const m = VbaFormExtractor.NAME_RE.exec(line);
+      if (m) {
+        const name = m[1] ?? '';
+        if (name) {
+          return { name, nameLine: j + 1 };
+        }
+      }
+    }
+    // No Name within the window — that's the case for the `Begin Form`
+    // root block (which has `Caption`, not `Name`) and for the
+    // `Begin Section` Access section blocks (which group controls but
+    // carry no Name of their own). The legacy `property` node was
+    // already emitted above; we simply skip the form-instance-control
+    // emission so hueco-4 stays RED for the .form.txt module node
+    // transition (a separate B2 task).
+    return { name: '', nameLine: beginLineNum };
   }
 }

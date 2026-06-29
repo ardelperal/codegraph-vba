@@ -27,7 +27,7 @@ import type { AddressInfo } from 'net';
 
 const SHIM_SRC = path.join(__dirname, '..', 'scripts', 'npm-shim.js');
 const target = `${process.platform}-${process.arch}`;
-const asset = `codegraph-${target}.tar.gz`;
+const asset = `codegraph-vba-${target}.tar.gz`;
 const isWindows = process.platform === 'win32';
 
 function hasOpenssl(): boolean {
@@ -44,7 +44,7 @@ function makePkg(version = '9.9.9-test'): string {
   const dir = mkTmp('pkg');
   fs.copyFileSync(SHIM_SRC, path.join(dir, 'npm-shim.js'));
   fs.writeFileSync(path.join(dir, 'package.json'),
-    JSON.stringify({ name: '@colbymchenry/codegraph', version }) + '\n');
+    JSON.stringify({ name: 'codegraph-vba', version }) + '\n');
   return dir;
 }
 
@@ -74,10 +74,10 @@ function runShim(pkgDir: string, args: string[], env: Record<string, string>) {
 describe.skipIf(isWindows)('npm-shim launcher', () => {
   it('runs the installed optional-dependency bundle without any download', async () => {
     const pkg = makePkg();
-    const platformPkg = path.join(pkg, 'node_modules', '@colbymchenry', `codegraph-${target}`);
+    const platformPkg = path.join(pkg, 'node_modules', `codegraph-vba-${target}`);
     writeLauncher(path.join(platformPkg, 'bin'));
     fs.writeFileSync(path.join(platformPkg, 'package.json'),
-      JSON.stringify({ name: `@colbymchenry/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
+      JSON.stringify({ name: `codegraph-vba-${target}`, version: '9.9.9-test' }) + '\n');
     const cache = mkTmp('cache');
     const r = await runShim(pkg, ['--probe-abc'], { CODEGRAPH_INSTALL_DIR: cache });
 
@@ -112,7 +112,7 @@ describe.skipIf(isWindows)('npm-shim launcher', () => {
 
     expect(r.status).toBe(1);
     expect(r.stderr).toContain(`no prebuilt bundle for ${target}`);
-    expect(r.stderr).toContain(`@colbymchenry/codegraph-${target}`);
+    expect(r.stderr).toContain(`codegraph-vba-${target}`);
     expect(r.stderr).toContain('--registry=https://registry.npmjs.org');
     expect(r.stderr).toContain('install.sh');
   });
@@ -135,11 +135,11 @@ describe.skipIf(!CAN_NET)('npm-shim download fallback (local HTTPS)', () => {
       { stdio: 'ignore' },
     );
 
-    // Build a fake bundle archive (codegraph-<target>/bin/codegraph), like a real release asset.
+    // Build a fake bundle archive (codegraph-vba-<target>/bin/codegraph), like a real release asset.
     const work = mkTmp('fixture');
-    writeLauncher(path.join(work, `codegraph-${target}`, 'bin'));
+    writeLauncher(path.join(work, `codegraph-vba-${target}`, 'bin'));
     const archive = path.join(work, asset);
-    execSync(`tar -czf ${JSON.stringify(archive)} -C ${JSON.stringify(work)} codegraph-${target}`);
+    execSync(`tar -czf ${JSON.stringify(archive)} -C ${JSON.stringify(work)} codegraph-vba-${target}`);
     fixtureBytes = fs.readFileSync(archive);
     fixtureSha = crypto.createHash('sha256').update(fixtureBytes).digest('hex');
 

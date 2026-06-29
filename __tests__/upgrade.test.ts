@@ -170,8 +170,8 @@ describe('version helpers', () => {
 
   it('reindexAdvisory mentions the refresh commands', () => {
     const a = reindexAdvisory();
-    expect(a).toContain('codegraph sync');
-    expect(a).toContain('codegraph index -f');
+    expect(a).toContain('codegraph-vba sync');
+    expect(a).toContain('codegraph-vba index -f');
   });
 
   it('buildWindowsUpgradeScript targets the right asset per arch and renames-not-deletes the exe', () => {
@@ -257,7 +257,7 @@ describe('runUpgrade', () => {
     expect(calls.runs[0].args[1]).toContain('curl -fsSL');
     expect(calls.runs[0].args[1]).toContain('| sh');
     expect(calls.runs[0].env?.CODEGRAPH_INSTALL_DIR).toBe('/h/.codegraph');
-    expect(calls.logs.join('\n')).toMatch(/codegraph sync/); // re-index advisory printed
+    expect(calls.logs.join('\n')).toMatch(/codegraph-vba sync/); // re-index advisory printed
   });
 
   it('unix bundle: falls back to wget, and errors when neither downloader exists', async () => {
@@ -353,15 +353,25 @@ describe('runUpgrade', () => {
     expect(calls.logs.join('\n')).toMatch(/nothing to upgrade/i);
   });
 
-  it('source: tells the user to git pull, runs nothing', async () => {
-    const { deps, calls } = makeDeps({
-      method: { kind: 'source', root: '/dev/codegraph' },
-      currentVersion: '0.9.8',
-    });
-    const code = await runUpgrade({}, deps);
-    expect(code).toBe(0);
-    expect(calls.runs).toHaveLength(0);
-    expect(calls.logs.join('\n')).toMatch(/git pull/);
+  it('source: runs git pull, then installs and builds, returning 0 on success', async () => {
+    // Use a real tmp dir because production chdir's into `method.root` —
+    // a fake path like `/dev/codegraph` would throw on Windows and on any
+    // platform where the directory doesn't exist.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-upgrade-source-'));
+    try {
+      const { deps, calls } = makeDeps({
+        method: { kind: 'source', root },
+        currentVersion: '0.9.8',
+      });
+      const code = await runUpgrade({}, deps);
+      expect(code).toBe(0);
+      // git pull + package-manager install + package-manager run build.
+      expect(calls.runs.length).toBeGreaterThan(0);
+      expect(calls.logs.join('\n')).toMatch(/git pull/);
+      expect(calls.runs.some((r) => r.cmd === 'git' && r.args[0] === 'pull')).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

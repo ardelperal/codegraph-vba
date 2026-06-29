@@ -364,9 +364,9 @@ describe('CODEGRAPH_DIR override (#636)', () => {
   });
 
   describe('codeGraphDirName()', () => {
-    it('defaults to .codegraph when unset', () => {
+    it('defaults to .codegraph-vba when unset', () => {
       delete process.env.CODEGRAPH_DIR;
-      expect(codeGraphDirName()).toBe('.codegraph');
+      expect(codeGraphDirName()).toBe('.codegraph-vba');
     });
 
     it('honors a valid override', () => {
@@ -377,10 +377,10 @@ describe('CODEGRAPH_DIR override (#636)', () => {
     // Anything that isn't a plain segment could escape the project root or
     // clobber it, so it's ignored in favor of the default.
     it.each(['foo/bar', 'a\\b', '..', '../x', '.', '/abs/path', '   ', ''])(
-      'falls back to .codegraph for invalid value %j',
+      'falls back to .codegraph-vba for invalid value %j',
       (bad) => {
         process.env.CODEGRAPH_DIR = bad;
-        expect(codeGraphDirName()).toBe('.codegraph');
+        expect(codeGraphDirName()).toBe('.codegraph-vba');
       }
     );
   });
@@ -401,12 +401,12 @@ describe('CODEGRAPH_DIR override (#636)', () => {
     });
   });
 
-  it('init writes the index under the overridden directory, not .codegraph', () => {
+  it('init writes the index under the overridden directory, not .codegraph-vba', () => {
     process.env.CODEGRAPH_DIR = '.codegraph-win';
     const cg = CodeGraph.initSync(tempDir);
     try {
       expect(fs.existsSync(path.join(tempDir, '.codegraph-win', 'codegraph.db'))).toBe(true);
-      expect(fs.existsSync(path.join(tempDir, '.codegraph'))).toBe(false);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph-vba'))).toBe(false);
       expect(getCodeGraphDir(tempDir)).toBe(path.join(tempDir, '.codegraph-win'));
       expect(CodeGraph.isInitialized(tempDir)).toBe(true);
     } finally {
@@ -415,7 +415,7 @@ describe('CODEGRAPH_DIR override (#636)', () => {
   });
 
   it('two index dirs coexist in one tree and the override side skips the sibling', async () => {
-    // WSL side: default `.codegraph`, with a source file.
+    // WSL side: default `.codegraph-vba`, with a source file.
     delete process.env.CODEGRAPH_DIR;
     fs.writeFileSync(path.join(tempDir, 'app.ts'), 'export function onlyReal() {}\n');
     const wsl = await CodeGraph.init(tempDir, { index: true });
@@ -424,10 +424,10 @@ describe('CODEGRAPH_DIR override (#636)', () => {
     // Windows side: override dir, same tree. Plant a decoy source file INSIDE
     // the WSL data dir — the override-side index must not pick it up.
     process.env.CODEGRAPH_DIR = '.codegraph-win';
-    fs.writeFileSync(path.join(tempDir, '.codegraph', 'decoy.ts'), 'export function decoyLeak() {}\n');
+    fs.writeFileSync(path.join(tempDir, '.codegraph-vba', 'decoy.ts'), 'export function decoyLeak() {}\n');
     const win = await CodeGraph.init(tempDir, { index: true });
     try {
-      expect(fs.existsSync(path.join(tempDir, '.codegraph', 'codegraph.db'))).toBe(true);
+      expect(fs.existsSync(path.join(tempDir, '.codegraph-vba', 'codegraph.db'))).toBe(true);
       expect(fs.existsSync(path.join(tempDir, '.codegraph-win', 'codegraph.db'))).toBe(true);
       expect(win.searchNodes('onlyReal').length).toBeGreaterThan(0);
       expect(win.searchNodes('decoyLeak')).toEqual([]); // sibling data dir not indexed

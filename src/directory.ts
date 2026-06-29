@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 /** The default per-project data directory name. */
-const DEFAULT_CODEGRAPH_DIR = '.codegraph';
+const DEFAULT_CODEGRAPH_DIR = '.codegraph-vba';
 
 let warnedBadDirName = false;
 
@@ -74,8 +74,10 @@ export const CODEGRAPH_DIR = codeGraphDirName();
 export function isCodeGraphDataDir(name: string): boolean {
   return (
     name === DEFAULT_CODEGRAPH_DIR ||
+    name === '.codegraph' ||
     name === codeGraphDirName() ||
-    name.startsWith(DEFAULT_CODEGRAPH_DIR + '-')
+    name.startsWith(DEFAULT_CODEGRAPH_DIR + '-') ||
+    name.startsWith('.codegraph-')
   );
 }
 

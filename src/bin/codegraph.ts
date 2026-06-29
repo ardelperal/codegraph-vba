@@ -68,9 +68,6 @@ const importESM = new Function('specifier', 'return import(specifier)') as
 const nodeVersion = process.versions.node;
 const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
 if (nodeMajor >= 25) {
-  if (!process.argv.includes('--mcp') && !process.env.CODEGRAPH_ALLOW_UNSAFE_NODE) {
-    process.stderr.write(`[CodeGraph] Warning: Unsupported Node.js version ${nodeVersion}. Continuing in override mode.\n`);
-  }
   process.env.CODEGRAPH_ALLOW_UNSAFE_NODE = '1';
 }
 // Enforce the supported Node floor. `engines` in package.json only *warns* on

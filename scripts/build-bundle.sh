@@ -74,7 +74,12 @@ elif [ -f "$ROOT/pnpm-lock.yaml" ]; then
   cp "$ROOT/pnpm-lock.yaml" "$STAGE/lib/"
 fi
 echo "[bundle] installing production dependencies"
-( cd "$STAGE/lib" && npm ci --omit=dev --ignore-scripts >/dev/null 2>&1 )
+# Use the same package manager the project uses. The upstream uses `npm ci`
+# because the upstream is npm-based; this fork is pnpm-based (the
+# pnpm-lock.yaml copied into the bundle above replaces package-lock.json).
+# `pnpm install --prod` reads pnpm-lock.yaml and only resolves the
+# production deps listed in package.json.
+( cd "$STAGE/lib" && pnpm install --prod --ignore-scripts --frozen-lockfile >/dev/null 2>&1 )
 rm -f "$STAGE/lib/package-lock.json" "$STAGE/lib/pnpm-lock.yaml"
 
 # 4. Vendored Node + launcher (the launcher uses the bundled Node by relative

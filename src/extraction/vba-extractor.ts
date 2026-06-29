@@ -347,6 +347,37 @@ export class VbaExtractor {
       // name can each be found by their exact declaration line.
       this.functionNodeByStartLine.set(lineNum, fnNode);
 
+      // Hueco 3: synthesize the event-handler edge for Access naming
+      // convention `<ControlName>_<EventName>` (e.g. `ComandoAltaPM_Click`,
+      // `MotivoBorrado_AfterUpdate`). The `<X>_<Y>` shape is split on the
+      // LAST underscore so multi-word events like `BeforeDelConfirm` parse
+      // correctly. Form-level events (`Form_Load`, `Form_Open`,
+      // `Form_Unload`, …) are NOT control handlers — they fire on the
+      // form object itself, not on a control — so they are skipped here
+      // (the form module node is the conceptual source for those). See
+      // vba-form-extractor.ts:findControlName for the matching
+      // `form-instance-control` node emission whose stable id this edge
+      // points to.
+      const handler = parseEventHandlerName(name);
+      if (handler) {
+        const formFilePath = this.filePath.replace(/\.cls$/i, '.form.txt');
+        const controlNodeId = generateNodeId(
+          formFilePath,
+          'form-instance-control',
+          handler.controlName,
+          0,
+        );
+        this.edges.push({
+          source: controlNodeId,
+          target: nodeId,
+          kind: 'event-handler',
+          provenance: 'heuristic',
+          metadata: { eventName: handler.eventName },
+          line: lineNum,
+          column: 0,
+        });
+      }
+
       if (this.moduleOrClassNode) {
         this.edges.push({
           source: this.moduleOrClassNode.id,
@@ -1313,4 +1344,31 @@ export class VbaExtractor {
    * typed as a SIMPLE (non-qualified, non-primitive) identifier emit edges.
    */
   private localVarTypeMap = new Map<string, { outer: string; qualified: boolean }>();
+}
+
+/**
+ * Hueco 3 helper: parse an Access event-handler Sub name into its
+ * `<ControlName>_<EventName>` components. Returns null when the name does
+ * not match the convention, when the split yields an empty segment, or
+ * when the control name is `Form` (form-level events are NOT control
+ * handlers — `Form_Load` is the form's own lifecycle event, not a
+ * command-button click).
+ *
+ * Splitting on the LAST underscore (rather than the first) lets
+ * multi-word event names parse correctly: `ComandoAltaPM_BeforeDelConfirm`
+ * yields control=`ComandoAltaPM`, event=`BeforeDelConfirm`, not
+ * control=`ComandoAlta`, event=`PM_BeforeDelConfirm`.
+ */
+function parseEventHandlerName(
+  name: string,
+): { controlName: string; eventName: string } | null {
+  if (!name) return null;
+  const lastUnderscore = name.lastIndexOf('_');
+  if (lastUnderscore <= 0) return null; // no underscore OR starts with underscore
+  const controlName = name.slice(0, lastUnderscore);
+  const eventName = name.slice(lastUnderscore + 1);
+  if (!controlName || !eventName) return null;
+  // Form-level events live on the form, not on a control.
+  if (controlName.toLowerCase() === 'form') return null;
+  return { controlName, eventName };
 }

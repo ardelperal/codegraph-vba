@@ -30,7 +30,7 @@ import * as https from 'https';
 import { spawnSync } from 'child_process';
 
 export const REPO = 'ardelperal/codegraph';
-export const NPM_PACKAGE = '@colbymchenry/codegraph';
+export const NPM_PACKAGE = 'codegraph-vba';
 const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/main`;
 export const INSTALL_SH_URL = `${RAW_BASE}/install.sh`;
 

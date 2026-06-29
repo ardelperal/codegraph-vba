@@ -24,7 +24,7 @@ import {
 export function getMcpServerConfig(): { type: string; command: string; args: string[] } {
   return {
     type: 'stdio',
-    command: 'codegraph',
+    command: 'codegraph-vba',
     args: ['serve', '--mcp'],
   };
 }

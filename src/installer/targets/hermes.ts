@@ -251,8 +251,8 @@ function escapeRegExp(value: string): string {
 
 function renderCodeGraphMcpChild(): string[] {
   return [
-    '  codegraph:',
-    '    command: codegraph',
+    '  codegraph-vba:',
+    '    command: codegraph-vba',
     '    args:',
     '      - serve',
     '      - --mcp',
@@ -269,13 +269,13 @@ function renderCodeGraphMcpBlock(): string[] {
 function hasCodeGraphMcpServer(content: string): boolean {
   const lines = splitLines(content);
   const parent = topLevelRange(lines, 'mcp_servers');
-  return !!parent && !!childRange(lines, parent, 'codegraph');
+  return !!parent && !!childRange(lines, parent, 'codegraph-vba');
 }
 
 function upsertCodeGraphMcpServer(content: string): string {
   const lines = splitLines(content);
   const parent = topLevelRange(lines, 'mcp_servers');
-  const child = parent ? childRange(lines, parent, 'codegraph') : null;
+  const child = parent ? childRange(lines, parent, 'codegraph-vba') : null;
   const replacement = renderCodeGraphMcpChild();
 
   if (!parent) {
@@ -299,7 +299,7 @@ function upsertCodeGraphMcpServer(content: string): string {
 function removeCodeGraphMcpServer(content: string): string {
   const lines = splitLines(content);
   const parent = topLevelRange(lines, 'mcp_servers');
-  const child = parent ? childRange(lines, parent, 'codegraph') : null;
+  const child = parent ? childRange(lines, parent, 'codegraph-vba') : null;
   if (!child) return content;
   lines.splice(child.start, child.end - child.start);
   return joinLines(lines);

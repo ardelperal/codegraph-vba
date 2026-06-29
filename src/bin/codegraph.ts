@@ -159,7 +159,7 @@ const chalk = {
 };
 
 program
-  .name('codegraph')
+  .name('codegraph-vba')
   .description('Code intelligence and knowledge graph for any codebase')
   .version(packageJson.version);
 

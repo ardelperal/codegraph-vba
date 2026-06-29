@@ -118,7 +118,7 @@ function parseConfig(text: string): Record<string, any> {
 function getOpencodeServerEntry(): { type: string; command: string[]; enabled: boolean } {
   return {
     type: 'local',
-    command: ['codegraph', 'serve', '--mcp'],
+    command: ['codegraph-vba', 'serve', '--mcp'],
     enabled: true,
   };
 }
@@ -199,7 +199,7 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
   }
 
   const config = parseConfig(text);
-  const before = config.mcp?.codegraph;
+  const before = config.mcp?.['codegraph-vba'];
   const after = getOpencodeServerEntry();
 
   if (jsonDeepEqual(before, after)) {
@@ -216,7 +216,7 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
 
   // Surgical edit — preserves comments, formatting, and order of
   // every key we don't touch.
-  const edits = modify(text, ['mcp', 'codegraph'], after, {
+  const edits = modify(text, ['mcp', 'codegraph-vba'], after, {
     formattingOptions: FORMATTING,
   });
   const updated = applyEdits(text, edits);
@@ -226,7 +226,7 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
 }
 
 /**
- * Surgically drop `mcp.codegraph` from one config file. Leaves sibling
+ * Surgically drop `mcp.codegraph-vba` from one config file. Leaves sibling
  * servers, comments, and formatting untouched; drops an emptied `mcp`
  * wrapper too. Shared by uninstall and the legacy-%APPDATA% sweep.
  */
@@ -234,9 +234,9 @@ function removeMcpEntryAt(file: string): WriteResult['files'][number] {
   if (!fs.existsSync(file)) return { path: file, action: 'not-found' };
   const text = readConfigText(file);
   const config = parseConfig(text);
-  if (!config.mcp?.codegraph) return { path: file, action: 'not-found' };
+  if (!config.mcp?.['codegraph-vba']) return { path: file, action: 'not-found' };
 
-  let edits = modify(text, ['mcp', 'codegraph'], undefined, {
+  let edits = modify(text, ['mcp', 'codegraph-vba'], undefined, {
     formattingOptions: FORMATTING,
   });
   let updated = applyEdits(text, edits);

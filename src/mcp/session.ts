@@ -28,7 +28,7 @@ import { getTelemetry, ClientInfo } from '../telemetry';
 // Exported so the proxy can answer `initialize` locally with the IDENTICAL
 // payload the daemon would send — no drift between the two handshake paths.
 export const SERVER_INFO = {
-  name: 'codegraph',
+  name: 'codegraph-vba',
   version: CodeGraphPackageVersion,
 };
 

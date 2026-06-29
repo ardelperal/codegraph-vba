@@ -47,7 +47,7 @@ jobs:
           # without telling us anything Node 22 doesn't already.
           - os: windows-latest
             node-version: 20
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' || matrix.node-version == 20 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

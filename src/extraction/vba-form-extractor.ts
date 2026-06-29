@@ -195,6 +195,15 @@ export class VbaFormExtractor {
   private static readonly BEGIN_RE = /^\s*Begin\s+(\p{L}[\p{L}\p{N}_]*)\s*$/u;
 
   /**
+   * `Name = "..."` attribute line — emits the Access control instance name
+   * (e.g. `lblTitulo`, `ComandoAltaPM`). Capture group 1 is the name.
+   * The Dysflow SaveAsText format always wraps the value in double quotes
+   * — even when the name is a simple identifier — so we anchor on `"…"`
+   * without trying to handle unquoted forms.
+   */
+  private static readonly NAME_RE = /^\s*Name\s*=\s*"([^"]+)"\s*$/u;
+
+  /**
    * Control type tokens that are NOT user-visible Access controls and must be
    * filtered out so they don't appear as `property` nodes.
    *
@@ -207,6 +216,17 @@ export class VbaFormExtractor {
     'Form',
     'Section',
   ]);
+
+  /**
+   * Maximum scan window for the `Name = "..."` attribute after a
+   * `Begin <Type>` line. Real Dysflow exports have at most a handful of
+   * whitespace-only lines and the `Name` line within the first 3–6 lines
+   * of the block. 16 is a generous bound; if `Name` is missing within
+   * that window, the control is treated as a nameless container and only
+   * the legacy `property` node is emitted (preserves REQ-FORM-2 for
+   * pre-Name `.form.txt` files exported by older Dysflow versions).
+   */
+  private static readonly NAME_SCAN_WINDOW = 16;
 
   private sweepControls(src: string): void {
     const lines = src.split('\n');
@@ -223,6 +243,11 @@ export class VbaFormExtractor {
       // [A-Za-z_]\w* — it starts with `{`, so the regex naturally rejects
       // it.
       const lineNum = i + 1;
+
+      // ---- Legacy `property` node (REQ-FORM-2, unchanged). ---------------
+      // This node's `name` is the control TYPE (e.g. "CommandButton"). Kept
+      // intact for the 11 existing extraction-vba-form.test.ts tests and
+      // for the 4 realfixture tests that assert on property-kind counts.
       const nodeId = generateNodeId(
         this.filePath,
         'property',
@@ -243,6 +268,88 @@ export class VbaFormExtractor {
         metadata: { controlType },
         updatedAt: Date.now(),
       });
+
+      // ---- Hueco 2: emit a `form-instance-control` node per NAME. -------
+      // Scan ahead up to NAME_SCAN_WINDOW lines for the first
+      // `Name = "..."` attribute. The control's `Name` (e.g. "lblTitulo",
+      // "ComandoAltaPM") is what the .cls side references via
+      // `Me.<ControlName>` (hueco 1) and what event handlers are wired to
+      // via the `<ControlName>_<Event>` naming convention (hueco 3).
+      // line=0 in the generated id keeps the id STABLE across re-indexes
+      // of the same control — the VbaExtractor side synthesizes the
+      // matching event-handler edge using the same id formula (see
+      // vba-extractor.ts: synthesizeEventHandlerEdge).
+      const { name: controlName, nameLine } = this.findControlName(
+        lines,
+        i,
+        lineNum,
+      );
+      if (!controlName) return;
+
+      const controlNodeId = generateNodeId(
+        this.filePath,
+        'form-instance-control',
+        controlName,
+        0,
+      );
+      this.nodes.push({
+        id: controlNodeId,
+        kind: 'form-instance-control',
+        name: controlName,
+        qualifiedName: `${this.filePath}::${controlName}`,
+        filePath: this.filePath,
+        language: 'vba',
+        startLine: lineNum,
+        endLine: nameLine, // spans from Begin to the Name attribute line
+        startColumn: 0,
+        endColumn: 0,
+        metadata: { controlType },
+        updatedAt: Date.now(),
+      });
     }
+  }
+
+  /**
+   * Scan ahead from a `Begin <Type>` line for the first `Name = "…"`
+   * attribute. Returns the captured name and the line number where it
+   * was found, or `{ name: '', nameLine: 0 }` when no Name is present
+   * within the scan window (e.g. the `Begin Form` root block which has
+   * `Caption = "..."` but no `Name`, or pre-Name legacy exports).
+   *
+   * Stops at the next `Begin` or `End` boundary so a misaligned scan
+   * never crosses into a sibling control's attribute block.
+   */
+  private findControlName(
+    lines: string[],
+    beginLineIndex: number,
+    beginLineNum: number,
+  ): { name: string; nameLine: number } {
+    const end = Math.min(
+      lines.length,
+      beginLineIndex + 1 + VbaFormExtractor.NAME_SCAN_WINDOW,
+    );
+    for (let j = beginLineIndex + 1; j < end; j++) {
+      const line = lines[j] ?? '';
+      // Boundary check: a sibling Begin or End closes this block. Don't
+      // look past it (a missing Name line is the common case for the
+      // root `Begin Form` block — its `Caption` is the visible label,
+      // not a `Name`).
+      if (/^\s*(Begin|End)\b/i.test(line)) break;
+      const m = VbaFormExtractor.NAME_RE.exec(line);
+      if (m) {
+        const name = m[1] ?? '';
+        if (name) {
+          return { name, nameLine: j + 1 };
+        }
+      }
+    }
+    // No Name within the window — that's the case for the `Begin Form`
+    // root block (which has `Caption`, not `Name`) and for the
+    // `Begin Section` Access section blocks (which group controls but
+    // carry no Name of their own). The legacy `property` node was
+    // already emitted above; we simply skip the form-instance-control
+    // emission so hueco-4 stays RED for the .form.txt module node
+    // transition (a separate B2 task).
+    return { name: '', nameLine: beginLineNum };
   }
 }

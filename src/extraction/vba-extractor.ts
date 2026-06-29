@@ -77,6 +77,14 @@ export class VbaExtractor {
    */
   private functionNodeByName = new Map<string, Node>();
 
+  /**
+   * Cache: startLine → function node emitted for that line. Used by Fix 1
+   * (June 2026): when Property Get/Let/Set share a name, we need to find
+   * the SPECIFIC accessor's node by its declaration line rather than relying
+   * on `functionNodeByName` which only stores the first accessor.
+   */
+  private functionNodeByStartLine = new Map<number, Node>();
+
   constructor(filePath: string, source: string) {
     this.filePath = filePath;
     this.source = source;
@@ -335,6 +343,9 @@ export class VbaExtractor {
       if (!this.functionNodeByName.has(name)) {
         this.functionNodeByName.set(name, fnNode);
       }
+      // Fix 1: also index by startLine so Property Get/Let/Set with the same
+      // name can each be found by their exact declaration line.
+      this.functionNodeByStartLine.set(lineNum, fnNode);
 
       if (this.moduleOrClassNode) {
         this.edges.push({
@@ -413,33 +424,40 @@ export class VbaExtractor {
     return count;
   }
 
-  /** Qualified Dim `Dim x As Foo.Bar` — emits `references` to `Foo`. */
-  private static readonly DIM_QUAL_RE =
-    /^\s*(?:Dim|Private|Public)\s+\p{L}[\p{L}\p{N}_]*\s+As\s+(\p{L}[\p{L}\p{N}_]*)\.(\p{L}[\p{L}\p{N}_]*)/iu;
+  /**
+   * Check that a line is a variable declaration and NOT a Sub/Function/
+   * Property/Const/WithEvents header (those have their own sweeps).
+   * Fix 1+3 (Issues #1,#3): replaced the old single-match DIM_QUAL_RE /
+   * DIM_UNQUAL_RE pair with a prefix-check + global scan that handles
+   * `As New <Type>`, multi-variable `Dim a As Foo, b As Bar`, and all
+   * visibility keywords in one pass.
+   */
+  private static readonly DIM_DECL_PREFIX_RE =
+    /^\s*(?:Dim|Private|Public)\s+(?!(?:Function|Sub|Property|Const|WithEvents)\b)/i;
 
   /**
-   * Unqualified Dim `Dim x As SomeType` — the dominant VBA dependency
-   * form. Captures the type name (group 1) for emission as a
-   * `references` edge to a synthetic `class` node. Audit S3 (June
-   * 2026): the previous implementation required a `.` in the type
-   * (DIM_QUAL_RE), so `Dim AC As ACAuditoria` emitted no edge and
-   * class→class flows were invisible.
+   * Globally scan all `identifier As [New] TypePart1[.TypePart2]` on a
+   * variable declaration line. Run with /g after confirming DIM_DECL_PREFIX_RE.
    *
-   * Primitive VBA types are skipped via `PRIMITIVE_TYPES` so we don't
-   * pollute the graph with `Dim x As Long` references.
+   * Groups: (1) variable name, (2) type outer part, (3) type inner part (if qualified).
+   * `(?:New\s+)?` consumes the VBA auto-instantiation keyword so it is
+   * never captured as the type name (Fix 1).
    */
-  private static readonly DIM_UNQUAL_RE =
-    /^\s*(?:Dim|Private|Public)\s+\p{L}[\p{L}\p{N}_]*\s+As\s+(\p{L}[\p{L}\p{N}_]*)/iu;
+  private static readonly DIM_ALL_VARS_RE =
+    /\b(\p{L}[\p{L}\p{N}_]*)\s+As\s+(?:New\s+)?(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?/giu;
 
   /**
    * VBA primitive type names — skipped when emitted as Dim targets so
    * we don't pollute the graph with `As Long` / `As String` references.
-   * Case-insensitive (`As long` is the same as `As Long`).
+   * Fix 4: all entries are LOWERCASE and the lookup lowercases the
+   * captured type name so `As long`, `As LONG`, `As Long` all match.
+   * Fix 1 (Issue #1): added `'new'` as a backstop so that if the `As New`
+   * pattern is ever captured as a type name it is silently skipped.
    */
   private static readonly PRIMITIVE_TYPES = new Set([
-    'Long', 'Integer', 'Short', 'Byte', 'Single', 'Double', 'Currency',
-    'String', 'Boolean', 'Date', 'Variant', 'Object', 'Error',
-    'Empty', 'Null', 'LongPtr', 'LongLong',
+    'long', 'integer', 'short', 'byte', 'single', 'double', 'currency',
+    'string', 'boolean', 'date', 'variant', 'object', 'error',
+    'empty', 'null', 'longptr', 'longlong', 'new',
   ]);
 
   /** `WithEvents m_X As Form_Foo` — Dim/Private/Public prefix is optional. */
@@ -453,31 +471,60 @@ export class VbaExtractor {
       const line = lines[i] ?? '';
       const lineNum = i + 1;
 
-      const dimMatch = VbaExtractor.DIM_QUAL_RE.exec(line);
-      if (dimMatch) {
-        const outerType = dimMatch[1] ?? '';
-        if (outerType) {
-          this.emitReference(outerType, lineNum, 0, 'vba-name-resolution');
-          count++;
+      // Fix 1 + Fix 3 (Issues #1, #3): replace the old single-match
+      // DIM_QUAL_RE / DIM_UNQUAL_RE pair with a global scan that handles
+      // `As New <Type>`, multi-variable `Dim a As Foo, b As Bar`, and
+      // qualified `Dim x As Foo.Bar` in a single pass.
+      if (VbaExtractor.DIM_DECL_PREFIX_RE.test(line)) {
+        VbaExtractor.DIM_ALL_VARS_RE.lastIndex = 0;
+        let m: RegExpExecArray | null;
+        while ((m = VbaExtractor.DIM_ALL_VARS_RE.exec(line)) !== null) {
+          const varName = m[1] ?? '';
+          const outerType = m[2] ?? '';
+          const innerType = m[3] ?? '';
+
+          // Fix 2 (Issue #2): populate the local var type map so that
+          // `sweepCallsAndSql` can gate qualified statement-form calls.
+          if (varName && outerType) {
+            this.localVarTypeMap.set(varName.toLowerCase(), {
+              outer: outerType,
+              qualified: !!innerType,
+            });
+          }
+
+          if (innerType) {
+            // Qualified form (`Dim x As Foo.Bar`) — emit reference to the
+            // outer type `Foo` (same behaviour as the old DIM_QUAL_RE path).
+            if (outerType) {
+              this.emitReference(outerType, lineNum, 0, 'vba-name-resolution');
+              count++;
+            }
+          } else {
+            // Unqualified form (`Dim x As SomeType`, `Dim x As New SomeType`)
+            // — emit reference only when the type is not a primitive or keyword.
+            if (outerType && !VbaExtractor.PRIMITIVE_TYPES.has(outerType.toLowerCase())) {
+              this.emitReference(outerType, lineNum, 0, 'vba-name-resolution');
+              count++;
+            }
+          }
         }
       }
 
-      // S3: also process unqualified `Dim x As Foo` (no dot in the
-      // type). Skip primitive types via PRIMITIVE_TYPES so we don't
-      // emit edges for `As Long` / `As String` etc.
-      const unqualMatch = VbaExtractor.DIM_UNQUAL_RE.exec(line);
-      if (unqualMatch) {
-        const typeName = unqualMatch[1] ?? '';
-        if (typeName && !VbaExtractor.PRIMITIVE_TYPES.has(typeName)) {
-          this.emitReference(typeName, lineNum, 0, 'vba-name-resolution');
-          count++;
-        }
-      }
-
+      // WithEvents declarations — handled by their own regex; also populate
+      // the local var type map for completeness.
       const weMatch = VbaExtractor.WITHEVENTS_RE.exec(line);
       if (weMatch) {
         const formType = weMatch[1] ?? '';
         if (formType) {
+          // Extract the variable name from the WithEvents line for the map.
+          const weVarM = /^\s*(?:(?:Dim|Private|Public)\s+)?WithEvents\s+(\p{L}[\p{L}\p{N}_]*)/iu.exec(line);
+          const weVarName = weVarM?.[1] ?? '';
+          if (weVarName) {
+            this.localVarTypeMap.set(weVarName.toLowerCase(), {
+              outer: formType,
+              qualified: false,
+            });
+          }
           this.emitReference(formType, lineNum, 0, 'vba-withevents');
           count++;
         }
@@ -506,6 +553,11 @@ export class VbaExtractor {
     { name: 'CurrentDb.OpenRecordset', re: /\bCurrentDb\.OpenRecordset\s+"((?:[^"]|"")*)"/g },
     { name: 'CurrentDb.Execute', re: /\bCurrentDb\.Execute\s+"((?:[^"]|"")*)"/g },
     { name: 'db.Execute', re: /\bdb\.Execute\s+"((?:[^"]|"")*)"/g },
+    // Fix 4 (Issue #4): inline-literal forms `getdb().Execute "..."` and
+    // `getdb().OpenRecordset "..."` — the variable form is covered by
+    // SQL_VAR_EXEC_RE but the direct-literal form was missing.
+    { name: 'getdb().Execute', re: /\bgetdb\(\)\.Execute\s+"((?:[^"]|"")*)"/g },
+    { name: 'getdb().OpenRecordset', re: /\bgetdb\(\)\.OpenRecordset\s+"((?:[^"]|"")*)"/g },
   ];
 
   /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
@@ -584,6 +636,8 @@ export class VbaExtractor {
     'Application',
     'DoCmd',
     'SysCmd',
+    // VBA debugging intrinsic — Debug.Print / Debug.Assert
+    'Debug',
     // Access object collections
     'Forms',
     'Reports',
@@ -598,6 +652,57 @@ export class VbaExtractor {
     // DAO/ADO recordset field collection access (e.g. rcdDatos.Fields("ID"))
     'Fields',
   ]);
+
+  /**
+   * Fix 2 (Issue #2): replace string-literal content with spaces so that
+   * call-site patterns inside `"..."` spans are invisible to CALL_RE and
+   * the statement-form detectors.  Column positions are preserved (each
+   * character is replaced 1-for-1) so any col-based metadata stays correct.
+   */
+  private static maskStringContent(line: string): string {
+    let result = '';
+    let i = 0;
+    while (i < line.length) {
+      const ch = line[i]!;
+      if (ch === '"') {
+        result += ' '; // opening quote masked
+        i++;
+        while (i < line.length) {
+          const c = line[i]!;
+          if (c === '"' && line[i + 1] === '"') {
+            result += '  '; // doubled-quote escape masked (2 chars)
+            i += 2;
+          } else if (c === '"') {
+            result += ' '; // closing quote masked
+            i++;
+            break;
+          } else {
+            result += ' '; // string content → space
+            i++;
+          }
+        }
+      } else {
+        result += ch;
+        i++;
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Fix 2 (Issue #2): return true iff `receiverName` is a file-local variable
+   * (appears in `localVarTypeMap`) whose declared type is a SIMPLE (non-
+   * qualified, non-primitive) identifier — a candidate project-defined class.
+   * Qualified types (e.g. `DAO.Recordset`) and primitives (`String`, `Long`)
+   * return false so runtime/DAO calls are suppressed.
+   */
+  private isLocalProjectClassVar(receiverName: string): boolean {
+    const entry = this.localVarTypeMap.get(receiverName.toLowerCase());
+    if (!entry) return false; // not declared in this file → silent
+    if (entry.qualified) return false; // DAO.Recordset etc. → silent
+    if (VbaExtractor.PRIMITIVE_TYPES.has(entry.outer.toLowerCase())) return false;
+    return true;
+  }
 
   private sweepCallsAndSql(src: string): void {
     const lines = src.split('\n');
@@ -631,7 +736,15 @@ export class VbaExtractor {
       if (procStart) {
         const name = procStart[3] ?? '';
         const bucket = this.localProcs.get(name);
-        if (bucket && bucket[0]) stack.push(bucket[0]);
+        if (bucket) {
+          // Fix 1: select the ProcInfo whose startLine matches the current
+          // line, not always bucket[0]. When Property Get/Let/Set share a
+          // name, all three exist in the bucket; pushing bucket[0] every time
+          // meant Let/Set bodies erroneously attributed to the Get's ProcInfo
+          // (wrong endLine and wrong caller source on call edges).
+          const proc = bucket.find((p) => p.startLine === lineNum) ?? bucket[0];
+          if (proc) stack.push(proc);
+        }
         procedureStartLines.add(lineNum);
       } else if (procedureEndRe.test(line) && stack.length > 0) {
         const ending = stack.pop()!;
@@ -639,14 +752,21 @@ export class VbaExtractor {
         continue;
       }
 
+      // Fix 2 (Issue #2): mask string-literal content before call scanning so
+      // patterns like `modHelper.BuildQuery(` inside a string argument are not
+      // mistakenly treated as call sites.  SQL scanning still uses the original
+      // line because SQL lives INSIDE string literals.
+      const callScanLine = VbaExtractor.maskStringContent(line);
+
       // Don't scan call sites on the line that declares the procedure — it
       // would match the proc name itself in `Sub Outer()`.
       if (!procedureStartLines.has(lineNum) && stack.length > 0) {
-        this.scanCallSites(line, stack[stack.length - 1]!, lineNum);
+        this.scanCallSites(callScanLine, stack[stack.length - 1]!, lineNum);
       }
 
       // SQL wrappers — only inside a procedure (don't pollute module scope
-      // with a stray string literal).
+      // with a stray string literal).  Use the ORIGINAL line — SQL is inside
+      // string literals, so the masked line would strip the SQL content.
       if (stack.length > 0) {
         this.trackSqlVariableAssignment(lines, i, sqlVariables);
         this.scanSqlInLine(line, lineNum, sqlTargetsThisFile, sqlVariables);
@@ -659,10 +779,24 @@ export class VbaExtractor {
       // nothing to the call graph. Walked here so we share the proc stack
       // already maintained by this loop.
       if (stack.length > 0 && !procedureStartLines.has(lineNum)) {
-        const stmtCall = this.detectStatementCall(line);
+        const stmtCall = this.detectStatementCall(callScanLine);
         if (stmtCall) {
           const caller = stack[stack.length - 1]!;
           this.emitStatementCallEdge(caller, stmtCall, lineNum);
+        }
+
+        // Fix 7 + Fix 2: qualified statement-form calls (`Receiver.Member args`) —
+        // the dominant cross-object call shape in real Dysflow fixtures.
+        // `CALL_RE` only matches the paren form; this path covers the no-paren
+        // statement form and emits a heuristic `calls` edge ONLY when the
+        // receiver is a file-local variable typed as a candidate project class
+        // (Fix 2: REQ-CODE-4 "unresolvable call is silent").
+        const qualStmt = this.detectQualifiedStatementCall(callScanLine);
+        if (qualStmt) {
+          const caller = stack[stack.length - 1]!;
+          if (this.isLocalProjectClassVar(qualStmt.receiver)) {
+            this.emitQualifiedStatementCallEdge(caller, qualStmt.receiver, qualStmt.member, lineNum);
+          }
         }
       }
     }
@@ -763,16 +897,24 @@ export class VbaExtractor {
   private synthFunctionNodeIds = new Set<string>();
 
   private findOrCreateFunctionNodeId(proc: ProcInfo): string {
-    const cached = this.procNodeIdCache.get(proc.name);
+    // Fix 1: key the cache by `name:startLine` so Property Get/Let/Set
+    // accessors with the same name each resolve to their own node.
+    const cacheKey = `${proc.name}:${proc.startLine}`;
+    const cached = this.procNodeIdCache.get(cacheKey);
     if (cached) return cached;
-    const fn = this.findFunctionNodeByName(proc.name);
+    // Prefer the startLine-indexed lookup (O(1), correct for all three
+    // Property accessors). Fall back to the name-indexed cache for procs
+    // whose startLine wasn't recorded (should not happen in practice).
+    const fn =
+      this.functionNodeByStartLine.get(proc.startLine) ??
+      this.findFunctionNodeByName(proc.name);
     if (fn) {
-      this.procNodeIdCache.set(proc.name, fn.id);
+      this.procNodeIdCache.set(cacheKey, fn.id);
       return fn.id;
     }
     // Fallback: synthesize a node id matching generateNodeId's input shape.
     const id = generateNodeId(this.filePath, 'function', proc.name, proc.startLine);
-    this.procNodeIdCache.set(proc.name, id);
+    this.procNodeIdCache.set(cacheKey, id);
     return id;
   }
 
@@ -857,6 +999,109 @@ export class VbaExtractor {
       source: this.findOrCreateFunctionNodeId(caller),
       target: target.id,
       kind: 'calls',
+      line: lineNum,
+      column: 0,
+    });
+  }
+
+  /**
+   * Fix 7: detect a qualified statement-form call — `Receiver.Member <args>`
+   * where `Receiver.Member` is NOT followed by `(`.
+   *
+   * Real VBA idioms this covers:
+   *   `m_NCOp.Registrar m_ARAlInicio, p_Error`
+   *   `m_Obj.Init`
+   *
+   * These are distinct from the paren form (`m_NCOp.Registrar(...)`) which is
+   * already handled by `CALL_RE`. Returns `{receiver, member}` or `null`.
+   *
+   * Property assignments (`Receiver.Prop = value`) are excluded via the `=`
+   * guard — consistent with `detectStatementCall`'s same-file assignment skip.
+   * Blacklisted receivers (runtime objects, keywords) are excluded too.
+   */
+  private detectQualifiedStatementCall(
+    line: string,
+  ): { receiver: string; member: string } | null {
+    let trimmed = line.trimStart();
+    if (!trimmed) return null;
+    // Strip `Call` keyword — same call shape after it.
+    if (/^Call\s/i.test(trimmed)) trimmed = trimmed.replace(/^Call\s+/i, '');
+    // Skip comment lines.
+    if (trimmed.startsWith("'") || /^Rem(\s|$)/i.test(trimmed)) return null;
+    // Skip declarations.
+    if (/^(Dim|Private|Public|Static|Global|Const|ReDim)\s/i.test(trimmed)) return null;
+    // Extract receiver identifier.
+    const receiverM = /^(\p{L}[\p{L}\p{N}_]*)/u.exec(trimmed);
+    if (!receiverM) return null;
+    const receiver = receiverM[1] ?? '';
+    const rest = trimmed.slice(receiver.length);
+    // Must have a dot separator.
+    if (!rest.startsWith('.')) return null;
+    // Extract member identifier.
+    const memberRest = rest.slice(1); // skip the dot
+    const memberM = /^(\p{L}[\p{L}\p{N}_]*)/u.exec(memberRest);
+    if (!memberM) return null;
+    const member = memberM[1] ?? '';
+    const afterMember = memberRest.slice(member.length);
+    // Must NOT be followed by `(` — the paren form is handled by CALL_RE.
+    if (afterMember.startsWith('(')) return null;
+    // Must be followed by space/tab (args present) OR end of line (no args).
+    if (afterMember.length > 0) {
+      const ch = afterMember.charAt(0);
+      if (ch !== ' ' && ch !== '\t') return null;
+      // Skip property assignments: `Receiver.Prop = value`.
+      const argsText = afterMember.trimStart();
+      if (argsText.startsWith('=')) return null;
+    }
+    // Respect the keyword and runtime blacklists.
+    if (VbaExtractor.CALL_KEYWORD_BLACKLIST.has(receiver)) return null;
+    if (VbaExtractor.RUNTIME_RECEIVER_BLACKLIST.has(receiver)) return null;
+    if (VbaExtractor.CALL_KEYWORD_BLACKLIST.has(member)) return null;
+    if (VbaExtractor.RUNTIME_RECEIVER_BLACKLIST.has(member)) return null;
+    return { receiver, member };
+  }
+
+  /**
+   * Fix 7: emit a heuristic `calls` edge for a qualified statement-form call.
+   * Same shape as the qualified-paren path in `scanCallSites` — reuses the
+   * same `callDedupe` / `synthFunctionNodeIds` sets for de-duplication so a
+   * paren and non-paren form on the same line don't create duplicate edges.
+   */
+  private emitQualifiedStatementCallEdge(
+    caller: ProcInfo,
+    receiver: string,
+    member: string,
+    lineNum: number,
+  ): void {
+    const qualified = `${receiver}.${member}`;
+    const dedupeKey = `${caller.name}->${qualified}@${lineNum}`;
+    if (this.callDedupe.has(dedupeKey)) return;
+    this.callDedupe.add(dedupeKey);
+
+    const synthId = generateNodeId(this.filePath, 'function', qualified, lineNum);
+    if (!this.synthFunctionNodeIds.has(synthId)) {
+      this.synthFunctionNodeIds.add(synthId);
+      this.nodes.push({
+        id: synthId,
+        kind: 'function',
+        name: qualified,
+        qualifiedName: qualified,
+        filePath: this.filePath,
+        language: 'vba',
+        startLine: lineNum,
+        endLine: lineNum,
+        startColumn: 0,
+        endColumn: qualified.length,
+        visibility: 'public',
+        updatedAt: Date.now(),
+      });
+    }
+    this.edges.push({
+      source: this.findOrCreateFunctionNodeId(caller),
+      target: synthId,
+      kind: 'calls',
+      provenance: 'heuristic',
+      metadata: { synthesizedBy: 'vba-name-resolution' },
       line: lineNum,
       column: 0,
     });
@@ -950,14 +1195,17 @@ export class VbaExtractor {
     synthesizedBy: string,
   ): void {
     if (!targetName) return;
+    // Fix 5: key the synthetic node id on (filePath, kind, name) WITHOUT
+    // lineNum so the same type/table referenced on N different lines produces
+    // exactly ONE node. The edge carries the per-site `line`/`column`.
     const targetId = generateNodeId(
       this.filePath,
       'class', // placeholder kind; cross-file resolution will re-type at lookup
       targetName,
-      lineNum,
+      0,        // stable — line-independent
     );
     if (this.synthClassNodeIds.has(targetId)) {
-      // Edge already exists? Emit anyway with a fresh line attribution.
+      // Node already emitted for this name — only add the edge below.
     } else {
       this.synthClassNodeIds.add(targetId);
       this.nodes.push({
@@ -988,4 +1236,12 @@ export class VbaExtractor {
   }
 
   private synthClassNodeIds = new Set<string>();
+
+  /**
+   * Fix 2 (Issue #2): maps `variableName.toLowerCase()` → declared type info.
+   * Built by `sweepDimsAndWithEvents`; consulted by `sweepCallsAndSql` to gate
+   * qualified statement-form calls — only receivers that are file-local variables
+   * typed as a SIMPLE (non-qualified, non-primitive) identifier emit edges.
+   */
+  private localVarTypeMap = new Map<string, { outer: string; qualified: boolean }>();
 }

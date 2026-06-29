@@ -155,19 +155,23 @@ End Sub`;
     expect(target?.name).toContain('modHelpers');
   });
 
-  it('unresolvable call emits no edge and does not throw', () => {
-    // A bare qualified reference (no parens) is not a call expression;
-    // the CALL_RE requires `\s*\(` so this source emits zero edges.
+  it('unresolvable qualified call (no parens) emits NO edge when receiver is not a local declared variable (Fix 2)', () => {
+    // After Fix 2 (gated qualified stmt calls): a receiver that is not
+    // declared as a file-local Dim/Private/Public variable is SILENT —
+    // aligns with REQ-CODE-4 "Unresolvable call is silent".
+    // The previous Fix 7 behavior (always emit) is now restricted to
+    // receivers declared as file-local variables typed as project classes.
     const src = `Sub RunIt()
   UnknownExternal.Whatever
 End Sub`;
     const r = extract('src/modules/Solo.bas', src);
-    // No edge should target anything starting with "UnknownExternal".
+    // UnknownExternal is not declared in the file → no edge emitted.
     const edgesToUnknown = r.edges.filter((e) => {
       const tgt = r.nodes.find((n) => n.id === e.target);
       return tgt?.name?.startsWith('UnknownExternal');
     });
     expect(edgesToUnknown).toHaveLength(0);
+    // No extraction errors.
     expect(r.errors).toHaveLength(0);
   });
 });
@@ -1034,5 +1038,570 @@ describe('VbaExtractor — statement-form Sub calls (H1 invariant)', () => {
       );
     });
     expect(statementCalls).toHaveLength(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 1: Property Get/Let/Set endLine + caller attribution
+// ---------------------------------------------------------------------------
+
+/**
+ * Fix 1: when Property Get and Property Let/Set share the same name, the
+ * proc-stack in `sweepCallsAndSql` was always pushing `bucket[0]` (the Get's
+ * ProcInfo) regardless of which accessor's declaration line we were on. This
+ * caused the wrong `endLine` to be set (the second `End Property` updated the
+ * Get node instead of the Let/Set node) and calls inside the Let/Set body to
+ * be attributed to the Get node.
+ */
+describe('VbaExtractor — Property Get/Let/Set endLine attribution (Fix 1)', () => {
+  it('Property Get and Property Set with the same name have non-overlapping endLine spans', () => {
+    const src = [
+      'Property Get Documentos() As String',  // 1
+      '  Documentos = m_str',                 // 2
+      'End Property',                          // 3
+      '',                                      // 4
+      'Property Set Documentos(v As String)', // 5
+      '  m_str = v',                           // 6
+      'End Property',                          // 7
+    ].join('\n');
+    const r = extract('src/classes/X.cls', src);
+    const getNode = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Documentos' && n.startLine === 1,
+    );
+    const setNode = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Documentos' && n.startLine === 5,
+    );
+    expect(getNode).toBeDefined();
+    expect(setNode).toBeDefined();
+    // Each accessor must end on its own `End Property` line.
+    expect(getNode?.endLine).toBe(3);
+    expect(setNode?.endLine).toBe(7);
+    // Spans must not overlap.
+    expect(getNode?.endLine ?? 0).toBeLessThan(setNode?.startLine ?? 999);
+  });
+
+  it('Property Get/Let/Set spans are correct for all three accessors', () => {
+    const src = [
+      'Property Get Val() As Long',           // 1
+      '  Val = m_val',                         // 2
+      'End Property',                           // 3
+      '',                                       // 4
+      'Property Let Val(v As Long)',            // 5
+      '  m_val = v',                            // 6
+      'End Property',                           // 7
+      '',                                       // 8
+      'Property Set Val(v As Object)',          // 9
+      '  Set m_val = v',                        // 10
+      'End Property',                           // 11
+    ].join('\n');
+    const r = extract('src/classes/X.cls', src);
+    const getN = r.nodes.find((n) => n.kind === 'function' && n.name === 'Val' && n.startLine === 1);
+    const letN = r.nodes.find((n) => n.kind === 'function' && n.name === 'Val' && n.startLine === 5);
+    const setN = r.nodes.find((n) => n.kind === 'function' && n.name === 'Val' && n.startLine === 9);
+    expect(getN?.endLine).toBe(3);
+    expect(letN?.endLine).toBe(7);
+    expect(setN?.endLine).toBe(11);
+  });
+
+  it('calls inside Property Let body attribute to the Let node, not the Get node', () => {
+    const src = [
+      'Property Get Val() As Long',            // 1
+      '  Val = m_val',                          // 2
+      'End Property',                            // 3
+      '',                                        // 4
+      'Property Let Val(v As Long)',             // 5
+      '  Helper',                                // 6  bare statement call
+      'End Property',                            // 7
+      '',                                        // 8
+      'Private Sub Helper()',                    // 9
+      'End Sub',                                 // 10
+    ].join('\n');
+    const r = extract('src/classes/X.cls', src);
+    const letNode = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Val' && n.startLine === 5,
+    );
+    const helperNode = r.nodes.find((n) => n.kind === 'function' && n.name === 'Helper');
+    expect(letNode).toBeDefined();
+    expect(helperNode).toBeDefined();
+    // The calls edge source MUST be the Let node, not the Get node.
+    const callEdge = r.edges.find(
+      (e) => e.kind === 'calls' && e.source === letNode?.id && e.target === helperNode?.id,
+    );
+    expect(callEdge).toBeDefined();
+    // And no calls edge should have source === Get node.
+    const getNode = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Val' && n.startLine === 1,
+    );
+    const wrongCallEdge = r.edges.find(
+      (e) => e.kind === 'calls' && e.source === getNode?.id && e.target === helperNode?.id,
+    );
+    expect(wrongCallEdge).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 2: Duplicate `references` edge for qualified `Dim x As Foo.Bar`
+// ---------------------------------------------------------------------------
+
+/**
+ * Fix 2: `Dim x As Foo.Bar` was matched by BOTH `DIM_QUAL_RE` (which extracts
+ * the outer type `Foo`) AND `DIM_UNQUAL_RE` (which also extracts `Foo` via the
+ * same capture), causing two identical `references` edges with the same target.
+ */
+describe('VbaExtractor — no duplicate references for qualified Dim (Fix 2)', () => {
+  it('Dim x As Foo.Bar emits exactly ONE references edge to the outer type (Fix 2)', () => {
+    const src = `Dim m_Obj As DAO.Database`;
+    const r = extract('src/classes/X.cls', src);
+    const refEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    // Must be exactly 1, not 2.
+    expect(refEdges).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refEdges[0]?.target);
+    expect(target?.name).toBe('DAO');
+  });
+
+  it('Dim x As Foo.Bar emits ONE node for the outer type (no duplicate synthetic nodes)', () => {
+    const src = `Dim m_Obj As Scripting.Dictionary`;
+    const r = extract('src/modules/Mod.bas', src);
+    const daoNodes = r.nodes.filter((n) => n.name === 'Scripting');
+    expect(daoNodes).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 4: PRIMITIVE_TYPES guard is case-insensitive
+// ---------------------------------------------------------------------------
+
+/**
+ * Fix 4: `PRIMITIVE_TYPES.has(typeName)` was comparing against PascalCase
+ * entries (`'Long'`, `'String'`, …) but VBA is case-insensitive, so
+ * `Dim x As long` / `Dim x As STRING` slipped through and created phantom
+ * `references` nodes named `long` / `STRING`.
+ */
+describe('VbaExtractor — primitive type guard is case-insensitive (Fix 4)', () => {
+  it('Dim x As long (all-lowercase) does NOT emit a reference edge', () => {
+    const src = `Dim x As long`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(0);
+  });
+
+  it('Dim x As STRING (all-uppercase) does NOT emit a reference edge', () => {
+    const src = `Dim x As STRING`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(0);
+  });
+
+  it('Dim x As Long (PascalCase — existing) still does NOT emit a reference edge', () => {
+    const src = `Dim x As Long`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(0);
+  });
+
+  it('Dim x As lONGpTR (mixed-case LongPtr) does NOT emit a reference edge', () => {
+    const src = `Dim x As lONGpTR`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 5: SQL-table synthetic nodes — one node per unique table name
+// ---------------------------------------------------------------------------
+
+/**
+ * Fix 5: `emitReference` was keying the synthetic node id on
+ * `generateNodeId(filePath, 'class', name, lineNum)` where `lineNum` varies
+ * per reference site. This meant the `synthClassNodeIds` de-dup never fired
+ * for different lines and the same table referenced from N procedures created
+ * N separate nodes.
+ */
+describe('VbaExtractor — one synthetic node per SQL table name (Fix 5)', () => {
+  it('the same SQL table referenced in two different procedures emits exactly ONE node', () => {
+    const src = [
+      'Sub A()',
+      '  DoCmd.RunSQL "SELECT * FROM TbFoo"',
+      'End Sub',
+      '',
+      'Sub B()',
+      '  DoCmd.RunSQL "UPDATE TbFoo SET x = 1"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const fooNodes = r.nodes.filter((n) => n.name === 'TbFoo');
+    // Must be exactly ONE node, not two.
+    expect(fooNodes).toHaveLength(1);
+  });
+
+  it('two DIFFERENT SQL tables each produce their own node', () => {
+    const src = [
+      'Sub A()',
+      '  DoCmd.RunSQL "SELECT * FROM TbFoo"',
+      'End Sub',
+      '',
+      'Sub B()',
+      '  DoCmd.RunSQL "SELECT * FROM TbBar"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const fooNodes = r.nodes.filter((n) => n.name === 'TbFoo');
+    const barNodes = r.nodes.filter((n) => n.name === 'TbBar');
+    expect(fooNodes).toHaveLength(1);
+    expect(barNodes).toHaveLength(1);
+  });
+
+  it('the same Dim type referenced on multiple lines produces exactly ONE node', () => {
+    // Same fix applies to Dim references, not just SQL.
+    const src = [
+      'Dim a As ACAuditoria',
+      'Dim b As ACAuditoria',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const acNodes = r.nodes.filter((n) => n.name === 'ACAuditoria');
+    expect(acNodes).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 7: Qualified statement-form calls (no parens) emit heuristic edges
+// ---------------------------------------------------------------------------
+
+/**
+ * Fix 7: `m_Obj.Method arg1, arg2` (no parens) emitted zero `calls` edges
+ * because `CALL_RE` required `\s*\(`. This is the dominant cross-object call
+ * shape in real Dysflow-exported fixtures. Now a statement-form qualified call
+ * is detected by `detectQualifiedStatementCall` and emits a heuristic edge.
+ */
+describe('VbaExtractor — qualified statement-form calls emit heuristic edges (Fix 7)', () => {
+  it('Receiver.Method arg (no parens) emits a heuristic calls edge when receiver is a local project-class var', () => {
+    // Fix 2 (Issue #2): receiver must be declared as a file-local variable
+    // typed as a simple (non-qualified, non-primitive) class.
+    const src = [
+      'Sub Outer()',
+      '  Dim m_NCOp As NCOperaciones',
+      '  m_NCOp.Registrar m_ARAlInicio, p_Error',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdges.length).toBeGreaterThanOrEqual(1);
+    const target = r.nodes.find((n) => n.id === hEdges[0]?.target);
+    expect(target?.name).toBe('m_NCOp.Registrar');
+  });
+
+  it('Receiver.Method (no args, no parens) also emits a heuristic calls edge when receiver is declared', () => {
+    // Fix 2 (Issue #2): receiver must be in the local var type map.
+    const src = [
+      'Sub Outer()',
+      '  Dim m_Obj As SomeClass',
+      '  m_Obj.Init',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic',
+    );
+    expect(hEdges.length).toBeGreaterThanOrEqual(1);
+    const target = r.nodes.find((n) => n.id === hEdges[0]?.target);
+    expect(target?.name).toBe('m_Obj.Init');
+  });
+
+  it('Receiver.Method(args) (paren form) is not double-counted by the statement form detector', () => {
+    const src = [
+      'Sub Outer()',
+      '  m_NCOp.Registrar(arg1, arg2)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    // CALL_RE handles the paren form; detectQualifiedStatementCall must skip it.
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic',
+    );
+    expect(hEdges).toHaveLength(1);
+  });
+
+  it('blacklisted receivers do not emit qualified statement calls', () => {
+    const src = [
+      'Sub Outer()',
+      '  DoCmd.OpenForm "MyForm"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    // DoCmd is in RUNTIME_RECEIVER_BLACKLIST — no heuristic edge.
+    const hEdgesDoCmd = r.edges.filter((e) => {
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return e.kind === 'calls' && tgt?.name?.startsWith('DoCmd');
+    });
+    expect(hEdgesDoCmd).toHaveLength(0);
+  });
+
+  it('property assignment (Receiver.Prop = value) does NOT emit a calls edge', () => {
+    const src = [
+      'Sub Outer()',
+      '  m_Obj.Status = 1',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const callEdges = r.edges.filter((e) => e.kind === 'calls');
+    expect(callEdges).toHaveLength(0);
+  });
+
+  it('qualified statement call does NOT emit an edge when receiver is typed as a qualified/runtime type (Fix 2)', () => {
+    // DAO.Recordset is a qualified type → rcdDatos.AddNew must be silent.
+    const src = [
+      'Sub Outer()',
+      '  Dim rcdDatos As DAO.Recordset',
+      '  rcdDatos.AddNew',
+      '  rcdDatos.Update',
+      '  rcdDatos.Close',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdges = r.edges.filter((e) => e.kind === 'calls' && e.provenance === 'heuristic');
+    expect(hEdges).toHaveLength(0);
+  });
+
+  it('legitimate cross-object call on project-class var still emits edge after Fix 2 gating', () => {
+    // Replicates the real fixture pattern: m_AROp is typed as ARAuditoriaOperaciones
+    // (a project class, not qualified, not primitive) → edge must be emitted.
+    const src = [
+      'Sub Eliminar()',
+      '  Dim m_AROp As ARAuditoriaOperaciones',
+      '  Set m_AROp = New ARAuditoriaOperaciones',
+      '  m_AROp.Eliminar p_Error',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdges.length).toBeGreaterThanOrEqual(1);
+    const target = r.nodes.find((n) => n.id === hEdges[0]?.target);
+    expect(target?.name).toBe('m_AROp.Eliminar');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1: Dim x As New <Type> — must reference the real type, not `New`
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — Dim As New references the actual class (Issue #1)', () => {
+  it('Dim x As New SomeClass emits a reference to SomeClass, not New', () => {
+    const src = `Dim conn As New ACAuditoria`;
+    const r = extract('src/classes/X.cls', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('ACAuditoria');
+    // Must NOT reference 'New' as a type.
+    const newNode = r.nodes.find((n) => n.name === 'New');
+    expect(newNode).toBeUndefined();
+  });
+
+  it('Dim rs As New DAO.Recordset emits a reference to DAO (outer), not New', () => {
+    const src = `Dim rs As New DAO.Recordset`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('DAO');
+    const newNode = r.nodes.find((n) => n.name === 'New');
+    expect(newNode).toBeUndefined();
+  });
+
+  it('Dim c As New Collection emits reference to Collection (not New)', () => {
+    // Collection is not a VBA primitive; it's a built-in class. The type
+    // name is captured correctly without the New keyword.
+    const src = `Dim c As New Collection`;
+    const r = extract('src/modules/Mod.bas', src);
+    // Collection is not in PRIMITIVE_TYPES, so a reference is emitted.
+    const collNodes = r.nodes.filter((n) => n.name === 'Collection');
+    expect(collNodes.length).toBeGreaterThanOrEqual(1);
+    const newNode = r.nodes.find((n) => n.name === 'New');
+    expect(newNode).toBeUndefined();
+  });
+
+  it('Set x = New SomeClass (Set statement) does NOT emit a Dim-style references edge', () => {
+    // Set assignment is not a Dim declaration; the extractor should not
+    // emit a references edge from it.
+    const src = [
+      'Sub X()',
+      '  Set m_AROp = New ARAuditoriaOperaciones',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const refEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    // No Dim declaration on that line → no references edge.
+    expect(refEdges).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3: Multi-variable Dim — all types must be referenced
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — multi-variable Dim emits all type references (Issue #3)', () => {
+  it('Dim a As Foo, b As Bar emits references to both Foo and Bar', () => {
+    const src = `Dim a As Foo, b As Bar`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(2);
+    const names = refs.map((e) => r.nodes.find((n) => n.id === e.target)?.name).sort();
+    expect(names).toEqual(['Bar', 'Foo']);
+  });
+
+  it('Dim a As Long, b As Bar skips Long (primitive) and emits only Bar', () => {
+    const src = `Dim a As Long, b As Bar`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('Bar');
+  });
+
+  it('Dim a As Foo, b As New Bar emits references to both Foo and Bar (Fix 1+3)', () => {
+    const src = `Dim a As Foo, b As New Bar`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    const names = refs.map((e) => r.nodes.find((n) => n.id === e.target)?.name).sort();
+    expect(names).toContain('Foo');
+    expect(names).toContain('Bar');
+    // Must not reference 'New' as a type name.
+    const newNode = r.nodes.find((n) => n.name === 'New');
+    expect(newNode).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2: Call scanning must be string-aware
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — call patterns inside string literals are ignored (Issue #2)', () => {
+  it('modHelper.BuildQuery(123) inside a string literal does not emit a calls edge', () => {
+    const src = [
+      'Sub X()',
+      '  m_SQL = "EXEC modHelper.BuildQuery(123)"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const callEdges = r.edges.filter((e) => e.kind === 'calls');
+    expect(callEdges).toHaveLength(0);
+  });
+
+  it('myModule.MyFunc(id) inside a DoCmd.RunSQL string does not emit a calls edge', () => {
+    // DoCmd is blacklisted at the receiver level; the string content must
+    // also be masked so `myModule.MyFunc` is not matched by CALL_RE.
+    const src = [
+      'Sub X()',
+      '  DoCmd.RunSQL "SELECT myModule.MyFunc(id) FROM tbl"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const callEdges = r.edges.filter((e) => {
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return e.kind === 'calls' && tgt?.name?.startsWith('myModule');
+    });
+    expect(callEdges).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #4: getdb().Execute / getdb().OpenRecordset with inline SQL literal
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — getdb() inline SQL literal resolved (Issue #4)', () => {
+  it('getdb().Execute with inline SQL literal resolves the table', () => {
+    const src = [
+      'Sub Del()',
+      '  getdb().Execute "DELETE FROM tblFoo"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblFoo');
+  });
+
+  it('getdb().OpenRecordset with inline SQL literal resolves the table', () => {
+    const src = [
+      'Sub Q()',
+      '  Set rs = getdb().OpenRecordset "SELECT * FROM tblBar"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('tblBar');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #5: SQL + Rem-with-string false positive
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — Rem comment after SQL does not produce false table refs (Issue #5)', () => {
+  it('DoCmd.RunSQL "real" Rem "fake" yields only tblReal, not tblFake', () => {
+    const src = [
+      'Sub X()',
+      '  DoCmd.RunSQL "SELECT * FROM tblReal" Rem "SELECT * FROM tblFake"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const sqlEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const tableNames = sqlEdges.map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+    expect(tableNames).toContain('tblReal');
+    expect(tableNames).not.toContain('tblFake');
+  });
+
+  it('trailing bare Rem at EOL (no trailing space) strips the remainder', () => {
+    // REM_MIDLINE must handle `\s+Rem$` (end-of-line) not just `\s+Rem\s`.
+    const src = [
+      'Sub X()',
+      '  DoCmd.RunSQL "SELECT * FROM tblReal" Rem',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const sqlEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    expect(sqlEdges).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === sqlEdges[0]?.target);
+    expect(target?.name).toBe('tblReal');
   });
 });

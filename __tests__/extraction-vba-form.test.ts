@@ -144,3 +144,71 @@ End`;
     expect(binding?.referenceName).toBe('Form_Main');
   });
 });
+
+/**
+ * Fix 3: `Begin Form` and `Begin Section` are the form root and Access
+ * section containers (Header/Detail/Footer), NOT user controls. They MUST
+ * NOT appear as `property` nodes. The old `NON_CONTROL_TYPES` set was empty,
+ * so every `Begin` line, including `Begin Form` and `Begin Section`, created
+ * a property node.
+ */
+describe('VbaFormExtractor — Form and Section are not emitted as controls (Fix 3)', () => {
+  it('Begin Form is filtered out and does not produce a property node', () => {
+    const src = `Begin Form
+    Begin TextBox
+        Name = "txtField"
+    End
+End`;
+    const r = extract('src/forms/Form_Main.form.txt', src);
+    const props = r.nodes.filter((n) => n.kind === 'property');
+    // Only the TextBox should be a property; Form is the root container.
+    expect(props).toHaveLength(1);
+    expect(props[0]?.metadata?.controlType).toBe('TextBox');
+    // Explicitly: no property node with controlType 'Form'
+    const formProps = props.filter((p) => p.metadata?.controlType === 'Form');
+    expect(formProps).toHaveLength(0);
+  });
+
+  it('Begin Section is filtered out and does not produce a property node', () => {
+    const src = `Begin Form
+    Begin Section
+    End
+    Begin TextBox
+        Name = "txtField"
+    End
+End`;
+    const r = extract('src/forms/Form_Main.form.txt', src);
+    const props = r.nodes.filter((n) => n.kind === 'property');
+    // Only TextBox emits a property; Form and Section are containers.
+    expect(props).toHaveLength(1);
+    expect(props[0]?.metadata?.controlType).toBe('TextBox');
+    const sectionProps = props.filter((p) => p.metadata?.controlType === 'Section');
+    expect(sectionProps).toHaveLength(0);
+  });
+
+  it('Rectangle control is NOT filtered (it is a real Access control)', () => {
+    const src = `Begin Form
+    Begin Rectangle
+        Name = "rectBorder"
+    End
+End`;
+    const r = extract('src/forms/Form_Main.form.txt', src);
+    const rectProps = r.nodes.filter(
+      (n) => n.kind === 'property' && n.metadata?.controlType === 'Rectangle',
+    );
+    expect(rectProps).toHaveLength(1);
+  });
+
+  it('Image control is NOT filtered (it is a real Access control)', () => {
+    const src = `Begin Form
+    Begin Image
+        Name = "imgLogo"
+    End
+End`;
+    const r = extract('src/forms/Form_Main.form.txt', src);
+    const imgProps = r.nodes.filter(
+      (n) => n.kind === 'property' && n.metadata?.controlType === 'Image',
+    );
+    expect(imgProps).toHaveLength(1);
+  });
+});

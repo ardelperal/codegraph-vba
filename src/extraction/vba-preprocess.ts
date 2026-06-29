@@ -64,8 +64,9 @@ export function joinLineContinuations(src: string): string {
 // 2. stripVbaComments
 // -----------------------------------------------------------------------------
 
-const REM_PREFIX = /^Rem\s/i;
-const REM_MIDLINE = /\s+Rem\s/i;
+const REM_PREFIX = /^Rem(\s|$)/i;
+// Fix 5: handle trailing bare `Rem` at EOL (`\s|$` instead of `\s` alone).
+const REM_MIDLINE = /\s+Rem(\s|$)/i;
 const OPTION_DIRECTIVE = /^\s*Option\s+\w+/i;
 
 /**
@@ -208,11 +209,21 @@ function stripRemInCodeSegments(line: string): string {
     i++;
   }
   if (buf) segments.push({ text: buf, isString: inString });
+  // Fix 5: once a `Rem` comment marker is found in a code segment, discard
+  // that segment from the Rem position onward AND all subsequent segments
+  // (which may be string literals from the comment body — they must not
+  // produce false SQL table references).
+  let remFound = false;
   for (const s of segments) {
+    if (remFound) {
+      s.text = '';
+      continue;
+    }
     if (!s.isString) {
       const m = REM_MIDLINE.exec(s.text);
       if (m) {
         s.text = s.text.slice(0, m.index).replace(/\s+$/, '');
+        remFound = true;
       }
     }
   }

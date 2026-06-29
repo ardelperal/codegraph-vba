@@ -223,17 +223,21 @@ describe('stripVbaComments', () => {
     expect(stripVbaComments(src)).toBe(src);
   });
 
-  it('still strips a real mid-line Rem comment while leaving surrounding strings intact (W1)', () => {
-    // Code + Rem comment + another code segment, with a string in between.
+  it('still strips a real mid-line Rem comment — everything after Rem is comment content (W1 + Issue #5)', () => {
+    // In VBA, `Rem` starts a comment that continues to end-of-line.
+    // Everything after the `Rem` keyword (including string literals that
+    // happen to appear in the comment text) is discarded.
+    // Updated by Issue #5 fix: the old test incorrectly expected `" Rem "`
+    // and `y = 2` to be preserved after a `Rem` comment — they are comment
+    // content and must NOT appear in the output.
     const src = 'x = 1 Rem trailing comment  " Rem "  y = 2';
     const out = stripVbaComments(src);
-    // The Rem comment is stripped.
-    expect(out).not.toContain('Rem trailing');
-    // The " Rem " inside the string is preserved.
-    expect(out).toContain('" Rem "');
-    // Both code segments remain.
+    // Code before Rem is preserved.
     expect(out).toContain('x = 1');
-    expect(out).toContain('y = 2');
+    // Everything after Rem (including string literals in the comment) is gone.
+    expect(out).not.toContain('Rem trailing');
+    expect(out).not.toContain('" Rem "');
+    expect(out).not.toContain('y = 2');
   });
 
   it('strips a `\'` on its own line', () => {
@@ -243,6 +247,49 @@ describe('stripVbaComments', () => {
 
   it('preserves an empty input', () => {
     expect(stripVbaComments('')).toBe('');
+  });
+
+  /**
+   * Fix 6: bare `Rem` (no trailing space) must be treated as a whole-line
+   * comment, same as `Rem `. VBA allows `Rem` alone on a line as a valid
+   * empty comment. The old regex `/^Rem\s/i` required a whitespace char after
+   * `Rem` and let bare `Rem` lines through.
+   */
+  it('a bare "Rem" line with no trailing space is stripped as a comment (Fix 6)', () => {
+    const src = 'Rem\nx = 1';
+    const out = stripVbaComments(src);
+    // The Rem line becomes an empty placeholder (line-count parity preserved).
+    expect(out).toBe('\nx = 1');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+  });
+
+  it('a bare "REM" (upper-case) line with no trailing space is also stripped (Fix 6)', () => {
+    const src = 'REM\nSub X(): End Sub';
+    const out = stripVbaComments(src);
+    expect(out).toBe('\nSub X(): End Sub');
+  });
+
+  /**
+   * Issue #5 — `DoCmd.RunSQL "real" Rem "fake"` must not produce a false
+   * table reference from the string that appears inside the Rem comment.
+   * `stripRemInCodeSegments` must discard ALL segments (including string
+   * literals) that follow the Rem marker.
+   */
+  it('Issue #5: Rem comment with string argument after it — string is discarded (not returned)', () => {
+    // After `Rem` the rest of the line (including `"SELECT * FROM tblFake"`)
+    // is comment content. stripVbaComments must NOT return that string.
+    const src = 'DoCmd.RunSQL "SELECT * FROM tblReal" Rem "SELECT * FROM tblFake"';
+    const out = stripVbaComments(src);
+    expect(out).toContain('"SELECT * FROM tblReal"');
+    expect(out).not.toContain('tblFake');
+  });
+
+  it('Issue #5: trailing bare Rem at EOL (REM_MIDLINE /(\\s|$)/) strips the Rem token itself', () => {
+    // `\s+Rem$` — Rem appears at end-of-line with no trailing space.
+    const src = 'DoCmd.RunSQL "SELECT * FROM tblReal" Rem';
+    const out = stripVbaComments(src);
+    expect(out).toContain('"SELECT * FROM tblReal"');
+    expect(out).not.toContain('Rem');
   });
 });
 

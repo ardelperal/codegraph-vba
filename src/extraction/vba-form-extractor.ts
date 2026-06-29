@@ -194,12 +194,18 @@ export class VbaFormExtractor {
    */
   private static readonly BEGIN_RE = /^\s*Begin\s+(\p{L}[\p{L}\p{N}_]*)\s*$/u;
 
-  /** Control types we recognize. Anything else is treated as a property too,
-   * but with the type as-given. */
+  /**
+   * Control type tokens that are NOT user-visible Access controls and must be
+   * filtered out so they don't appear as `property` nodes.
+   *
+   * - `Form`    — the form's own root `Begin Form` / `End` container.
+   * - `Section` — Access section containers (Header / Detail / Footer).
+   *
+   * `Rectangle` and `Image` are real Access controls and must NOT appear here.
+   */
   private static readonly NON_CONTROL_TYPES = new Set<string>([
-    // The form's own root block: the `{ ... }` GUID prefix on the first
-    // `Begin` line. SaveAsText writes this in some versions of Access; we
-    // only emit when the captured token is a known control name.
+    'Form',
+    'Section',
   ]);
 
   private sweepControls(src: string): void {

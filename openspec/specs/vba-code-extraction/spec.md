@@ -64,7 +64,12 @@ When a `.cls` declares `Sub New()` (either `Public Sub New()` or `Private Sub Ne
 
 ### Requirement: Call Sites Emit Edges
 
-The system MUST emit a `calls` edge for every call expression `Foo.Bar(...)` or `Bar(...)` inside a procedure body. Same-file-resolvable calls MUST NOT carry `synthesizedBy`. Calls whose receiver resolves outside the file MUST carry `provenance: 'heuristic'` and `metadata.synthesizedBy = 'vba-name-resolution'`. Unresolvable receivers MUST NOT emit an edge and MUST NOT raise an error.
+The system MUST emit a `calls` edge for every call expression inside a procedure body, subject to the following rules:
+
+- **Same-file bare calls** (`Bar(...)` or statement-form `Bar arg`): emitted only when `Bar` resolves to a procedure declared in the same file. These edges carry no `synthesizedBy`.
+- **Qualified paren-form calls** (`Foo.Bar(...)`): always emit a heuristic `calls` edge with `provenance: 'heuristic'` and `metadata.synthesizedBy = 'vba-name-resolution'`.
+- **Qualified statement-form calls** (`Foo.Bar arg`, no parens): emit a heuristic `calls` edge ONLY when `Foo` is a file-local variable declared via `Dim`/`Private`/`Public`/`WithEvents` and whose declared type is a **simple, non-qualified, non-primitive** identifier (a candidate project class). When `Foo` is not declared in the file, or its type is qualified (e.g. `DAO.Recordset`) or a primitive, the call is **silent** (no edge, no error) — satisfying "Unresolvable call is silent".
+- **String-literal masking**: call patterns inside `"..."` string literals MUST NOT produce edges. The scanner masks string content before applying call-site patterns.
 
 #### Scenario: Same-file call emits plain calls edge
 
@@ -74,16 +79,28 @@ The system MUST emit a `calls` edge for every call expression `Foo.Bar(...)` or 
 
 #### Scenario: Cross-module qualified call uses synthesizedBy
 
-- GIVEN a `.bas` calling `modHelpers.CalcTotal` where `modHelpers` is not defined in the file
+- GIVEN a `.bas` calling `modHelpers.CalcTotal(...)` (paren form) where `modHelpers` is not defined in the file
 - WHEN the extractor processes the source
 - THEN it emits a `calls` edge to `modHelpers.CalcTotal` with `provenance === 'heuristic'` and `metadata.synthesizedBy === 'vba-name-resolution'`
 
+#### Scenario: Qualified statement call on declared project-class variable emits edge
+
+- GIVEN a `.cls` containing `Dim m_Op As ARAuditoriaOperaciones` and later `m_Op.Eliminar p_Error` (statement form, no parens)
+- WHEN the extractor processes the source
+- THEN it emits a heuristic `calls` edge from the enclosing procedure to `m_Op.Eliminar` with `provenance === 'heuristic'`
+
 #### Scenario: Unresolvable call is silent
 
-- GIVEN a `.bas` containing `UnknownExternal.Whatever` inside a procedure body
+- GIVEN a `.bas` containing `UnknownExternal.Whatever` (statement form, no parens) inside a procedure body where `UnknownExternal` is not declared as a local variable
 - WHEN the extractor processes the source
 - THEN no edge whose target starts with `UnknownExternal` is emitted
 - AND the extractor returns without throwing
+
+#### Scenario: Qualified statement call on DAO runtime variable is silent
+
+- GIVEN a `.cls` containing `Dim rcdDatos As DAO.Recordset` and later `rcdDatos.AddNew` (statement form)
+- WHEN the extractor processes the source
+- THEN no heuristic edge is emitted for `rcdDatos.AddNew` (qualified declared type → silent)
 
 ### Requirement: Implements Edges
 

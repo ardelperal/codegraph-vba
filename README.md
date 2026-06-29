@@ -4,7 +4,7 @@
 
 ## 🎉 1.0 Released!
 
-Already installed? Run `codegraph upgrade` to update in place.
+Already installed? Run `codegraph upgrade` to update in place (note: do NOT run this on the fork, as it will overwrite your VBA support with the official release).
 
 Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 

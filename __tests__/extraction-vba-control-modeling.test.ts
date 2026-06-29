@@ -43,6 +43,7 @@ import { CodeGraph } from '../src';
 const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'vba-control-modeling');
 const TEST_FORM_CLS = path.join(FIXTURE_DIR, 'Form_TestForm.cls');
 const TEST_FORM_TXT = path.join(FIXTURE_DIR, 'Form_TestForm.form.txt');
+const MOD_TEST_HELPER_BAS = path.join(FIXTURE_DIR, 'modTestHelper.bas');
 
 function readFixture(relPath: string): string {
   return fs.readFileSync(relPath, 'utf8');
@@ -238,5 +239,41 @@ describe('hueco-5: Form_Load qualifiedName carries form prefix', () => {
         `qualifiedName ${hit.node.qualifiedName} (file ${hit.node.filePath}) must include form prefix`,
       ).toMatch(/^Form_[^.]+\.Form_Load$/);
     }
+  });
+});
+
+// =============================================================================
+// HUECO 6 — `DoCmd.OpenForm "FormTest"` modeling
+// =============================================================================
+describe('hueco-6: DoCmd.OpenForm built-in modeling', () => {
+  it('DoCmd.OpenForm "FormTest" debe emitir arista opens-form', () => {
+    const r = new VbaExtractor(
+      MOD_TEST_HELPER_BAS,
+      readFixture(MOD_TEST_HELPER_BAS),
+    ).extract();
+
+    // Today, `DoCmd.OpenForm` is absorbed by the runtime-receiver blacklist
+    // and the string literal "FormTest" is silently discarded. Phase B must
+    // emit an edge capturing the target form name.
+    //
+    // 'opens-form' is NOT in EdgeKind today — compare with String() to keep
+    // the test type-clean.
+    const OPENS_FORM_KIND = 'opens-form';
+    const edges = r.edges;
+    const targetCandidates = edges
+      .filter((e) => (e.kind as string) === OPENS_FORM_KIND)
+      .map((e) => {
+        // The target form name may live on the edge itself (when the form
+        // module is not yet indexed) or on the target node. We accept either.
+        const meta = (e.metadata ?? {}) as Record<string, unknown>;
+        const targetName =
+          typeof meta.targetFormName === 'string'
+            ? (meta.targetFormName as string)
+            : undefined;
+        return targetName;
+      })
+      .filter((n): n is string => typeof n === 'string');
+
+    expect(targetCandidates).toContain('FormTest');
   });
 });

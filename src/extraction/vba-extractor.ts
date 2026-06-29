@@ -354,12 +354,39 @@ export class VbaExtractor {
       // correctly. Form-level events (`Form_Load`, `Form_Open`,
       // `Form_Unload`, …) are NOT control handlers — they fire on the
       // form object itself, not on a control — so they are skipped here
-      // (the form module node is the conceptual source for those). See
-      // vba-form-extractor.ts:findControlName for the matching
-      // `form-instance-control` node emission whose stable id this edge
-      // points to.
+      // (the form module node is the conceptual source for those).
+      //
+      // Scope guard: only emit when this .cls looks like a form code-
+      // behind (`Form_*.cls`). Without this guard, regular service classes
+      // whose methods happen to have underscores in their names
+      // (e.g. `InformeRiesgoPDFServicio.cls` declares
+      // `GenerarHTML_Principal`, `GetEstilosCSS_PDF`,
+      // `Class_Initialize`) would synthesize ~550 spurious
+      // `form-instance-control` stubs in real Dysflow projects. The
+      // `Form_` prefix is the canonical Access code-behind naming
+      // convention and matches the .form.txt siblings' basename.
+      //
+      // Cross-file synthesis caveat: the edge's source is a
+      // `form-instance-control` node that lives in the sibling .form.txt,
+      // not this .cls file. Two consequences:
+      //   1. We also emit a STUB form-instance-control node locally with
+      //      the deterministic id so the per-file edge filter
+      //      (`insertedIds.has(source)`) accepts the edge. When the
+      //      sibling .form.txt is later indexed, VbaFormExtractor emits
+      //      the real form-instance-control node with the same id; the
+      //      `INSERT OR REPLACE` semantics in queries.ts:insertNode
+      //      overwrite the stub with the real one (preserving the
+      //      metadata.controlType, filePath, line range, etc.).
+      //   2. When the .form.txt is processed FIRST (alphabetically
+      //      unlikely but possible), the real node exists in the DB
+      //      before this edge is committed; insertEdges's DB-level
+      //      endpoint check passes the edge naturally without the stub.
+      //      Either order converges on the same final state.
+      // See vba-form-extractor.ts:findControlName for the matching real
+      // form-instance-control node emission.
       const handler = parseEventHandlerName(name);
-      if (handler) {
+      const isFormCodeBehind = /Form_[^/\\]*\.cls$/i.test(this.filePath);
+      if (handler && isFormCodeBehind) {
         const formFilePath = this.filePath.replace(/\.cls$/i, '.form.txt');
         const controlNodeId = generateNodeId(
           formFilePath,
@@ -367,6 +394,24 @@ export class VbaExtractor {
           handler.controlName,
           0,
         );
+        // Stub form-instance-control: local so the per-file edge filter
+        // passes the event-handler edge. Overwritten by the real node
+        // emitted from the sibling .form.txt at index time (same id, same
+        // schema, INSERT OR REPLACE). No metadata.controlType here — the
+        // .form.txt side carries the real control type.
+        this.nodes.push({
+          id: controlNodeId,
+          kind: 'form-instance-control',
+          name: handler.controlName,
+          qualifiedName: `${formFilePath}::${handler.controlName}`,
+          filePath: formFilePath,
+          language: 'vba',
+          startLine: 0,
+          endLine: 0,
+          startColumn: 0,
+          endColumn: 0,
+          updatedAt: Date.now(),
+        });
         this.edges.push({
           source: controlNodeId,
           target: nodeId,

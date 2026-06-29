@@ -284,7 +284,7 @@ export class VbaFormExtractor {
         i,
         lineNum,
       );
-      if (!controlName) return;
+      if (!controlName) continue;
 
       const controlNodeId = generateNodeId(
         this.filePath,

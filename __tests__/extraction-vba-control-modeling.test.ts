@@ -30,11 +30,12 @@
  *     cleaned up in afterAll so this test leaves no stale `.codegraph-vba/`
  *     behind in the repo.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import { VbaExtractor } from '../src/extraction/vba-extractor';
 import { VbaFormExtractor } from '../src/extraction/vba-form-extractor';
+import { CodeGraph } from '../src';
 
 // =============================================================================
 // Fixture paths — all RED tests resolve these from the repo root.
@@ -183,5 +184,59 @@ describe('hueco-4: .form.txt emits kind=form-layout, NOT kind=module', () => {
       formLayoutNodes.length,
       'at least one form-layout node per .form.txt',
     ).toBeGreaterThan(0);
+  });
+});
+
+// =============================================================================
+// HUECO 5 — `Form_Load` qualifiedName carries the form prefix
+// =============================================================================
+describe('hueco-5: Form_Load qualifiedName carries form prefix', () => {
+  let cg: CodeGraph | null = null;
+  const codeGraphDir = path.join(FIXTURE_DIR, '.codegraph-vba');
+  let initialized = false;
+
+  beforeAll(async () => {
+    // Clean slate — same pattern as extraction-vba-realfixtures.test.ts.
+    if (fs.existsSync(codeGraphDir)) {
+      fs.rmSync(codeGraphDir, { recursive: true, force: true });
+    }
+    cg = await CodeGraph.init(FIXTURE_DIR, { index: false });
+    initialized = true;
+    await cg.indexAll();
+  }, 60_000);
+
+  afterAll(async () => {
+    if (cg) {
+      try {
+        await cg.close();
+      } catch {
+        // ignore close errors
+      }
+    }
+    if (initialized && fs.existsSync(codeGraphDir)) {
+      fs.rmSync(codeGraphDir, { recursive: true, force: true });
+    }
+  });
+
+  it('query "Form_Load" debe componer qualifiedName con prefijo de form', async () => {
+    if (!cg) return;
+    const hits = cg.searchNodes('Form_Load', { languages: ['vba'] });
+
+    // Filter to function-kind hits (skip the file node and any incidental
+    // text matches in identifier bodies).
+    const fnHits = hits.filter((h) => h.node.kind === 'function');
+    expect(fnHits.length).toBeGreaterThan(0);
+
+    // Every Form_Load hit must be qualified with its owning form:
+    //   Form_TestForm.Form_Load
+    //   Form_OtherForm.Form_Load
+    // Today both have qualifiedName === 'Form_Load' (no prefix), so this
+    // assertion fails RED.
+    for (const hit of fnHits) {
+      expect(
+        hit.node.qualifiedName,
+        `qualifiedName ${hit.node.qualifiedName} (file ${hit.node.filePath}) must include form prefix`,
+      ).toMatch(/^Form_[^.]+\.Form_Load$/);
+    }
   });
 });

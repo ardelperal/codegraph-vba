@@ -137,7 +137,12 @@ class OpencodeTarget implements AgentTarget {
   detect(loc: Location): DetectionResult {
     const file = configPath(loc);
     const config = parseConfig(readConfigText(file));
-    const alreadyConfigured = !!config.mcp?.codegraph;
+    // Both `codegraph-vba` (current post-fork key the installer writes) and
+    // `codegraph` (legacy pre-fork key a much older release used to write)
+    // count as "already configured" — the legacy check is purely a
+    // backward-compat signal so a re-install on top of a pre-fork entry
+    // reports "Updated" instead of falsely adding a duplicate entry.
+    const alreadyConfigured = !!config.mcp?.['codegraph-vba'] || !!config.mcp?.codegraph;
     // Global: the XDG dir is what current opencode creates on first run; the
     // legacy %APPDATA% dir still counts as "opencode present" so a re-install
     // can sweep the stale pre-#535 entry out of it.
@@ -226,26 +231,41 @@ function writeMcpEntry(loc: Location): WriteResult['files'][number] {
 }
 
 /**
- * Surgically drop `mcp.codegraph-vba` from one config file. Leaves sibling
- * servers, comments, and formatting untouched; drops an emptied `mcp`
- * wrapper too. Shared by uninstall and the legacy-%APPDATA% sweep.
+ * Surgically drop our MCP entry from one config file, sweeping BOTH the
+ * current post-fork key (`codegraph-vba`) AND the legacy pre-fork key
+ * (`codegraph`) that pre-1.x installers wrote. Leaves sibling servers,
+ * comments, and formatting untouched; drops an emptied `mcp` wrapper too.
+ * Shared by uninstall and the legacy-%APPDATA% sweep.
  */
 function removeMcpEntryAt(file: string): WriteResult['files'][number] {
   if (!fs.existsSync(file)) return { path: file, action: 'not-found' };
   const text = readConfigText(file);
   const config = parseConfig(text);
-  if (!config.mcp?.['codegraph-vba']) return { path: file, action: 'not-found' };
 
-  let edits = modify(text, ['mcp', 'codegraph-vba'], undefined, {
-    formattingOptions: FORMATTING,
-  });
-  let updated = applyEdits(text, edits);
+  // Sweep BOTH historical keys. `codegraph-vba` is the canonical current
+  // entry; `codegraph` is the pre-fork key a much older release wrote —
+  // a real user upgrading from pre-fork has it on disk and opencode would
+  // never read it (no key matches), so leaving it behind is just stale
+  // state. Removing both keys keeps the legacy-cleanup promise intact.
+  const mcp = config.mcp;
+  if (!mcp || typeof mcp !== 'object') return { path: file, action: 'not-found' };
+
+  let updated = text;
+  for (const key of ['codegraph-vba', 'codegraph']) {
+    if (mcp[key]) {
+      const edits = modify(updated, ['mcp', key], undefined, { formattingOptions: FORMATTING });
+      updated = applyEdits(updated, edits);
+    }
+  }
+
+  // If nothing was actually removed (both keys were absent), bail.
+  if (updated === text) return { path: file, action: 'not-found' };
 
   // If `mcp` is now an empty object, drop the wrapper too.
   const afterParsed = parseConfig(updated);
   if (afterParsed.mcp && typeof afterParsed.mcp === 'object' &&
       Object.keys(afterParsed.mcp).length === 0) {
-    edits = modify(updated, ['mcp'], undefined, { formattingOptions: FORMATTING });
+    const edits = modify(updated, ['mcp'], undefined, { formattingOptions: FORMATTING });
     updated = applyEdits(updated, edits);
   }
 

@@ -147,3 +147,41 @@ describe('hueco-3: event-handler edge from control to Sub', () => {
     expect(bridge, 'expected event-handler edge between control and Sub').toBeDefined();
   });
 });
+
+// =============================================================================
+// HUECO 4 — .form.txt kind is `form-layout`, not `module`
+// =============================================================================
+describe('hueco-4: .form.txt emits kind=form-layout, NOT kind=module', () => {
+  it('.form.txt no debe emitir nodos kind=module', () => {
+    const r = new VbaFormExtractor(
+      TEST_FORM_TXT,
+      readFixture(TEST_FORM_TXT),
+    ).extract();
+
+    // Strict RED: NO node with kind `module` whose filePath ends in
+    // .form.txt. Phase B will either rename the existing module node to
+    // `form-layout`, or emit a parallel `form-layout` node — either way
+    // the strict assertion (zero `module` nodes for .form.txt files) holds.
+    const moduleNodes = r.nodes.filter(
+      (n) =>
+        n.kind === 'module' &&
+        (n.filePath ?? '').endsWith('Form_TestForm.form.txt'),
+    );
+    expect(moduleNodes.length, 'no module nodes for .form.txt files').toBe(0);
+
+    // AND there must be at least one node with kind `form-layout` for the
+    // form, so future resolvers can dispatch on that kind specifically.
+    // 'form-layout' is NOT in NodeKind today — compare with String() to
+    // keep the test type-clean.
+    const FORM_LAYOUT_KIND = 'form-layout';
+    const formLayoutNodes = r.nodes.filter(
+      (n) =>
+        (n.kind as string) === FORM_LAYOUT_KIND &&
+        (n.filePath ?? '').endsWith('Form_TestForm.form.txt'),
+    );
+    expect(
+      formLayoutNodes.length,
+      'at least one form-layout node per .form.txt',
+    ).toBeGreaterThan(0);
+  });
+});

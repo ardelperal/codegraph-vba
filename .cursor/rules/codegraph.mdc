@@ -18,7 +18,7 @@ Reach for `codegraph_explore` before grep/find or Read for any **structural** qu
 - **Don't grep or Read first** to find or understand indexed code — one `codegraph_explore` returns the relevant source in a single round-trip. Reach for raw Read/Grep only to confirm a specific detail codegraph didn't cover, or for what it doesn't index (configs, docs).
 - **Index lag — check the staleness banner, don't guess a wait.** When a codegraph response starts with "⚠️ Some files referenced below were edited since the last index sync…", the listed files are pending re-index — Read those specific files for accurate content. Files NOT in that banner are fresh and codegraph is authoritative for them.
 
-### If `.codegraph/` doesn't exist
+### If `.codegraph-vba/` doesn't exist
 
-The MCP server returns "not initialized." Ask the user: *"I notice this project doesn't have CodeGraph initialized. Want me to run `codegraph init -i` to build the index?"*
+The MCP server returns "not initialized." Ask the user: *"I notice this project doesn't have CodeGraph-VBA initialized. Want me to run `codegraph-vba init` to build the index?"*
 <!-- CODEGRAPH_END -->

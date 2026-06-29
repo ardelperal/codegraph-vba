@@ -2148,7 +2148,7 @@ func main() {
         // The `#include "utils.h"` edge should target the real
         // `include/utils.h` file node — not a floating `import` node
         // living inside main.cpp.
-        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -2212,7 +2212,7 @@ func main() {
         // reporter's repro: page.php's `require_once("lib.php")` must resolve
         // to the real src/lib.php file node — a file→file `imports` edge, so
         // callers(lib.php) now includes page.php.
-        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -2246,7 +2246,7 @@ func main() {
 
         cg = await CodeGraph.init(tempProject, { index: true });
 
-        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e
@@ -2285,7 +2285,7 @@ func main() {
 
         cg = await CodeGraph.init(tempProject, { index: true });
 
-        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph', 'codegraph.db'));
+        const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
         const rows = db.getDb().prepare(`
           select dst.kind as dstKind, dst.file_path as dstPath
           from edges e

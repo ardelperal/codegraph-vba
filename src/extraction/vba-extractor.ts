@@ -572,6 +572,32 @@ export class VbaExtractor {
   private static readonly SQL_TABLE_RE =
     /\b(?:FROM|INTO|UPDATE)\s+(\[?\p{L}[\p{L}\p{N}_]*\]?)/giu;
 
+  /**
+   * `Me.<ControlName>` reference capture — hole 1 of VBA control-modeling.
+   *
+   * Real VBA idiom:
+   *   `Me.lblTitulo.Caption = "Hello"`            ← property assignment
+   *   `Me.txtDescripcion.Value = "World"`          ← property assignment
+   *   `Me.ComandoGrabar.Enabled = True`           ← property assignment
+   *   `If Nz(Me.MotivoBorrado, "") = "" Then`      ← read in expression
+   *
+   * The existing call-site scanner (CALL_RE) only fires on `Name(`
+   * (paren form) and `Me` is in its keyword blacklist anyway, so
+   * `Me.<Control>` references are silently invisible. This regex matches
+   * the FIRST identifier after `Me.` regardless of what follows (a
+   * property, an index, an assignment, a call argument, etc.) so the
+   * form → control binding is surfaced as an UnresolvedReference for the
+   * resolver to pick up later. Subsequent segments (`.Caption`, `.Value`,
+   * `.Enabled`) are intentionally NOT captured — they are properties of
+   * the control, not new symbols.
+   *
+   * Provenance: `metadata.synthesizedBy = 'vba-me-control'`. Mirrors the
+   * `vba-form-binding` (form→sibling-`.cls`) and `vba-name-resolution`
+   * (qualified Dim) patterns already documented on `UnresolvedReference.metadata`
+   * in `src/types.ts`.
+   */
+  private static readonly ME_CONTROL_RE = /\bMe\.(\p{L}[\p{L}\p{N}_]*)/gu;
+
   /** Keywords we never want to match as call receivers. */
   private static readonly CALL_KEYWORD_BLACKLIST = new Set([
     'If',
@@ -764,6 +790,15 @@ export class VbaExtractor {
         this.scanCallSites(callScanLine, stack[stack.length - 1]!, lineNum);
       }
 
+      // Hueco 1: capture `Me.<Control>` references (property assignments,
+      // read expressions, method calls, anything after `Me.`). Only inside
+      // procedures because `Me` is only meaningful inside a form's class
+      // module. Skipped on the proc-declaration line for the same reason as
+      // the call-site scan above.
+      if (!procedureStartLines.has(lineNum) && stack.length > 0) {
+        this.scanMeControlReferences(callScanLine, stack[stack.length - 1]!, lineNum);
+      }
+
       // SQL wrappers — only inside a procedure (don't pollute module scope
       // with a stray string literal).  Use the ORIGINAL line — SQL is inside
       // string literals, so the masked line would strip the SQL content.
@@ -895,6 +930,40 @@ export class VbaExtractor {
   private procNodeIdCache = new Map<string, string>();
   private callDedupe = new Set<string>();
   private synthFunctionNodeIds = new Set<string>();
+
+  /**
+   * Hueco 1: scan a line for `Me.<ControlName>` patterns and emit one
+   * UnresolvedReference per occurrence, tagged
+   * `metadata.synthesizedBy: 'vba-me-control'`.
+   *
+   * Operates on the masked `callScanLine` (string-literal content already
+   * replaced with spaces) so `Me.X` inside a string literal is not falsely
+   * captured. Per-site emission — every `Me.lblTitulo` reference site
+   * produces its own UnresolvedReference carrying the line/column; the
+   * resolver fans them out into multiple `references` edges at index time
+   * once the matching `form-instance-control` node exists.
+   *
+   * `fromNodeId` is the current procedure's function node — that's the
+   * "owner" of the reference (the Sub body that wrote `Me.lblTitulo = …`).
+   */
+  private scanMeControlReferences(line: string, from: ProcInfo, lineNum: number): void {
+    VbaExtractor.ME_CONTROL_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = VbaExtractor.ME_CONTROL_RE.exec(line)) !== null) {
+      const controlName = m[1] ?? '';
+      if (!controlName) continue;
+      this.unresolvedReferences.push({
+        fromNodeId: this.findOrCreateFunctionNodeId(from),
+        referenceName: controlName,
+        referenceKind: 'references',
+        line: lineNum,
+        column: m.index + 3, // +3 to skip the `Me.` prefix
+        filePath: this.filePath,
+        language: 'vba',
+        metadata: { synthesizedBy: 'vba-me-control' },
+      });
+    }
+  }
 
   private findOrCreateFunctionNodeId(proc: ProcInfo): string {
     // Fix 1: key the cache by `name:startLine` so Property Get/Let/Set

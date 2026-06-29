@@ -58,6 +58,22 @@ export class VbaExtractor {
   private unresolvedReferences: UnresolvedReference[] = [];
   private moduleOrClassNode: Node | null = null;
   /**
+   * Class-name prefix for `qualifiedName` composition.
+   *
+   * B3 (hueco 5): for `.cls` files every function node's `qualifiedName`
+   * is composed as `${className}.${procName}` (e.g. `Form_TestForm.Form_Load`)
+   * so cross-class callers can disambiguate which form each `Form_Load`
+   * belongs to. For `.bas` files this is `null` — module-scoped procs
+   * keep their bare-name `qualifiedName` (e.g. `DoThing`), preserving
+   * the pre-hueco-5 behavior and every existing qualifiedName-based
+   * assertion in `extraction-vba.test.ts`.
+   *
+   * Resolved once per `extract()` from `isCls` + `vbName` (both already
+   * computed for `createModuleOrClassNode`); `sweepProcedures` reads it
+   * to set `ProcInfo.qualifiedName` and the function node's qualifiedName.
+   */
+  private classNamePrefix: string | null = null;
+  /**
    * Map of procedure name (within this file) → list of ProcInfo. The list
    * (rather than a single value) is needed because VBA allows multiple
    * Property accessors with the same name: `Property Get Foo`, `Property
@@ -117,6 +133,19 @@ export class VbaExtractor {
 
       // Detect VB_Name attribute (first non-empty line).
       const vbName = this.detectVbName(this.source);
+
+      // B3 (hueco 5): compute the class-name prefix used to compose every
+      // `function` node's `qualifiedName` in this file. For `.cls` files
+      // the prefix is the resolved VB_Name (or the file basename when
+      // VB_Name is absent), producing qualifiedNames like
+      // `Form_TestForm.Form_Load`. For `.bas` (and `.frm`/`.dsr`) files
+      // the prefix is null, preserving the bare-name qualifiedName that
+      // every existing test asserts.
+      const fallbackName = path
+        .basename(this.filePath)
+        .replace(/\.[^.]+$/, '');
+      const className = isCls ? (vbName ?? fallbackName) : null;
+      this.classNamePrefix = className;
 
       // Module/class node — created lazily so a file containing only
       // Option directives (REQ-CODE-10: "emits nothing") doesn't carry a
@@ -312,7 +341,13 @@ export class VbaExtractor {
 
       const proc: ProcInfo = {
         name,
-        qualifiedName: name,
+        // B3 (hueco 5): when this file is a `.cls`, prefix the
+        // qualifiedName with the resolved class name so cross-class
+        // queries (e.g. `Form_Load`) match only the owning class.
+        // `.bas` files leave `qualifiedName === name`.
+        qualifiedName: this.classNamePrefix
+          ? `${this.classNamePrefix}.${name}`
+          : name,
         kind,
         visibility,
         startLine: lineNum,
@@ -327,7 +362,12 @@ export class VbaExtractor {
         id: nodeId,
         kind: 'function',
         name,
-        qualifiedName: name,
+        // B3 (hueco 5): same prefix rule as the ProcInfo above — class
+        // methods get `${className}.${name}`, module-level Subs keep
+        // their bare name.
+        qualifiedName: this.classNamePrefix
+          ? `${this.classNamePrefix}.${name}`
+          : name,
         filePath: this.filePath,
         language: 'vba',
         startLine: lineNum,

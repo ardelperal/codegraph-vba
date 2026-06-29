@@ -11,7 +11,7 @@
  * per-scenario shape; this E2E verifies the integrated tool works end-to-end
  * against real fixtures — same patterns, real bytes.
  *
- * The `.codegraph/` index is created in the fixtures folder during this test
+ * The `.codegraph-vba/` index is created in the fixtures folder during this test
  * and removed in afterAll so subsequent runs are idempotent.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -25,10 +25,10 @@ const FORM_BASENAME = 'Form_FormNCAuditoriaMotivoEliminado';
 describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
   let cg: CodeGraph | null = null;
   let initializedByTest = false;
-  const codeGraphDir = path.join(FIXTURES_DIR, '.codegraph');
+  const codeGraphDir = path.join(FIXTURES_DIR, '.codegraph-vba');
 
   beforeAll(async () => {
-    // Clean slate: remove any prior .codegraph/ left by a previous run so
+    // Clean slate: remove any prior .codegraph-vba/ left by a previous run so
     // init() doesn't refuse to re-initialize.
     if (fs.existsSync(codeGraphDir)) {
       fs.rmSync(codeGraphDir, { recursive: true, force: true });
@@ -46,7 +46,7 @@ describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
         // ignore close errors
       }
     }
-    // Clean up the .codegraph/ we created so subsequent runs are clean.
+    // Clean up the .codegraph-vba/ we created so subsequent runs are clean.
     if (initializedByTest && fs.existsSync(codeGraphDir)) {
       fs.rmSync(codeGraphDir, { recursive: true, force: true });
     }

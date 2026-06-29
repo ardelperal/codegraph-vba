@@ -55,6 +55,7 @@ docs/business/
 
 # CodeGraph data directories (in test projects)
 .codegraph/
+.codegraph-vba/
 
 test_frameworks
 

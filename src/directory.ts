@@ -396,8 +396,8 @@ export function planFrontload(cwd: string, prompt: string): FrontloadPlan {
  * explicit allowlist that never listed `daemon.pid` or the socket, so those
  * runtime files were silently committed.
  */
-const GITIGNORE_CONTENT = `# CodeGraph data files — local to each machine, not for committing.
-# Ignore everything in .codegraph/ except this file itself, so transient
+const GITIGNORE_CONTENT = `# CodeGraph-VBA data files — local to each machine, not for committing.
+# Ignore everything in .codegraph-vba/ except this file itself, so transient
 # files (the database, daemon.pid, sockets, logs) never show up in git.
 *
 !.gitignore

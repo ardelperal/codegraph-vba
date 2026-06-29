@@ -359,10 +359,54 @@ export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promi
       deps.log(c.green('npx always runs the latest version on demand — nothing to upgrade.'));
       deps.log(c.dim(`Force a fresh fetch with: npx ${NPM_PACKAGE}@latest`));
       return 0;
-    case 'source':
+    case 'source': {
       deps.warn(`Running from a source checkout at ${method.root}.`);
-      deps.log(c.dim('Upgrade it with: git pull && npm run build'));
-      return 0;
+      deps.log(c.dim('Updating source checkout via git pull and rebuilding…'));
+      const originalCwd = process.cwd();
+      try {
+        process.chdir(method.root);
+        
+        const git = deps.platform === 'win32' ? 'git.exe' : 'git';
+        deps.log(c.dim(`Running: git pull`));
+        let code = deps.run(git, ['pull'], process.env);
+        if (code !== 0) {
+          deps.error('git pull failed.');
+          return 1;
+        }
+        
+        const pnpm = deps.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
+        const npm = deps.platform === 'win32' ? 'npm.cmd' : 'npm';
+        const hasPnpmLock = fs.existsSync(path.join(method.root, 'pnpm-lock.yaml'));
+        const packageManager = hasPnpmLock ? pnpm : npm;
+        
+        deps.log(c.dim(`Running: ${packageManager} install`));
+        code = deps.run(packageManager, ['install'], process.env);
+        if (code !== 0) {
+          deps.error(`${packageManager} install failed.`);
+          return 1;
+        }
+
+        deps.log(c.dim(`Running: ${packageManager} run build`));
+        code = deps.run(packageManager, ['run', 'build'], process.env);
+        if (code !== 0) {
+          deps.error(`${packageManager} run build failed.`);
+          return 1;
+        }
+        
+        deps.log('');
+        deps.log(c.green('✓ Upgrade complete.'));
+        return 0;
+      } catch (err) {
+        deps.error(`Upgrade failed: ${err instanceof Error ? err.message : String(err)}`);
+        return 1;
+      } finally {
+        try {
+          process.chdir(originalCwd);
+        } catch {
+          // ignore failures restoring CWD
+        }
+      }
+    }
     default:
       deps.error(`Couldn’t determine how CodeGraph was installed (${method.reason}).`);
       deps.log(c.dim(`Reinstall manually — see https://github.com/${REPO}#install`));

@@ -31,7 +31,7 @@ import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/wo
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
 
-import { buildNode25BlockBanner, buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
+import { buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
 import { installFatalHandlers } from './fatal-handler';
 import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime-flags';
 import { installCommandSupervision } from './command-supervision';
@@ -68,11 +68,10 @@ const importESM = new Function('specifier', 'return import(specifier)') as
 const nodeVersion = process.versions.node;
 const nodeMajor = parseInt(nodeVersion.split('.')[0] ?? '0', 10);
 if (nodeMajor >= 25) {
-  process.stderr.write(buildNode25BlockBanner(nodeVersion) + '\n');
-  if (!process.env.CODEGRAPH_ALLOW_UNSAFE_NODE) {
-    process.exit(1);
+  if (!process.argv.includes('--mcp') && !process.env.CODEGRAPH_ALLOW_UNSAFE_NODE) {
+    process.stderr.write(`[CodeGraph] Warning: Unsupported Node.js version ${nodeVersion}. Continuing in override mode.\n`);
   }
-  // Override active — banner shown for visibility, continuing.
+  process.env.CODEGRAPH_ALLOW_UNSAFE_NODE = '1';
 }
 // Enforce the supported Node floor. `engines` in package.json only *warns* on
 // install (unless engine-strict), so hard-block here to actually keep users off

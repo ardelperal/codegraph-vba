@@ -254,7 +254,7 @@ export async function resolveLatestVersion(repo = REPO, timeoutMs = 12000): Prom
     /* fall through to error */
   }
   throw new Error(
-    'could not resolve the latest version from GitHub. Check your network, or pin a version: `codegraph upgrade <version>`.'
+    'could not resolve the latest version from GitHub. Check your network, or pin a version: `codegraph-vba upgrade <version>`.'
   );
 }
 
@@ -298,9 +298,9 @@ export function reindexAdvisory(): string {
   return [
     c.dim('Your existing project indexes keep working, but were built by the previous version.'),
     c.dim('To pick up this version’s extraction improvements, refresh each project:'),
-    `  ${c.cyan('codegraph sync')}        ${c.dim('# incremental, fast')}`,
-    `  ${c.cyan('codegraph index -f')}    ${c.dim('# full rebuild')}`,
-    c.dim('(`codegraph status` flags any index that predates the engine you’re running.)'),
+    `  ${c.cyan('codegraph-vba sync')}        ${c.dim('# incremental, fast')}`,
+    `  ${c.cyan('codegraph-vba index -f')}    ${c.dim('# full rebuild')}`,
+    c.dim('(`codegraph-vba status` flags any index that predates the engine you’re running.)'),
   ].join('\n');
 }
 
@@ -320,14 +320,14 @@ export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promi
   }
 
   const currentDisplay = normalizeVersion(currentVersion);
-  deps.log(`${c.bold('CodeGraph')}  current ${c.cyan(currentDisplay)}  ${opts.version ? 'target' : 'latest'} ${c.cyan(latest)}`);
+  deps.log(`${c.bold('CodeGraph-VBA')}  current ${c.cyan(currentDisplay)}  ${opts.version ? 'target' : 'latest'} ${c.cyan(latest)}`);
 
   const updateAvailable = isUpdateAvailable(currentVersion, latest);
 
   if (opts.check) {
     if (updateAvailable) {
       deps.log(c.yellow(`An update is available: ${currentDisplay} → ${latest}`));
-      deps.log(c.dim('Run `codegraph upgrade` to install it.'));
+      deps.log(c.dim('Run `codegraph-vba upgrade` to install it.'));
     } else {
       deps.log(c.green(`You’re on the latest version (${currentDisplay}).`));
     }
@@ -336,7 +336,7 @@ export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promi
 
   if (!updateAvailable && !opts.force && !opts.version) {
     deps.log(c.green(`Already up to date (${currentDisplay}).`));
-    deps.log(c.dim('Use `--force` to reinstall, or `codegraph upgrade <version>` to change versions.'));
+    deps.log(c.dim('Use `--force` to reinstall, or `codegraph-vba upgrade <version>` to change versions.'));
     return 0;
   }
 
@@ -408,7 +408,7 @@ export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promi
       }
     }
     default:
-      deps.error(`Couldn’t determine how CodeGraph was installed (${method.reason}).`);
+      deps.error(`Couldn’t determine how CodeGraph-VBA was installed (${method.reason}).`);
       deps.log(c.dim(`Reinstall manually — see https://github.com/${REPO}#install`));
       return 1;
   }
@@ -441,7 +441,7 @@ async function selfHealPromptHook(deps: UpgradeDeps): Promise<void> {
   const res = writePromptHookEntry('global');
   if (res.action === 'created' || res.action === 'updated') {
     deps.log(
-      c.dim('Enabled the CodeGraph front-load hook for Claude Code (structural prompts). Disable any time: CODEGRAPH_NO_PROMPT_HOOK=1'),
+      c.dim('Enabled the CodeGraph-VBA front-load hook for Claude Code (structural prompts). Disable any time: CODEGRAPH_NO_PROMPT_HOOK=1'),
     );
   }
 }
@@ -506,7 +506,7 @@ export function buildWindowsUpgradeScript(bundleRoot: string, version: string, a
     `Copy-Item -Path (Join-Path $src '*') -Destination $dest -Recurse -Force`,
     `Get-ChildItem -Path $dest -Filter 'node.exe.old-*' -ErrorAction SilentlyContinue | ForEach-Object { try { Remove-Item $_.FullName -Force -ErrorAction Stop } catch {} }`,
     `Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue`,
-    `Write-Host "Installed CodeGraph ${version} to $dest"`,
+    `Write-Host "Installed CodeGraph-VBA ${version} to $dest"`,
   ].join(';');
 }
 

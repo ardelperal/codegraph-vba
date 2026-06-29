@@ -63,10 +63,19 @@ echo "[bundle] building app"
 STAGE="$WORK/codegraph-vba-${TARGET}"
 mkdir -p "$STAGE/lib" "$STAGE/bin"
 cp -R "$ROOT/dist" "$STAGE/lib/dist"
-cp "$ROOT/package.json" "$ROOT/package-lock.json" "$STAGE/lib/"
+cp "$ROOT/package.json" "$STAGE/lib/"
+# The upstream pipeline uses npm and copies package-lock.json so `npm ci`
+# works. This fork uses pnpm — pnpm-lock.yaml is the source of truth.
+# Copy whichever lockfile exists (bundle ships the compiled app + node_modules
+# via the next step, not the lockfile; the trailing rm cleans it up).
+if [ -f "$ROOT/package-lock.json" ]; then
+  cp "$ROOT/package-lock.json" "$STAGE/lib/"
+elif [ -f "$ROOT/pnpm-lock.yaml" ]; then
+  cp "$ROOT/pnpm-lock.yaml" "$STAGE/lib/"
+fi
 echo "[bundle] installing production dependencies"
 ( cd "$STAGE/lib" && npm ci --omit=dev --ignore-scripts >/dev/null 2>&1 )
-rm -f "$STAGE/lib/package-lock.json"
+rm -f "$STAGE/lib/package-lock.json" "$STAGE/lib/pnpm-lock.yaml"
 
 # 4. Vendored Node + launcher (the launcher uses the bundled Node by relative
 #    path, so no system Node is ever needed).

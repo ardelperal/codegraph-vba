@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- `codegraph-vba init` no longer fails on a freshly installed bundle with `Cannot find package '@clack/core'`. The bundled dependencies were being packaged in a layout that relied on internal symlinks, which the install archive flattened — so the very first command an agent runs (`init`) crashed and never created the index. Dependencies now ship as a flat tree that survives unpacking on every platform, including Windows. (#28)
+
 
 ## [1.3.1] - 2026-06-30
 

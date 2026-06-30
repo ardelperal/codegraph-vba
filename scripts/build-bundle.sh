@@ -79,7 +79,15 @@ echo "[bundle] installing production dependencies"
 # pnpm-lock.yaml copied into the bundle above replaces package-lock.json).
 # `pnpm install --prod` reads pnpm-lock.yaml and only resolves the
 # production deps listed in package.json.
-( cd "$STAGE/lib" && pnpm install --prod --ignore-scripts --frozen-lockfile >/dev/null 2>&1 )
+#
+# `--config.node-linker=hoisted`: produce a FLAT, npm-like node_modules with no
+# `.pnpm` symlink store. pnpm's default isolated linker reaches transitive deps
+# (e.g. @clack/core behind @clack/prompts) only through symlinks; the Windows
+# .zip archiving step flattens the top-level @clack/prompts symlink into a real
+# dir but leaves @clack/core buried in `.pnpm/`, so `init` dies with
+# `Cannot find package '@clack/core'`. A hoisted tree has zero symlinks and
+# survives archiving on every platform. See issue #28.
+( cd "$STAGE/lib" && pnpm install --prod --ignore-scripts --frozen-lockfile --config.node-linker=hoisted >/dev/null 2>&1 )
 rm -f "$STAGE/lib/package-lock.json" "$STAGE/lib/pnpm-lock.yaml"
 
 # 4. Vendored Node + launcher (the launcher uses the bundled Node by relative

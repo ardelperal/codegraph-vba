@@ -78,22 +78,40 @@ describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
     expect(pointM.some((n) => n.node.kind === 'function')).toBe(true);
   });
 
-  it('REQ-CODE-10: a constants-only .bas emits the file node but NOT a module/class node', () => {
+  it('REQ-CODE-12/13: a constants .bas emits a module node + enum/constant symbols', () => {
     if (!cg) return;
-    // `constantes.bas` declares only `Public Const` entries — no Subs,
-    // Functions, Properties, Implements, Dim, WithEvents, or SQL. Per
-    // REQ-CODE-10 the lazy module/class node is suppressed and only the
-    // file-level node is emitted.
+    // `constantes.bas` declares `Public Const` entries and several
+    // `Public Enum ... End Enum` blocks. Dysflow exports that text verbatim,
+    // so per REQ-CODE-12/13 the extractor now emits the lazy module node plus
+    // `enum`/`enum_member`/`constant` nodes. (REQ-CODE-10's "emits nothing"
+    // is now narrowed to Option-directives-only files.)
     const nodes = cg.searchNodes('constantes', { languages: ['vba'] });
     const fromConstants = nodes.filter((n) =>
       n.node.filePath.endsWith('constantes.bas'),
     );
     const fileNodes = fromConstants.filter((n) => n.node.kind === 'file');
-    const moduleOrClass = fromConstants.filter(
-      (n) => n.node.kind === 'module' || n.node.kind === 'class',
-    );
+    const moduleNodes = fromConstants.filter((n) => n.node.kind === 'module');
     expect(fileNodes).toHaveLength(1);
-    expect(moduleOrClass).toHaveLength(0);
+    expect(moduleNodes.length).toBeGreaterThan(0);
+
+    // The domain enums are now in the graph.
+    const tipoUsuario = cg.searchNodes('EnumTipoUsuario', {
+      languages: ['vba'],
+      kinds: ['enum'],
+    });
+    expect(tipoUsuario.length).toBeGreaterThan(0);
+    const administrador = cg.searchNodes('Administrador', {
+      languages: ['vba'],
+      kinds: ['enum_member'],
+    });
+    expect(administrador.length).toBeGreaterThan(0);
+
+    // And the config constants.
+    const constNode = cg.searchNodes('msoFileDialogOpen', {
+      languages: ['vba'],
+      kinds: ['constant'],
+    });
+    expect(constNode.length).toBeGreaterThan(0);
   });
 
   it('emits a class node for each class module (.cls) under src/classes/', () => {

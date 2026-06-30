@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- VBA enums and constants are now in the graph. A constants module exported from Access — the kind that holds your status enums (`Public Enum EnumEstadoNC ... End Enum`) and configuration constants (`Public Const ...`) — used to be invisible: CodeGraph indexed only its procedures, so a module made entirely of `Enum` and `Const` declarations produced nothing you could query. Now every `Enum` is a node with one child per member, and every `Const` (including multi-name lines like `Const A = 1, B = 2`) is its own node, all wired to their module. `codegraph query` finds an enum member like `REGISTRADA` or a constant like `msoFileDialogOpen`, and members keep their enum name (`EnumEstadoNC.REGISTRADA`) so the same member name across different enums stays distinct.
+
 
 ## [1.2.0] - 2026-06-29
 

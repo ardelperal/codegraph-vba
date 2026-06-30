@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Indexes Dysflow-exported `.bas`/`.cls` VBA source into codegraph. Emits `module`/class nodes per file, `function` nodes per `Sub`/`Function`/`Property`, and the `calls`/`contains`/`implements`/`references` edges between them. Cross-module calls, qualified type references, `WithEvents` listeners, and SQL table references inside string literals emit synthesized edges tagged with `metadata.synthesizedBy` so `codegraph_explore` can render provenance inline. `.form.txt`/`.report.txt` are out of scope here (see `vba-form-ui-extraction`).
+Indexes Dysflow-exported `.bas`/`.cls` VBA source into codegraph. Emits `module`/class nodes per file, `function` nodes per `Sub`/`Function`/`Property`, `enum`/`enum_member` nodes per `Enum` block, `constant` nodes per `Const` declaration, and the `calls`/`contains`/`implements`/`references` edges between them. Cross-module calls, qualified type references, `WithEvents` listeners, and SQL table references inside string literals emit synthesized edges tagged with `metadata.synthesizedBy` so `codegraph_explore` can render provenance inline. `.form.txt`/`.report.txt` are out of scope here (see `vba-form-ui-extraction`).
 
 ## Requirements
 
@@ -166,6 +166,42 @@ The system MUST scan string literals passed to `DoCmd.RunSQL`, `CurrentDb.OpenRe
 - WHEN the extractor processes the source
 - THEN no `references` edge to `tblFake` is emitted
 
+### Requirement: Enum Declarations
+
+For each `Enum <Name>` ... `End Enum` block the system MUST emit one `enum` node named `<Name>` and one `enum_member` node per member line, with a `contains` edge from the `enum` node to each `enum_member` node and a `contains` edge from the module/class node to the `enum` node. The `enum` node MUST carry `node.visibility` folded from the declaration keyword (`Private` → `'private'`; `Public`/`Global`/`Friend`/none → `'public'`). Each `enum_member` node's `qualifiedName` MUST be `<EnumName>.<MemberName>` so members of distinct enums that share a member name remain distinguishable.
+
+#### Scenario: Public Enum emits enum + member nodes
+
+- GIVEN a `.bas` containing `Public Enum EnumTipoUsuario` / `Administrador = 1` / `Calidad = 2` / `End Enum`
+- WHEN the extractor processes the source
+- THEN it emits one `enum` node named `EnumTipoUsuario` with `node.visibility === 'public'`
+- AND one `enum_member` node per member (`Administrador`, `Calidad`)
+- AND a `contains` edge from the `enum` node to each `enum_member` node
+- AND a `contains` edge from the `module` node to the `enum` node
+
+#### Scenario: enum_member qualifiedName is enum-scoped
+
+- GIVEN a `.bas` containing `Public Enum EnumTipoUsuario` / `Administrador = 1` / `End Enum`
+- WHEN the extractor processes the source
+- THEN the `enum_member` node named `Administrador` has `qualifiedName === 'EnumTipoUsuario.Administrador'`
+
+### Requirement: Const Declarations
+
+For each `Const` declaration line the system MUST emit one `constant` node per declared name (a multi-name line such as `Const A = 1, B = 2` emits one node per name), with a `contains` edge from the module/class node to each `constant` node. The `constant` node MUST carry `node.visibility` folded from the declaration keyword (`Private` → `'private'`; `Public`/`Global`/`Friend`/none → `'public'`).
+
+#### Scenario: Public Const emits a constant node
+
+- GIVEN a `.bas` containing `Public Const msoFileDialogOpen As Long = 1`
+- WHEN the extractor processes the source
+- THEN it emits one `constant` node named `msoFileDialogOpen` with `node.visibility === 'public'`
+- AND a `contains` edge from the `module` node to that `constant` node
+
+#### Scenario: multi-name Const line emits one node per name
+
+- GIVEN a `.bas` containing `Const A = 1, B = 2, C = 3`
+- WHEN the extractor processes the source
+- THEN it emits three `constant` nodes named `A`, `B`, and `C`
+
 ### Requirement: .form.txt Produces Zero Code Nodes
 
 When invoked on a `.form.txt` source (regardless of content), the system MUST emit zero `function`, zero non-form `module`, and zero `class` nodes. The form-side behavior lives in `vba-form-ui-extraction`.
@@ -178,7 +214,7 @@ When invoked on a `.form.txt` source (regardless of content), the system MUST em
 
 ### Requirement: Option Directives Emit Nothing
 
-The system MUST NOT emit any node or edge for `Option Compare Database`, `Option Explicit`, `Option Base`, or any other `Option` directive.
+The system MUST NOT emit any node or edge for `Option Compare Database`, `Option Explicit`, `Option Base`, or any other `Option` directive. A file whose only declarations are `Option` directives (no procedures, enums, constants, or other symbols) MUST emit zero symbol nodes — the lazy module/class node is suppressed. (A file with `Enum`/`Const` but no procedures DOES emit a module/class node — see Enum/Const Declarations.)
 
 #### Scenario: Option directives are inert
 

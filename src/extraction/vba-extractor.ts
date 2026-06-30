@@ -164,14 +164,22 @@ export class VbaExtractor {
       const dimCount = this.sweepDimsAndWithEvents(uncommented);
       if (dimCount > 0) hasAnySymbols = true;
 
+      // Sweep: Enum/Const declarations (REQ-CODE-12, REQ-CODE-13). Dysflow
+      // exports the full module text, so a constants module carries its
+      // `Const` lines and `Enum ... End Enum` blocks verbatim — these are the
+      // project's domain dictionary and must be in the graph.
+      const enumConstCount = this.sweepEnumsAndConsts(uncommented);
+      if (enumConstCount > 0) hasAnySymbols = true;
+
       // Sweep: call sites (REQ-CODE-4) and SQL-in-strings (REQ-CODE-8).
       // Both walk the same per-line view; combining them in one pass is
       // simpler and keeps line tracking consistent.
       this.sweepCallsAndSql(uncommented);
 
       // Create the module/class node ONLY when the file has actual symbols
-      // (REQ-CODE-10 — a file with only Option directives emits zero symbol
-      // nodes).
+      // (REQ-CODE-10 — a file with ONLY Option directives emits zero symbol
+      // nodes. A file with Enum/Const but no procedures DOES emit a module
+      // node, since those are real symbols — see REQ-CODE-12/13).
       if (hasAnySymbols) {
         this.moduleOrClassNode = this.createModuleOrClassNode(isCls, vbName);
         this.nodes.push(this.moduleOrClassNode);
@@ -647,6 +655,188 @@ export class VbaExtractor {
       }
     }
     return count;
+  }
+
+  /** `[visibility] Enum <Name>` — opens an enum block. */
+  private static readonly ENUM_START_RE =
+    /^\s*(?:(Public|Private|Friend|Global)\s+)?Enum\s+(\p{L}[\p{L}\p{N}_]*)/iu;
+
+  /** `End Enum` — closes the current enum block. */
+  private static readonly ENUM_END_RE = /^\s*End\s+Enum\b/i;
+
+  /**
+   * An enum member line: a leading identifier optionally followed by `=
+   * <value>`. Runs only inside an open Enum block, on the (already
+   * comment-stripped) source, so a trailing `'comment` never reaches here.
+   * `\p{L}` covers accented member names (e.g. `Sí`).
+   */
+  private static readonly ENUM_MEMBER_RE = /^\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:=|$)/u;
+
+  /** `[visibility] Const <decls>` — captures visibility (1) and the rest (2). */
+  private static readonly CONST_DECL_RE =
+    /^\s*(?:(Public|Private|Friend|Global)\s+)?Const\s+(.+)$/i;
+
+  /**
+   * One declared name inside a `Const` body. A name sits at a declaration
+   * boundary (start-of-body or after a comma), optionally followed by
+   * `As <Type>`, then `=`. Run with /g over the CONST_DECL_RE group 2 so
+   * multi-name lines (`Const A = 1, B = 2`) emit one node per name.
+   */
+  private static readonly CONST_NAME_RE =
+    /(?:^|,)\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:As\s+[\p{L}\p{N}_.]+\s*)?=/giu;
+
+  /**
+   * Fold a VBA visibility keyword to the canonical lowercase enum, matching
+   * the procedure convention: `Private` → 'private'; `Public`, `Global`,
+   * `Friend`, or none → 'public' (VBA's default module-level `Const`/`Enum`
+   * is Private, but we follow the same broader-than-private fold the proc
+   * sweep uses so visibility is consistent across symbol kinds).
+   */
+  private static foldVisibility(raw: string): 'public' | 'private' {
+    return raw.toLowerCase() === 'private' ? 'private' : 'public';
+  }
+
+  /**
+   * Walk the (uncommented, line-joined) source and emit:
+   *  - one `enum` node per `Enum <Name>` block, with one `enum_member` node
+   *    per member and a `contains` edge enum→member;
+   *  - one `constant` node per name declared on a `Const` line (multi-name
+   *    lines emit one node per name);
+   *  - a `contains` edge from the module/class node to each enum and constant
+   *    (held in `pendingModuleOrClassSource` until the module node exists).
+   *
+   * Returns the number of top-level symbols (enums + constants) emitted so
+   * the caller can flip `hasAnySymbols`.
+   */
+  private sweepEnumsAndConsts(src: string): number {
+    const lines = src.split('\n');
+    let count = 0;
+    let currentEnum: { id: string; name: string } | null = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? '';
+      const lineNum = i + 1;
+
+      if (currentEnum) {
+        if (VbaExtractor.ENUM_END_RE.test(line)) {
+          currentEnum = null;
+          continue;
+        }
+        const mm = VbaExtractor.ENUM_MEMBER_RE.exec(line);
+        if (mm) {
+          const memberName = mm[1] ?? '';
+          if (memberName) {
+            const memberId = generateNodeId(
+              this.filePath,
+              'enum_member',
+              memberName,
+              lineNum,
+            );
+            this.nodes.push({
+              id: memberId,
+              kind: 'enum_member',
+              name: memberName,
+              qualifiedName: `${currentEnum.name}.${memberName}`,
+              filePath: this.filePath,
+              language: 'vba',
+              startLine: lineNum,
+              endLine: lineNum,
+              startColumn: 0,
+              endColumn: line.length,
+              updatedAt: Date.now(),
+            });
+            // enum → member: source is known, emit directly (not pending).
+            this.edges.push({
+              source: currentEnum.id,
+              target: memberId,
+              kind: 'contains',
+            });
+          }
+        }
+        continue;
+      }
+
+      const enumStart = VbaExtractor.ENUM_START_RE.exec(line);
+      if (enumStart) {
+        const visibility = VbaExtractor.foldVisibility(enumStart[1] ?? '');
+        const name = enumStart[2] ?? '';
+        if (!name) continue;
+        const enumId = generateNodeId(this.filePath, 'enum', name, lineNum);
+        this.nodes.push({
+          id: enumId,
+          kind: 'enum',
+          name,
+          qualifiedName: name,
+          filePath: this.filePath,
+          language: 'vba',
+          startLine: lineNum,
+          endLine: lineNum,
+          startColumn: 0,
+          endColumn: line.length,
+          visibility,
+          updatedAt: Date.now(),
+        });
+        this.pushContainsFromModule(enumId);
+        currentEnum = { id: enumId, name };
+        count++;
+        continue;
+      }
+
+      const constDecl = VbaExtractor.CONST_DECL_RE.exec(line);
+      if (constDecl) {
+        const visibility = VbaExtractor.foldVisibility(constDecl[1] ?? '');
+        const body = constDecl[2] ?? '';
+        VbaExtractor.CONST_NAME_RE.lastIndex = 0;
+        let cm: RegExpExecArray | null;
+        while ((cm = VbaExtractor.CONST_NAME_RE.exec(body)) !== null) {
+          const constName = cm[1] ?? '';
+          if (!constName) continue;
+          const constId = generateNodeId(
+            this.filePath,
+            'constant',
+            constName,
+            lineNum,
+          );
+          this.nodes.push({
+            id: constId,
+            kind: 'constant',
+            name: constName,
+            qualifiedName: constName,
+            filePath: this.filePath,
+            language: 'vba',
+            startLine: lineNum,
+            endLine: lineNum,
+            startColumn: 0,
+            endColumn: line.length,
+            visibility,
+            updatedAt: Date.now(),
+          });
+          this.pushContainsFromModule(constId);
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  /**
+   * Emit a `contains` edge from the (lazily-created) module/class node to
+   * `targetId`. Mirrors the pending-source pattern the procedure and
+   * implements sweeps use: the module node doesn't exist yet, so the edge's
+   * source is rewritten once `extract()` creates it.
+   */
+  private pushContainsFromModule(targetId: string): void {
+    if (this.moduleOrClassNode) {
+      this.edges.push({
+        source: this.moduleOrClassNode.id,
+        target: targetId,
+        kind: 'contains',
+      });
+      return;
+    }
+    const edge: Edge = { source: '', target: targetId, kind: 'contains' };
+    this.edges.push(edge);
+    this.pendingModuleOrClassSource.push(edge);
   }
 
   /**

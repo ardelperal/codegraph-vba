@@ -9,10 +9,12 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.3.2] - 2026-06-30
+
 ### Fixes
 
 - `codegraph-vba init` no longer fails on a freshly installed bundle with `Cannot find package '@clack/core'`. The bundled dependencies were being packaged in a layout that relied on internal symlinks, which the install archive flattened — so the very first command an agent runs (`init`) crashed and never created the index. Dependencies now ship as a flat tree that survives unpacking on every platform, including Windows. (#28)
-
 
 ## [1.3.1] - 2026-06-30
 
@@ -523,3 +525,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.2.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.2.0
 [1.3.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.0
 [1.3.1]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.1
+[1.3.2]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.2

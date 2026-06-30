@@ -1,0 +1,4 @@
+[
+    { "name": "Consulta3", "file": "queries/Consulta3.sql" },
+    { "name": "Q_Smoke", "file": "queries/Q_Smoke.sql" }
+]

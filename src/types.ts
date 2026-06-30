@@ -38,6 +38,9 @@ export const NODE_KINDS = [
   'export',
   'route',
   'component',
+  // 'query' — a saved Access/SQL query (Dysflow `queries/*.sql`). The data
+  // layer of an Access app; emits `references` edges to the tables it names.
+  'query',
   // --- VBA form-control modeling (added 2026-06-29, Phase B1) ---
   // 'form-layout' — the form-level container node emitted from a
   // `.form.txt` / `.report.txt` (formerly mis-emitted as `module`).
@@ -114,6 +117,11 @@ export const LANGUAGES = [
   'objc',
   'r',
   'vba',
+  // SQL — Dysflow-exported saved Access queries (`queries/*.sql`). No grammar;
+  // the `SqlQueryExtractor` regex-models each query file as a `query` node with
+  // `references` edges to the tables it names. Only treated as a query when a
+  // sibling `queries.json` manifest is present (see directory discovery).
+  'sql',
   'yaml',
   'twig',
   'xml',

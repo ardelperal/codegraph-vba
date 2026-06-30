@@ -749,7 +749,7 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
     }
 
     const filePath = normalizePath(prefix + rel);
-    if (!isSourceFile(filePath, overrides)) continue;
+    if (!isSourceFile(filePath, overrides) && !isQuerySqlOnDisk(repoDir, rel)) continue;
 
     if (statusCode.includes('D')) {
       // Deletions stay unfiltered: getChangedFiles acts on one only when the
@@ -791,6 +791,64 @@ function collectGitStatus(repoDir: string, prefix: string, out: GitChanges, over
 }
 
 /**
+ * Whether `rel` (repo-relative, under `repoDir`) is a Dysflow saved-query
+ * `.sql` — a `.sql` whose on-disk directory also holds a `queries.json`
+ * manifest. Used on the incremental-sync path where only one path is known at
+ * a time (no full file list to derive the manifest set from).
+ */
+function isQuerySqlOnDisk(repoDir: string, rel: string): boolean {
+  if (!rel.toLowerCase().endsWith('.sql')) return false;
+  try {
+    return fs.existsSync(path.join(repoDir, path.dirname(rel), 'queries.json'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * POSIX dirname for a normalized repo-relative path. Returns '' for a
+ * top-level file (no slash).
+ */
+function posixDirOf(p: string): string {
+  const i = p.lastIndexOf('/');
+  return i < 0 ? '' : p.slice(0, i);
+}
+
+/**
+ * Set of directories (repo-relative POSIX) that contain a `queries.json`
+ * manifest, derived from a flat file list. Dysflow writes this manifest
+ * beside its exported `<Name>.sql` saved queries; a `.sql` is only treated as
+ * an Access query when its directory is in this set, so ordinary `.sql` files
+ * in non-Access repos stay ignored.
+ */
+function buildQueryDirSet(files: Iterable<string>): Set<string> {
+  const dirs = new Set<string>();
+  for (const f of files) {
+    const lower = f.toLowerCase();
+    if (lower === 'queries.json' || lower.endsWith('/queries.json')) {
+      dirs.add(posixDirOf(f));
+    }
+  }
+  return dirs;
+}
+
+/**
+ * Whether a file should be indexed: a normal source file, OR a Dysflow saved
+ * query `.sql` whose directory carries a `queries.json` manifest.
+ */
+function isIndexableFile(
+  filePath: string,
+  overrides: Record<string, Language> | undefined,
+  queryDirs: Set<string>,
+): boolean {
+  if (isSourceFile(filePath, overrides)) return true;
+  return (
+    filePath.toLowerCase().endsWith('.sql') &&
+    queryDirs.has(posixDirOf(filePath))
+  );
+}
+
+/**
  * Recursively scan a directory for source files.
  *
  * In git repos, uses `git ls-files` (inherently respects .gitignore at all
@@ -807,10 +865,11 @@ export function scanDirectory(
   // Fast path: use git to get all visible files (respects .gitignore everywhere)
   const gitFiles = getGitVisibleFiles(rootDir);
   if (gitFiles) {
+    const queryDirs = buildQueryDirSet(gitFiles);
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath, overrides)) {
+      if (isIndexableFile(filePath, overrides, queryDirs)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -836,10 +895,11 @@ export async function scanDirectoryAsync(
 
   const gitFiles = getGitVisibleFiles(rootDir);
   if (gitFiles) {
+    const queryDirs = buildQueryDirSet(gitFiles);
     const files: string[] = [];
     let count = 0;
     for (const filePath of gitFiles) {
-      if (isSourceFile(filePath, overrides)) {
+      if (isIndexableFile(filePath, overrides, queryDirs)) {
         files.push(filePath);
         count++;
         onProgress?.(count, filePath);
@@ -926,6 +986,17 @@ function scanDirectoryWalk(
       return;
     }
 
+    // Dysflow exports saved Access queries as `<Name>.sql` alongside a
+    // `queries.json` manifest. `.sql` is deliberately not a globally-indexed
+    // extension (it would mislabel SQL in non-Access repos), so a `.sql` file
+    // counts as a source file only when this directory carries that manifest.
+    const hasQueriesManifest = entries.some(
+      (e) => e.isFile() && e.name.toLowerCase() === 'queries.json',
+    );
+    const isIndexable = (rel: string): boolean =>
+      isSourceFile(rel, overrides) ||
+      (hasQueriesManifest && rel.toLowerCase().endsWith('.sql'));
+
     for (const entry of entries) {
       // Never descend into git internals or any CodeGraph data directory
       // (the active one or a sibling another environment created — #636).
@@ -943,7 +1014,7 @@ function scanDirectoryWalk(
               walk(fullPath, active);
             }
           } else if (stat.isFile()) {
-            if (!isIgnored(fullPath, false, active) && isSourceFile(relativePath, overrides)) {
+            if (!isIgnored(fullPath, false, active) && isIndexable(relativePath)) {
               files.push(relativePath);
               count++;
               onProgress?.(count, relativePath);
@@ -960,7 +1031,7 @@ function scanDirectoryWalk(
           walk(fullPath, active);
         }
       } else if (entry.isFile()) {
-        if (!isIgnored(fullPath, false, active) && isSourceFile(relativePath, overrides)) {
+        if (!isIgnored(fullPath, false, active) && isIndexable(relativePath)) {
           files.push(relativePath);
           count++;
           onProgress?.(count, relativePath);

@@ -10,7 +10,7 @@ import * as path from 'path';
 import { Parser, Language as WasmLanguage } from 'web-tree-sitter';
 import { Language } from '../types';
 
-export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'astro' | 'liquid' | 'razor' | 'yaml' | 'twig' | 'xml' | 'properties' | 'vba' | 'unknown'>;
+export type GrammarLanguage = Exclude<Language, 'svelte' | 'vue' | 'astro' | 'liquid' | 'razor' | 'yaml' | 'twig' | 'xml' | 'properties' | 'vba' | 'sql' | 'unknown'>;
 
 /**
  * WASM filename map — maps each language to its .wasm grammar file
@@ -320,6 +320,12 @@ export function detectLanguage(filePath: string, source?: string, overrides?: Re
   // VBA form/report UI files are two-segment extensions; the extname lookup
   // would otherwise collapse them to `.txt` and route them to `unknown`.
   if (detectVbaFormFile(filePath)) return 'vba';
+  // Dysflow saved Access queries are `.sql`. `.sql` is intentionally NOT in
+  // EXTENSION_MAP (so `isSourceFile` stays false for it — non-Access repos are
+  // unaffected); a `.sql` only reaches extraction via the directory-discovery
+  // gate that requires a sibling `queries.json`. Once it does, classify it as
+  // `sql` so the dispatch routes it to `SqlQueryExtractor`.
+  if (filePath.toLowerCase().endsWith('.sql')) return 'sql';
   const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
   // Shopify OS 2.0 JSON templates / section groups → the Liquid extractor (it
   // links each section `"type"` to its `sections/<type>.liquid`).
@@ -367,6 +373,7 @@ export function isLanguageSupported(language: Language): boolean {
   if (language === 'xml') return true; // MyBatis mapper extractor
   if (language === 'properties') return true; // Spring config keys
   if (language === 'vba') return true; // VbaExtractor + VbaFormExtractor (no WASM grammar needed)
+  if (language === 'sql') return true; // SqlQueryExtractor (no WASM grammar needed)
   if (language === 'unknown') return false;
   return language in WASM_GRAMMAR_FILES;
 }
@@ -379,6 +386,7 @@ export function isGrammarLoaded(language: Language): boolean {
   if (language === 'yaml' || language === 'twig') return true; // no WASM grammar needed
   if (language === 'xml' || language === 'properties') return true; // no WASM grammar needed
   if (language === 'vba') return true; // no WASM grammar needed — regex extractors only
+  if (language === 'sql') return true; // no WASM grammar needed — regex extractor only
   return languageCache.has(language);
 }
 
@@ -399,7 +407,7 @@ export function isFileLevelOnlyLanguage(language: Language): boolean {
  * Get all supported languages (those with grammar definitions).
  */
 export function getSupportedLanguages(): Language[] {
-  return [...(Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[]), 'svelte', 'vue', 'astro', 'liquid', 'vba'];
+  return [...(Object.keys(WASM_GRAMMAR_FILES) as GrammarLanguage[]), 'svelte', 'vue', 'astro', 'liquid', 'vba', 'sql'];
 }
 
 /**
@@ -478,6 +486,7 @@ export function getLanguageDisplayName(language: Language): string {
     xml: 'XML',
     properties: 'Java properties',
     vba: 'VBA / Access',
+    sql: 'SQL (Access query)',
     unknown: 'Unknown',
   };
   return names[language] || language;

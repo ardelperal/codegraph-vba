@@ -523,6 +523,27 @@ export class FileWatcher {
   }
 
   /**
+   * True when `rel` is a Dysflow saved-query `.sql` file — i.e. a `.sql` whose
+   * directory also contains a `queries.json` manifest. This mirrors the
+   * directory-discovery gate so incremental edits to a query file are picked
+   * up, while ordinary `.sql` files (no sibling manifest) are ignored exactly
+   * as they are during a full index.
+   */
+  private isDysflowQuerySql(rel: string): boolean {
+    if (!rel.toLowerCase().endsWith('.sql')) return false;
+    const manifest = path.join(
+      this.projectRoot,
+      path.dirname(rel),
+      'queries.json',
+    );
+    try {
+      return fs.existsSync(manifest);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Shared change handler for both watch strategies. `rel` is a
    * project-relative POSIX path. Applies the ignore + source-file filters and,
    * for a real source change, records it as pending (#403) and schedules a
@@ -536,7 +557,7 @@ export class FileWatcher {
     if (!rel || rel === '.' || rel.startsWith('..')) return;
     if (this.isAlwaysIgnored(rel)) return;
     if (this.ignoreMatcher && this.ignoreMatcher.ignores(rel)) return;
-    if (!isSourceFile(rel, loadExtensionOverrides(this.projectRoot))) return;
+    if (!isSourceFile(rel, loadExtensionOverrides(this.projectRoot)) && !this.isDysflowQuerySql(rel)) return;
 
     logDebug('File change detected', { file: rel });
     if (this.ready) {

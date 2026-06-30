@@ -202,4 +202,27 @@ describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
     // it. Both are acceptable per the verify risk-adjudication result.
     expect(refs.length + formBinding.length).toBeGreaterThan(0);
   });
+
+  it('indexes Dysflow queries/*.sql as query nodes with table references', () => {
+    if (!cg) return;
+    // `src/queries/` carries `queries.json` + `Consulta3.sql` / `Q_Smoke.sql`,
+    // the canonical Dysflow saved-query layout. The discovery gate picks the
+    // `.sql` files up (sibling manifest present) and routes them to the
+    // SqlQueryExtractor, which emits a `query` node per file.
+    const q = cg.searchNodes('Consulta3', {
+      languages: ['sql'],
+      kinds: ['query'],
+    });
+    expect(q.length).toBeGreaterThan(0);
+    const queryNode = q.find((n) => /Consulta3\.sql$/i.test(n.node.filePath)) ?? q[0];
+    expect(queryNode).toBeDefined();
+    if (!queryNode) return;
+
+    // The query references the table it selects from.
+    const out = cg.getOutgoingEdges(queryNode.node.id);
+    const refs = out.filter((e) => e.kind === 'references');
+    expect(refs.length).toBeGreaterThan(0);
+    const table = cg.searchNodes('TbACParaLista', { languages: ['sql'] });
+    expect(table.length).toBeGreaterThan(0);
+  });
 });

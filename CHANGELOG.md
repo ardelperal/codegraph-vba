@@ -13,6 +13,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - VBA enums and constants are now in the graph. A constants module exported from Access — the kind that holds your status enums (`Public Enum EnumEstadoNC ... End Enum`) and configuration constants (`Public Const ...`) — used to be invisible: CodeGraph indexed only its procedures, so a module made entirely of `Enum` and `Const` declarations produced nothing you could query. Now every `Enum` is a node with one child per member, and every `Const` (including multi-name lines like `Const A = 1, B = 2`) is its own node, all wired to their module. `codegraph query` finds an enum member like `REGISTRADA` or a constant like `msoFileDialogOpen`, and members keep their enum name (`EnumEstadoNC.REGISTRADA`) so the same member name across different enums stays distinct.
 
+- Saved Access queries are now in the graph. Dysflow exports each saved query as a `queries/<Name>.sql` file alongside a `queries.json` manifest — the data layer of an Access app — and CodeGraph previously ignored `.sql` entirely. Now each query is a node named after its file, and the tables it reads or writes (after `FROM`, `JOIN`, `INTO`, `UPDATE`, including bracketed names like `[Order Details]`) are linked from it, so `codegraph query` finds a saved query and you can see which tables it touches. To stay out of the way of non-Access projects, a `.sql` file is only treated as an Access query when its folder also contains a `queries.json` manifest; ordinary `.sql` files (migrations, scripts) are ignored exactly as before.
+
 
 ## [1.2.0] - 2026-06-29
 

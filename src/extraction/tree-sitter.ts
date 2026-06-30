@@ -30,6 +30,7 @@ import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
 import { VbaExtractor } from './vba-extractor';
 import { VbaFormExtractor } from './vba-form-extractor';
+import { SqlQueryExtractor } from './sql-query-extractor';
 import {
   getAllFrameworkResolvers,
   getApplicableFrameworks,
@@ -5701,6 +5702,12 @@ export function extractFromSource(
     // VBA standard/class/legacy modules — `.bas`, `.cls`, `.frm`, `.dsr`.
     // See `vba-code-extraction` spec (REQ-CODE-1..11).
     const extractor = new VbaExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (detectedLanguage === 'sql') {
+    // Dysflow-exported saved Access queries — `queries/<Name>.sql`. Only
+    // reaches here when the directory-discovery gate found a sibling
+    // `queries.json`. Emits a `query` node + `references` edges to tables.
+    const extractor = new SqlQueryExtractor(filePath, source);
     result = extractor.extract();
   } else {
     const extractor = new TreeSitterExtractor(filePath, source, detectedLanguage);

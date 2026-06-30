@@ -2149,25 +2149,33 @@ func main() {
         // `include/utils.h` file node — not a floating `import` node
         // living inside main.cpp.
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
-        const rows = db.getDb().prepare(`
-          select dst.kind as dstKind, dst.file_path as dstPath
-          from edges e
-          join nodes src on e.source = src.id
-          join nodes dst on e.target = dst.id
-          where e.kind = 'imports'
-            and src.kind = 'file'
-            and src.file_path = 'src/main.cpp'
-        `).all() as Array<{ dstKind: string; dstPath: string }>;
-        const resolvedToHeader = rows.find(
-          (r) => r.dstKind === 'file' && r.dstPath === 'include/utils.h'
-        );
-        expect(resolvedToHeader, 'main.cpp → include/utils.h imports edge missing').toBeDefined();
-        // `<vector>` should NOT produce a file edge — it's a stdlib header.
-        const stdlibFile = rows.find(
-          (r) => r.dstKind === 'file' && r.dstPath && r.dstPath.endsWith('vector')
-        );
-        expect(stdlibFile).toBeUndefined();
+        try {
+          const rows = db.getDb().prepare(`
+            select dst.kind as dstKind, dst.file_path as dstPath
+            from edges e
+            join nodes src on e.source = src.id
+            join nodes dst on e.target = dst.id
+            where e.kind = 'imports'
+              and src.kind = 'file'
+              and src.file_path = 'src/main.cpp'
+          `).all() as Array<{ dstKind: string; dstPath: string }>;
+          const resolvedToHeader = rows.find(
+            (r) => r.dstKind === 'file' && r.dstPath === 'include/utils.h'
+          );
+          expect(resolvedToHeader, 'main.cpp → include/utils.h imports edge missing').toBeDefined();
+          // `<vector>` should NOT produce a file edge — it's a stdlib header.
+          const stdlibFile = rows.find(
+            (r) => r.dstKind === 'file' && r.dstPath && r.dstPath.endsWith('vector')
+          );
+          expect(stdlibFile).toBeUndefined();
+        } finally {
+          db.close();
+        }
       } finally {
+        if (cg) {
+          cg.destroy();
+          cg = null as any;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -2213,20 +2221,28 @@ func main() {
         // to the real src/lib.php file node — a file→file `imports` edge, so
         // callers(lib.php) now includes page.php.
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
-        const rows = db.getDb().prepare(`
-          select dst.kind as dstKind, dst.file_path as dstPath
-          from edges e
-          join nodes src on e.source = src.id
-          join nodes dst on e.target = dst.id
-          where e.kind = 'imports'
-            and src.kind = 'file'
-            and src.file_path = 'src/page.php'
-        `).all() as Array<{ dstKind: string; dstPath: string }>;
-        const resolved = rows.find(
-          (r) => r.dstKind === 'file' && r.dstPath === 'src/lib.php'
-        );
-        expect(resolved, 'page.php → src/lib.php imports edge missing').toBeDefined();
+        try {
+          const rows = db.getDb().prepare(`
+            select dst.kind as dstKind, dst.file_path as dstPath
+            from edges e
+            join nodes src on e.source = src.id
+            join nodes dst on e.target = dst.id
+            where e.kind = 'imports'
+              and src.kind = 'file'
+              and src.file_path = 'src/page.php'
+          `).all() as Array<{ dstKind: string; dstPath: string }>;
+          const resolved = rows.find(
+            (r) => r.dstKind === 'file' && r.dstPath === 'src/lib.php'
+          );
+          expect(resolved, 'page.php → src/lib.php imports edge missing').toBeDefined();
+        } finally {
+          db.close();
+        }
       } finally {
+        if (cg) {
+          cg.destroy();
+          cg = null as any;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -2247,20 +2263,28 @@ func main() {
         cg = await CodeGraph.init(tempProject, { index: true });
 
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
-        const rows = db.getDb().prepare(`
-          select dst.kind as dstKind, dst.file_path as dstPath
-          from edges e
-          join nodes src on e.source = src.id
-          join nodes dst on e.target = dst.id
-          where e.kind = 'imports'
-            and src.kind = 'file'
-            and src.file_path = 'index.php'
-        `).all() as Array<{ dstKind: string; dstPath: string }>;
-        expect(
-          rows.find((r) => r.dstKind === 'file' && r.dstPath === 'inc/db.php'),
-          'index.php → inc/db.php imports edge missing'
-        ).toBeDefined();
+        try {
+          const rows = db.getDb().prepare(`
+            select dst.kind as dstKind, dst.file_path as dstPath
+            from edges e
+            join nodes src on e.source = src.id
+            join nodes dst on e.target = dst.id
+            where e.kind = 'imports'
+              and src.kind = 'file'
+              and src.file_path = 'index.php'
+          `).all() as Array<{ dstKind: string; dstPath: string }>;
+          expect(
+            rows.find((r) => r.dstKind === 'file' && r.dstPath === 'inc/db.php'),
+            'index.php → inc/db.php imports edge missing'
+          ).toBeDefined();
+        } finally {
+          db.close();
+        }
       } finally {
+        if (cg) {
+          cg.destroy();
+          cg = null as any;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });
@@ -2286,20 +2310,28 @@ func main() {
         cg = await CodeGraph.init(tempProject, { index: true });
 
         const db = DatabaseConnection.open(path.join(tempProject, '.codegraph-vba', 'codegraph.db'));
-        const rows = db.getDb().prepare(`
-          select dst.kind as dstKind, dst.file_path as dstPath
-          from edges e
-          join nodes src on e.source = src.id
-          join nodes dst on e.target = dst.id
-          where e.kind = 'imports'
-            and src.kind = 'file'
-            and src.file_path = 'app/page.php'
-        `).all() as Array<{ dstKind: string; dstPath: string }>;
-        expect(
-          rows.find((r) => r.dstKind === 'file' && r.dstPath === 'lib/inc/db.php'),
-          'app/page.php must NOT mis-connect to unrelated lib/inc/db.php'
-        ).toBeUndefined();
+        try {
+          const rows = db.getDb().prepare(`
+            select dst.kind as dstKind, dst.file_path as dstPath
+            from edges e
+            join nodes src on e.source = src.id
+            join nodes dst on e.target = dst.id
+            where e.kind = 'imports'
+              and src.kind = 'file'
+              and src.file_path = 'app/page.php'
+          `).all() as Array<{ dstKind: string; dstPath: string }>;
+          expect(
+            rows.find((r) => r.dstKind === 'file' && r.dstPath === 'lib/inc/db.php'),
+            'app/page.php must NOT mis-connect to unrelated lib/inc/db.php'
+          ).toBeUndefined();
+        } finally {
+          db.close();
+        }
       } finally {
+        if (cg) {
+          cg.destroy();
+          cg = null as any;
+        }
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });

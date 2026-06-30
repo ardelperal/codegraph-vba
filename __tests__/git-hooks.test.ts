@@ -31,12 +31,23 @@ function isExecutable(file: string): boolean {
 describe('git sync hooks', () => {
   let repo: string;
 
+  let originalGlobal: string | undefined;
+  let originalSystem: string | undefined;
+
   beforeEach(() => {
     repo = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-githooks-'));
+    originalGlobal = process.env.GIT_CONFIG_GLOBAL;
+    originalSystem = process.env.GIT_CONFIG_SYSTEM;
+    process.env.GIT_CONFIG_GLOBAL = process.platform === 'win32' ? 'NUL' : '/dev/null';
+    process.env.GIT_CONFIG_SYSTEM = process.platform === 'win32' ? 'NUL' : '/dev/null';
   });
 
   afterEach(() => {
     if (fs.existsSync(repo)) fs.rmSync(repo, { recursive: true, force: true });
+    if (originalGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+    else process.env.GIT_CONFIG_GLOBAL = originalGlobal;
+    if (originalSystem === undefined) delete process.env.GIT_CONFIG_SYSTEM;
+    else process.env.GIT_CONFIG_SYSTEM = originalSystem;
   });
 
   it('installs all default hooks, executable, invoking codegraph sync', () => {

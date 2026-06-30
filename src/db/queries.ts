@@ -214,6 +214,7 @@ export class QueryBuilder {
     getNodesByLowerName?: SqliteStatement;
     getUnresolvedCount?: SqliteStatement;
     getUnresolvedBatch?: SqliteStatement;
+    checkEventHandlerEdge?: SqliteStatement;
     getAllFilePaths?: SqliteStatement;
     getAllNodeNames?: SqliteStatement;
     getDominantFile?: SqliteStatement;
@@ -799,17 +800,22 @@ export class QueryBuilder {
     const languages = mergedLanguages;
 
     // First try FTS5 with prefix matching
+    const hasEventHandlerFilter = kinds && kinds.includes('event-handler' as any);
+    const kindsForDb = kinds
+      ? kinds.map(k => (k === ('event-handler' as any) ? ('function' as any) : k))
+      : undefined;
+
     let results = text
-      ? this.searchNodesFTS(text, { kinds, languages, limit, offset })
+      ? this.searchNodesFTS(text, { kinds: kindsForDb, languages, limit, offset })
       // Over-fetch by 5× when running filter-only (no text). The
       // post-scoring path: + name: filters can be very selective, so
       // a smaller multiplier risks returning fewer than `limit`
       // results despite the DB having plenty of matches.
-      : this.searchAllByFilters({ kinds, languages, limit: limit * 5 });
+      : this.searchAllByFilters({ kinds: kindsForDb, languages, limit: limit * 5 });
 
     // If no FTS results, try LIKE-based substring search
     if (results.length === 0 && text.length >= 2) {
-      results = this.searchNodesLike(text, { kinds, languages, limit, offset });
+      results = this.searchNodesLike(text, { kinds: kindsForDb, languages, limit, offset });
     }
 
     // Final fuzzy fallback: scan all known names and keep those within
@@ -817,7 +823,7 @@ export class QueryBuilder {
     // returned nothing AND there's a text portion long enough to be
     // worth fuzzing (1-char queries would match too much).
     if (results.length === 0 && text.length >= 3) {
-      results = this.searchNodesFuzzy(text, { kinds, languages, limit });
+      results = this.searchNodesFuzzy(text, { kinds: kindsForDb, languages, limit });
     }
 
     // Supplement: ensure exact name matches are always candidates.
@@ -833,9 +839,9 @@ export class QueryBuilder {
       for (const term of terms) {
         let sql = 'SELECT * FROM nodes WHERE name = ? COLLATE NOCASE';
         const params: (string | number)[] = [term];
-        if (kinds && kinds.length > 0) {
-          sql += ` AND kind IN (${kinds.map(() => '?').join(',')})`;
-          params.push(...kinds);
+        if (kindsForDb && kindsForDb.length > 0) {
+          sql += ` AND kind IN (${kindsForDb.map(() => '?').join(',')})`;
+          params.push(...kindsForDb);
         }
         if (languages && languages.length > 0) {
           sql += ` AND language IN (${languages.map(() => '?').join(',')})`;
@@ -888,7 +894,35 @@ export class QueryBuilder {
       });
     }
 
+    // Dynamically check and map function nodes with outgoing event-handler edges to event-handler kind
+    results = results.map(r => {
+      if (r.node.kind === 'function' && this.isEventHandlerNode(r.node.id)) {
+        return {
+          ...r,
+          node: {
+            ...r.node,
+            kind: 'event-handler' as any
+          }
+        };
+      }
+      return r;
+    });
+
+    if (hasEventHandlerFilter) {
+      results = results.filter(r => r.node.kind === ('event-handler' as any));
+    }
+
     return results;
+  }
+
+  private isEventHandlerNode(nodeId: string): boolean {
+    if (!this.stmts.checkEventHandlerEdge) {
+      this.stmts.checkEventHandlerEdge = this.db.prepare(
+        "SELECT 1 FROM edges WHERE source = ? AND kind = 'event-handler' LIMIT 1"
+      );
+    }
+    const row = this.stmts.checkEventHandlerEdge.get(nodeId);
+    return !!row;
   }
 
   /**

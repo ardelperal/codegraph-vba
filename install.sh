@@ -64,7 +64,7 @@ fi
 case "$version" in v*) ;; *) version="v$version" ;; esac
 
 # 3. Download + extract the bundle.
-url="https://github.com/$REPO/releases/download/$version/codegraph-${target}.tar.gz"
+url="https://github.com/$REPO/releases/download/$version/codegraph-vba-${target}.tar.gz"
 echo "Installing CodeGraph $version ($target)..."
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

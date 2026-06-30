@@ -177,12 +177,17 @@ describe('version helpers', () => {
 
   it('buildWindowsUpgradeScript targets the right asset per arch and renames-not-deletes the exe', () => {
     const arm = buildWindowsUpgradeScript('C:\\cg\\current', 'v1.2.3', 'arm64');
-    expect(arm).toContain('releases/download/v1.2.3/codegraph-win32-arm64.zip');
+    // Asset names carry the `codegraph-vba-` prefix (build-bundle.sh +
+    // release.yml publish `codegraph-vba-<target>.zip`); the old
+    // `codegraph-<target>.zip` URL 404s.
+    expect(arm).toContain('releases/download/v1.2.3/codegraph-vba-win32-arm64.zip');
+    // The extracted inner dir is also `codegraph-vba-<target>`.
+    expect(arm).toContain('codegraph-vba-win32-arm64');
     expect(arm).toContain("$dest='C:\\cg\\current'");
     expect(arm).toContain('Rename-Item'); // never Remove-Item on the locked exe
     expect(arm).not.toMatch(/Remove-Item[^;]*\$dest'?\s*;/); // doesn't delete current\
     const x64 = buildWindowsUpgradeScript('C:\\cg\\current', 'v1.2.3', 'x64');
-    expect(x64).toContain('codegraph-win32-x64.zip');
+    expect(x64).toContain('codegraph-vba-win32-x64.zip');
   });
 });
 
@@ -285,7 +290,7 @@ describe('runUpgrade', () => {
     expect(calls.runs[0].cmd).toBe('powershell.exe');
     const decoded = decodeEncodedCommand(calls.runs[0].args);
     // Downloads the right asset, renames the locked exe aside, copies over current\.
-    expect(decoded).toContain('releases/download/v0.9.9/codegraph-win32-');
+    expect(decoded).toContain('releases/download/v0.9.9/codegraph-vba-win32-');
     expect(decoded).toContain('Rename-Item');
     expect(decoded).toContain('node.exe.old-');
     expect(decoded).toContain('Copy-Item');

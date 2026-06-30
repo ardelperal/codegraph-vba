@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- `codegraph-vba upgrade` and the install scripts now download the correct release file, so installing and self-updating work again. The published bundles are named `codegraph-vba-<platform>` but the installer and the upgrader were still asking for the old `codegraph-<platform>` name, which 404'd — a fresh install or an in-place Windows upgrade would fail to download. They now request the right asset on every platform.
+
 
 ## [1.3.0] - 2026-06-30
 

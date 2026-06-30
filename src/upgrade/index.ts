@@ -509,7 +509,11 @@ function upgradeUnixBundle(
 /** Build the in-place Windows upgrade script (exported for unit-testing). */
 export function buildWindowsUpgradeScript(bundleRoot: string, version: string, arch: string): string {
   const target = `win32-${arch}`;
-  const url = `https://github.com/${REPO}/releases/download/${version}/codegraph-${target}.zip`;
+  // Asset names carry the `codegraph-vba-` prefix (build-bundle.sh +
+  // release.yml publish `codegraph-vba-<target>.{zip,tar.gz}`). The old
+  // `codegraph-<target>` name 404s — keep this in lockstep with the inner
+  // dir below and with install.sh / install.ps1.
+  const url = `https://github.com/${REPO}/releases/download/${version}/codegraph-vba-${target}.zip`;
   // Windows can't DELETE a running exe but CAN rename it, so we upgrade IN
   // PLACE: download → rename the locked node.exe aside → extract the new bundle
   // over current\. Synchronous, no detached helper (which dies under SSH/job
@@ -527,7 +531,7 @@ export function buildWindowsUpgradeScript(bundleRoot: string, version: string, a
     `Invoke-WebRequest -Uri $url -OutFile $zip`,
     `$stage=Join-Path $tmp 'stage'`,
     `Expand-Archive -Path $zip -DestinationPath $stage -Force`,
-    `$inner=Join-Path $stage 'codegraph-${target}'`,
+    `$inner=Join-Path $stage 'codegraph-vba-${target}'`,
     `$src=if(Test-Path $inner){$inner}else{$stage}`,
     `$node=Join-Path $dest 'node.exe'`,
     `if(Test-Path $node){Rename-Item -Path $node -NewName ('node.exe.old-'+[guid]::NewGuid().ToString('N')) -Force}`,

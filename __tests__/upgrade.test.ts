@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import {
   detectInstallMethod,
   deriveInstallDir,
@@ -368,6 +369,40 @@ describe('runUpgrade', () => {
       // git pull + package-manager install + package-manager run build.
       expect(calls.runs.length).toBeGreaterThan(0);
       expect(calls.logs.join('\n')).toMatch(/git pull/);
+      expect(calls.runs.some((r) => r.cmd === 'git' && r.args[0] === 'pull')).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('source: triggers upgrade when versions match but git hashes differ', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-upgrade-source-hash-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: root });
+      execFileSync('git', ['config', 'user.name', 'test'], { cwd: root });
+      execFileSync('git', ['config', 'user.email', 'test@test.com'], { cwd: root });
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: root });
+      fs.writeFileSync(path.join(root, 'dummy'), '1');
+      execFileSync('git', ['add', '.'], { cwd: root });
+      execFileSync('git', ['commit', '-m', 'commit1'], { cwd: root });
+      
+      const localHash = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', cwd: root }).trim();
+      
+      fs.writeFileSync(path.join(root, 'dummy'), '2');
+      execFileSync('git', ['commit', '-a', '-m', 'commit2'], { cwd: root });
+      const targetHash = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', cwd: root }).trim();
+      
+      execFileSync('git', ['reset', '--hard', localHash], { cwd: root });
+      execFileSync('git', ['branch', 'origin/main', targetHash], { cwd: root });
+      
+      const { deps, calls } = makeDeps({
+        method: { kind: 'source', root },
+        currentVersion: '1.2.0',
+      });
+      deps.resolveLatest = async () => '1.2.0';
+
+      const code = await runUpgrade({}, deps);
+      expect(code).toBe(0);
       expect(calls.runs.some((r) => r.cmd === 'git' && r.args[0] === 'pull')).toBe(true);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

@@ -322,7 +322,35 @@ export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promi
   const currentDisplay = normalizeVersion(currentVersion);
   deps.log(`${c.bold('CodeGraph-VBA')}  current ${c.cyan(currentDisplay)}  ${opts.version ? 'target' : 'latest'} ${c.cyan(latest)}`);
 
-  const updateAvailable = isUpdateAvailable(currentVersion, latest);
+  let updateAvailable = isUpdateAvailable(currentVersion, latest);
+
+  if (method.kind === 'source') {
+    try {
+      const git = deps.platform === 'win32' ? 'git.exe' : 'git';
+      const { execFileSync } = await import('child_process');
+      // Fetch tags first to make sure we have the latest tags
+      execFileSync(git, ['fetch', '--tags'], { stdio: 'ignore', cwd: method.root });
+
+      const localHash = execFileSync(git, ['rev-parse', 'HEAD'], { encoding: 'utf-8', cwd: method.root, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      let targetHash = '';
+      try {
+        targetHash = execFileSync(git, ['rev-parse', latest], { encoding: 'utf-8', cwd: method.root, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+      } catch {
+        // Fall back to origin/main
+        try {
+          targetHash = execFileSync(git, ['rev-parse', 'origin/main'], { encoding: 'utf-8', cwd: method.root, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+        } catch {
+          // ignore
+        }
+      }
+
+      if (localHash && targetHash && localHash !== targetHash) {
+        updateAvailable = true;
+      }
+    } catch {
+      // ignore git errors and fall back to version comparison
+    }
+  }
 
   if (opts.check) {
     if (updateAvailable) {

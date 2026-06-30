@@ -609,7 +609,13 @@ describe('Java end-to-end — field-injected bean trace (issue #389)', () => {
 
 describe('JVM FQN imports — end-to-end', () => {
   let tmpDir: string | undefined;
+  let cg: CodeGraph | undefined;
   afterEach(() => {
+    // Close the DB connection BEFORE removing the temp dir. On Windows an open
+    // SQLite handle makes the codegraph.db unlink fail with EBUSY; POSIX would
+    // allow it. Closing here (not at each test's end) survives mid-test asserts.
+    try { cg?.close(); } catch { /* best effort */ }
+    cg = undefined;
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
     tmpDir = undefined;
   });
@@ -627,7 +633,7 @@ describe('JVM FQN imports — end-to-end', () => {
       'package com.example.app\n\nimport com.example.Bar\n\nclass App {\n  fun run() { Bar().greet() }\n}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const bar = cg.getNodesByKind('class').find((n) => n.qualifiedName === 'com.example::Bar');
@@ -643,8 +649,6 @@ describe('JVM FQN imports — end-to-end', () => {
       .getIncomingEdges(bar!.id)
       .find((e) => e.kind === 'imports');
     expect(reachesBar, 'an imports edge should resolve to Bar via FQN').toBeDefined();
-
-    cg.close();
   });
 
   it('resolves a Kotlin top-level function import', async () => {
@@ -658,7 +662,7 @@ describe('JVM FQN imports — end-to-end', () => {
       'package com.example.app\n\nimport com.example.util\n\nfun main() { util() }\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const util = cg.getNodesByKind('function').find((n) => n.qualifiedName === 'com.example::util');
@@ -679,7 +683,7 @@ describe('JVM FQN imports — end-to-end', () => {
       'package com.example.app\n\nimport com.example.JavaBar\n\nfun main() { JavaBar().greet() }\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const javaBar = cg.getNodesByKind('class').find((n) => n.qualifiedName === 'com.example::JavaBar');
@@ -711,7 +715,7 @@ describe('JVM FQN imports — end-to-end', () => {
       'package app\n\nimport com.example.beta.Bar\n\nfun b() { Bar().who() }\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const alphaBar = cg.getNodesByKind('class').find((n) => n.qualifiedName === 'com.example.alpha::Bar');

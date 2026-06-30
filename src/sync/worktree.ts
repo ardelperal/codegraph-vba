@@ -105,10 +105,18 @@ export function worktreeMismatchNotice(m: WorktreeIndexMismatch): string {
   );
 }
 
-/** Resolve symlinks where possible so tmp/realpath quirks don't break equality. */
+/**
+ * Resolve symlinks where possible so tmp/realpath quirks don't break equality.
+ *
+ * Uses the OS-native realpath: on Windows it canonicalizes 8.3 short names to
+ * their long form (e.g. `C:\Users\RUNNER~1` → `C:\Users\runneradmin`). Git's
+ * `--show-toplevel` always reports the long form, so without this canonicalation
+ * a start path that arrives in short form (some `%TEMP%`/launcher setups) would
+ * never compare equal to the git-derived root and detection would misfire.
+ */
 function realpath(p: string): string {
   try {
-    return fs.realpathSync(path.resolve(p));
+    return fs.realpathSync.native(path.resolve(p));
   } catch {
     return path.resolve(p);
   }

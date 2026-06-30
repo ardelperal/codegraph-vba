@@ -28,9 +28,13 @@ function git(cwd: string, ...args: string[]): void {
   execFileSync('git', args, { cwd, stdio: ['ignore', 'ignore', 'ignore'] });
 }
 
-/** realpath so macOS /var → /private/var symlinking doesn't break equality. */
+/**
+ * realpath so macOS /var → /private/var symlinking doesn't break equality, and
+ * so Windows 8.3 short temp paths (RUNNER~1) canonicalize to the long form git
+ * reports — matching the production `realpath` in src/sync/worktree.ts.
+ */
 function real(p: string): string {
-  return fs.realpathSync(path.resolve(p));
+  return fs.realpathSync.native(path.resolve(p));
 }
 
 describe('detectWorktreeIndexMismatch (issue #155)', () => {

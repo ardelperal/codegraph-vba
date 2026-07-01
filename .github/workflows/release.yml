@@ -160,7 +160,7 @@ jobs:
               echo "publishing $name@$V"
               ( cd "$dir" && npm publish --access public )
             fi
-          done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u)
+          done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/bin/*' -exec dirname {} \; | sort -u)
 
       - name: Verify every package is actually on the registry
         run: |
@@ -177,7 +177,7 @@ jobs:
             done
             [ -n "$ok" ] || { echo "::error::$name@$V never appeared on the registry"; exit 1; }
             echo "verified $name@$V"
-          done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u)
+          done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/bin/*' -exec dirname {} \; | sort -u)
 
       - name: Sync packages to npmmirror
         # npmmirror/cnpm mirror lazily and frequently never pull the per-platform
@@ -194,4 +194,4 @@ jobs:
             echo "sync $name"
             curl -s -X PUT "https://registry.npmmirror.com/-/package/$enc/syncs" || true
             echo
-          done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u)
+          done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/bin/*' -exec dirname {} \; | sort -u)

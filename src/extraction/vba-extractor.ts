@@ -1694,6 +1694,18 @@ export class VbaExtractor {
   }
 
   /**
+   * Qualified-call eligibility is intentionally shared by paren-form
+   * (`Receiver.Member(...)`) and statement-form (`Receiver.Member args`) scans:
+   * project-class locals are processed after type resolution, declared
+   * primitive/external locals are silent, and undeclared receivers remain
+   * candidate module names.
+   */
+  private shouldProcessQualifiedCall(receiverName: string): boolean {
+    if (this.isLocalProjectClassVar(receiverName)) return true;
+    return !this.localVarTypeMap.has(receiverName.toLowerCase());
+  }
+
+  /**
    * #12a: resolve the "receiver type" used to build a qualified call-stub's
    * name/qualifiedName. When `receiverName` is a file-local variable typed
    * as a candidate project class (`isLocalProjectClassVar`), returns the
@@ -1925,16 +1937,19 @@ export class VbaExtractor {
             this.emitStatementCallEdge(caller, stmtCall, lineNum);
           }
 
-          // Fix 7 + Fix 2: qualified statement-form calls (`Receiver.Member args`) —
-          // the dominant cross-object call shape in real Dysflow fixtures.
-          // `CALL_RE` only matches the paren form; this path covers the no-paren
-          // statement form and emits a heuristic `calls` edge ONLY when the
-          // receiver is a file-local variable typed as a candidate project class
-          // (Fix 2: REQ-CODE-4 "unresolvable call is silent").
+          // Fix 7 + Fix 2 + Issue #40: qualified statement-form calls
+          // (`Receiver.Member args`) — the dominant cross-object call shape in
+          // real Dysflow fixtures. `CALL_RE` only matches the paren form; this
+          // path covers the no-paren statement form and emits a heuristic
+          // `calls` edge through the unified `shouldProcessQualifiedCall`
+          // gate (shared with the paren form): declared project-class locals
+          // process, declared primitive/external locals stay silent, and
+          // undeclared receivers remain module-name candidates for the
+          // post-extraction resolver.
           const qualStmt = this.detectQualifiedStatementCall(clauseLine);
           if (qualStmt) {
             const caller = stack[stack.length - 1]!;
-            if (this.isLocalProjectClassVar(qualStmt.receiver)) {
+            if (this.shouldProcessQualifiedCall(qualStmt.receiver)) {
               this.emitQualifiedStatementCallEdge(caller, qualStmt.receiver, qualStmt.member, lineNum);
             }
           }
@@ -2071,7 +2086,9 @@ export class VbaExtractor {
           column: col,
         });
       } else {
-        // Qualified `Receiver.Member(...)` — synthesize the call target.
+        // Qualified `Receiver.Member(...)` — synthesize the call target only
+        // for project-class local variables or undeclared module candidates.
+        if (!this.shouldProcessQualifiedCall(receiver)) continue;
         // #12a: `receiverType` resolves to the real class name when
         // `receiver` is a declared project-class local var (matching a real
         // `.cls` method's `${className}.${proc}` qualifiedName shape so the
@@ -2515,13 +2532,9 @@ export class VbaExtractor {
     member: string,
     lineNum: number,
   ): void {
-    // #12a: the caller already checked `isLocalProjectClassVar(receiver)`
-    // before calling this method, so `resolveReceiverType` always returns
-    // the RESOLVED CLASS NAME here — the stub's name/qualifiedName matches
-    // the real `.cls` method's `${className}.${proc}` shape (e.g.
-    // `m_NCOp` typed `As NCOperaciones` → `NCOperaciones.Registrar`, not
-    // `m_NCOp.Registrar`) so the #12b resolver can find it by exact
-    // qualifiedName match.
+    // Qualified-call eligibility is checked before this method. Project-class
+    // local receivers resolve to their class name (for exact `.cls` method
+    // matching), while undeclared receivers stay as raw module-name candidates.
     const receiverType = this.resolveReceiverType(receiver);
     const qualified = `${receiverType}.${member}`;
     const dedupeKey = `${caller.name}->${qualified}@${lineNum}`;
@@ -3151,10 +3164,11 @@ export class VbaExtractor {
   }
 
   /**
-   * Fix 2 (Issue #2): maps `variableName.toLowerCase()` → declared type info.
-   * Built by `sweepDimsAndWithEvents`; consulted by `sweepCallsAndSql` to gate
-   * qualified statement-form calls — only receivers that are file-local variables
-   * typed as a SIMPLE (non-qualified, non-primitive) identifier emit edges.
+   * Maps `variableName.toLowerCase()` → declared type info.
+   * Built by `sweepDimsAndWithEvents`; consulted by the unified qualified-call
+   * gate (`shouldProcessQualifiedCall`) so declared project-class locals emit
+   * edges, declared primitive/external locals stay silent, and undeclared
+   * receivers remain module-name candidates for the resolver (Fix 2 / Issue #2).
    */
   private localVarTypeMap = new Map<string, {
     outer: string;

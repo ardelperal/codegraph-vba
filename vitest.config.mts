@@ -6,6 +6,21 @@ export default defineConfig({
     environment: 'node',
     include: ['__tests__/**/*.test.ts'],
     /**
+     * The integration suite starts many real Node/SQLite/indexing processes.
+     * On Windows, Vitest's default worker fan-out can exhaust V8 isolate memory
+     * and make a plain `npx vitest run` fail even when the individual tests are
+     * green. Keep local and CI runs deterministic by capping concurrent workers.
+     */
+    maxWorkers: 1,
+    minWorkers: 1,
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        execArgv: ['--liftoff-only', '--max-old-space-size=8192'],
+        isolate: true,
+      },
+    },
+    /**
      * Several MCP integration tests (mcp-daemon, mcp-initialize, mcp-ppid-watchdog,
      * mcp-roots) spawn `dist/bin/codegraph.js serve --mcp` with `process.execPath`
      * and rely on the child inheriting `process.env`. On a Node >= 25 dev machine

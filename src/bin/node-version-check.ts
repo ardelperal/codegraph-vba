@@ -39,13 +39,29 @@ export function buildNode25BlockBanner(nodeVersion: string): string {
 }
 
 /**
- * Lowest supported Node.js major version. Matches the `engines` floor in
- * package.json. Below this, CodeGraph relies on language features / native APIs
- * that aren't present, and the combination is untested. `engines` alone only
- * *warns* on install (unless the user set `engine-strict`), so the CLI bootstrap
- * also hard-blocks here to actually enforce the floor.
+ * Lowest supported Node.js version. Matches the `engines` floor in package.json.
+ * Node.js 22.5.0 is the first version with the built-in `node:sqlite` API used
+ * by CodeGraph. `engines` alone only *warns* on install (unless the user set
+ * `engine-strict`), so the CLI bootstrap also hard-blocks here to actually
+ * enforce the floor.
  */
-export const MIN_NODE_MAJOR = 20;
+export const MIN_NODE_MAJOR = 22;
+export const MIN_NODE_MINOR = 5;
+export const MIN_NODE_VERSION = `${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}`;
+
+export function isBelowMinimumNodeVersion(nodeVersion: string): boolean {
+  const [majorRaw, minorRaw] = nodeVersion.split('.');
+  const major = parseInt(majorRaw ?? '0', 10);
+  const minor = parseInt(minorRaw ?? '0', 10);
+
+  if (!Number.isFinite(major) || major < MIN_NODE_MAJOR) {
+    return true;
+  }
+  if (major > MIN_NODE_MAJOR) {
+    return false;
+  }
+  return !Number.isFinite(minor) || minor < MIN_NODE_MINOR;
+}
 
 /**
  * Build the bordered banner shown when CodeGraph detects a Node.js major below
@@ -61,9 +77,9 @@ export function buildNodeTooOldBanner(nodeVersion: string): string {
     sep,
     `[CodeGraph] Unsupported Node.js version: ${nodeVersion}`,
     sep,
-    `CodeGraph requires Node.js ${MIN_NODE_MAJOR} or newer. Older versions lack`,
-    'language features and native APIs CodeGraph depends on, and are not',
-    'tested or supported.',
+    `CodeGraph requires Node.js ${MIN_NODE_VERSION} or newer. Older versions lack`,
+    'the built-in node:sqlite API CodeGraph depends on, and are not tested',
+    'or supported.',
     '',
     'Fix: install Node.js 22 LTS:',
     '  nvm install 22 && nvm use 22                          # nvm',

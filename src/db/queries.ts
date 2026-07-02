@@ -73,6 +73,7 @@ interface NodeRow {
   decorators: string | null;
   type_parameters: string | null;
   return_type: string | null;
+  metadata: string | null;
   updated_at: number;
 }
 
@@ -135,6 +136,7 @@ function rowToNode(row: NodeRow): Node {
     decorators: row.decorators ? safeJsonParse(row.decorators, undefined) : undefined,
     typeParameters: row.type_parameters ? safeJsonParse(row.type_parameters, undefined) : undefined,
     returnType: row.return_type ?? undefined,
+    metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
     updatedAt: row.updated_at,
   };
 }
@@ -256,13 +258,13 @@ export class QueryBuilder {
           start_line, end_line, start_column, end_column,
           docstring, signature, visibility,
           is_exported, is_async, is_static, is_abstract,
-          decorators, type_parameters, return_type, updated_at
+          decorators, type_parameters, return_type, metadata, updated_at
         ) VALUES (
           @id, @kind, @name, @qualifiedName, @filePath, @language,
           @startLine, @endLine, @startColumn, @endColumn,
           @docstring, @signature, @visibility,
           @isExported, @isAsync, @isStatic, @isAbstract,
-          @decorators, @typeParameters, @returnType, @updatedAt
+          @decorators, @typeParameters, @returnType, @metadata, @updatedAt
         )
       `);
     }
@@ -306,6 +308,7 @@ export class QueryBuilder {
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
       returnType: node.returnType ?? null,
+      metadata: node.metadata ? JSON.stringify(node.metadata) : null,
       updatedAt: node.updatedAt ?? Date.now(),
     });
   }
@@ -347,6 +350,7 @@ export class QueryBuilder {
           decorators = @decorators,
           type_parameters = @typeParameters,
           return_type = @returnType,
+          metadata = @metadata,
           updated_at = @updatedAt
         WHERE id = @id
       `);
@@ -382,6 +386,7 @@ export class QueryBuilder {
       decorators: node.decorators ? JSON.stringify(node.decorators) : null,
       typeParameters: node.typeParameters ? JSON.stringify(node.typeParameters) : null,
       returnType: node.returnType ?? null,
+      metadata: node.metadata ? JSON.stringify(node.metadata) : null,
       updatedAt: node.updatedAt ?? Date.now(),
     });
   }
@@ -1395,23 +1400,11 @@ export class QueryBuilder {
    * Find VBA call-stub candidate nodes for `resolveVbaCallStubs` (vba-graph-
    * connectivity-fixes, #12).
    *
-   * Design deviation note: the design's `getVbaCallStubs()` was specified as
-   * `SELECT * FROM nodes WHERE ... metadata LIKE '%"stub":true%'`, mirroring
-   * the JSON-in-JS convention used elsewhere (F2). That assumes a
-   * `nodes.metadata` column — but `nodes` has NO `metadata` column (only
-   * `edges` does; see schema.sql). `Node.metadata` is genuinely never
-   * persisted anywhere in this codebase today (the pre-existing
-   * `DoCmd.OpenForm` stub's `metadata:{stub:true}` on its `form-layout`
-   * node has the same characteristic — decorative at extraction time only).
-   * Adding a nodes-wide schema column is out of scope for this targeted fix.
-   *
-   * Equivalent-semantics fix: a VBA call-stub node is, BY DEFINITION,
-   * exactly a node that is the TARGET of a `calls` edge whose OWN metadata
-   * (which DOES persist) carries `stub: true`. So this queries via a JOIN
-   * against `edges.metadata` instead of a `nodes.metadata` column — same
-   * LIKE-prefilter-then-correctness-check shape as the JSON-in-JS
-   * convention, just anchored on the table that actually stores metadata
-   * for this row type.
+   * A VBA call-stub node is, BY DEFINITION, a node targeted by a `calls`
+   * edge whose OWN metadata carries `stub: true`. Keep this anchored on
+   * `edges.metadata` even though `nodes.metadata` now exists: the stub flag
+   * is a relationship fact about an unresolved call, not an intrinsic fact
+   * about the target symbol.
    */
   getVbaCallStubs(): Node[] {
     const rows = this.db

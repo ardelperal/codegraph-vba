@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- VBA API declarations and conditional-compilation branches are now extracted correctly: `Declare` / `Declare PtrSafe` statements become single-line function nodes, inactive `#If` branches are hidden without changing line numbers, custom `*db` SQL wrappers emit table references, and `DoCmd.OpenForm` resolves local string constants.
+
 ### Fixes
 
 - Cross-file VBA calls like `m_Op.Registrar ...` or `modUtils.Foo(...)` now resolve to their real target method or function instead of dead-ending at a placeholder node, so `codegraph_explore`, `codegraph callers`, and `codegraph query` can follow a call across `.cls`/`.bas` files instead of stopping at the calling file.

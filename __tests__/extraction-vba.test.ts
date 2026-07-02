@@ -1754,3 +1754,100 @@ describe('VbaExtractor â€” SQL variable accumulation across self-referential con
     expect(tableNames).toContain('tblA');
   });
 });
+
+
+describe('VbaExtractor — API declarations and VBA conditional compilation', () => {
+  it('extracts Public Declare PtrSafe Sub as a single-line function node with metadata', () => {
+    const src = [
+      'Option Explicit',
+      'Public Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)',
+      'Sub UseSleep()',
+      '  Sleep 1000',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modApi.bas', src);
+    const sleep = r.nodes.find((n) => n.kind === 'function' && n.name === 'Sleep');
+    expect(sleep).toBeDefined();
+    expect(sleep?.visibility).toBe('public');
+    expect(sleep?.startLine).toBe(2);
+    expect(sleep?.endLine).toBe(2);
+    expect(sleep?.metadata?.isDeclare).toBe(true);
+
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'UseSleep');
+    const call = r.edges.find((e) => e.kind === 'calls' && e.source === caller?.id && e.target === sleep?.id);
+    expect(call).toBeDefined();
+  });
+
+  it('conditional compilation hides inactive duplicate Declare branch', () => {
+    const src = [
+      '#If VBA7 Then',
+      'Public Declare PtrSafe Function GetTickCount Lib "kernel32" () As Long',
+      '#Else',
+      'Public Declare Function GetTickCount Lib "kernel32" () As Long',
+      '#End If',
+    ].join('\n');
+
+    const r = extract('src/modules/modApi.bas', src);
+    const declarations = r.nodes.filter((n) => n.kind === 'function' && n.name === 'GetTickCount');
+    expect(declarations).toHaveLength(1);
+    expect(declarations[0]?.startLine).toBe(2);
+    expect(declarations[0]?.metadata?.isDeclare).toBe(true);
+  });
+});
+
+describe('VbaExtractor — custom db variables and OpenForm constants', () => {
+  it('extracts inline SQL executed through custom variables ending in db', () => {
+    const src = [
+      'Sub Q(p_db As Object)',
+      '  p_db.Execute "SELECT * FROM Employees"',
+      '  m_Db.OpenRecordset "SELECT * FROM Orders"',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modSql.bas', src);
+    const tables = r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .sort();
+
+    expect(tables).toEqual(['Employees', 'Orders']);
+  });
+
+  it('extracts SQL variable execution through a custom db variable but not db_test', () => {
+    const src = [
+      'Sub Q(p_db As Object, db_test As Object)',
+      '  sql = "SELECT * FROM Included"',
+      '  p_db.Execute sql',
+      '  db_test.Execute "SELECT * FROM Excluded"',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modSql.bas', src);
+    const tables = r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+
+    expect(tables).toContain('Included');
+    expect(tables).not.toContain('Excluded');
+  });
+
+  it('resolves local string constants in DoCmd.OpenForm and falls back for unknown constants', () => {
+    const src = [
+      'Const FORM_EMPLOYEES = "frmEmployees", FORM_ORDERS As String = "frmOrders"',
+      'Sub OpenKnown()',
+      '  DoCmd.OpenForm FORM_EMPLOYEES',
+      '  DoCmd.OpenForm FORM_ORDERS',
+      '  DoCmd.OpenForm FORM_UNKNOWN',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modForms.bas', src);
+    const targets = r.edges
+      .filter((e) => e.kind === 'opens-form')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .sort();
+
+    expect(targets).toEqual(['FORM_UNKNOWN', 'frmEmployees', 'frmOrders']);
+  });
+});

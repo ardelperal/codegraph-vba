@@ -11,7 +11,7 @@ strict_tdd: true
 
 persistence:
   mode: both
-  openspec_root: C:\00repos\codigo\00_codegraph_feature-vba-extractor\openspec
+  openspec_root: C:\00repos\codigo\codegraph-vba\openspec
   engram_topic_prefix: sdd/codegraph
 
 testing:

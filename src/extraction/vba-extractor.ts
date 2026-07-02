@@ -580,6 +580,7 @@ export class VbaExtractor {
           id: eventId,
           kind: 'event',
           name,
+          signature: line.trim(),
           qualifiedName: this.classNamePrefix ? `${this.classNamePrefix}.${name}` : name,
           filePath: this.filePath,
           language: 'vba',

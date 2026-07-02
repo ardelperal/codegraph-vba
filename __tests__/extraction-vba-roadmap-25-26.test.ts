@@ -23,6 +23,7 @@ describe('VbaExtractor — roadmap #26 event declarations', () => {
     expect(event).toBeDefined();
     expect(event?.qualifiedName).toBe('PedidoPublisher.PedidoGuardado');
     expect(event?.visibility).toBe('public');
+    expect(event?.signature).toBe('Public Event PedidoGuardado(ByVal IdPedido As Long)');
     expect(caller).toBeDefined();
     expect(r.edges).toContainEqual(
       expect.objectContaining({

@@ -9,6 +9,13 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Added new diagnostic and impact analysis skills for Microsoft Access and VBA:
+  - `vba-event-tracer`: Traces event declarations, raise sites, and custom `WithEvents` event handlers.
+  - `vba-handler-backtrace`: Traces form control event handlers, dynamic calls, circular references, UDT parameters, and reconstructs multiline SQL statements.
+  - `vba-sql-impact`: Analyzes saved query definitions (`.sql` files), extracts `RecordSource` and `RowSource` layout properties, maps SQL table/column usages, and performs table alias resolution.
+
 
 ## [1.3.5] - 2026-07-02
 

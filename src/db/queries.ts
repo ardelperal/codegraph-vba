@@ -144,6 +144,7 @@ function rowToNode(row: NodeRow): Node {
  */
 function rowToEdge(row: EdgeRow): Edge {
   return {
+    id: row.id,
     source: row.source,
     target: row.target,
     kind: row.kind as EdgeKind,
@@ -220,6 +221,9 @@ export class QueryBuilder {
     getDominantFile?: SqliteStatement;
     getTopRouteFile?: SqliteStatement;
     getRoutingManifest?: SqliteStatement;
+    repointEdgeTarget?: SqliteStatement;
+    deleteEdgeById?: SqliteStatement;
+    edgeExists?: SqliteStatement;
   } = {};
 
   constructor(db: SqliteDatabase) {
@@ -1385,6 +1389,85 @@ export class QueryBuilder {
     }
     const rows = this.stmts.getEdgesByTarget.all(targetId) as EdgeRow[];
     return rows.map(rowToEdge);
+  }
+
+  /**
+   * Find VBA call-stub candidate nodes for `resolveVbaCallStubs` (vba-graph-
+   * connectivity-fixes, #12).
+   *
+   * Design deviation note: the design's `getVbaCallStubs()` was specified as
+   * `SELECT * FROM nodes WHERE ... metadata LIKE '%"stub":true%'`, mirroring
+   * the JSON-in-JS convention used elsewhere (F2). That assumes a
+   * `nodes.metadata` column — but `nodes` has NO `metadata` column (only
+   * `edges` does; see schema.sql). `Node.metadata` is genuinely never
+   * persisted anywhere in this codebase today (the pre-existing
+   * `DoCmd.OpenForm` stub's `metadata:{stub:true}` on its `form-layout`
+   * node has the same characteristic — decorative at extraction time only).
+   * Adding a nodes-wide schema column is out of scope for this targeted fix.
+   *
+   * Equivalent-semantics fix: a VBA call-stub node is, BY DEFINITION,
+   * exactly a node that is the TARGET of a `calls` edge whose OWN metadata
+   * (which DOES persist) carries `stub: true`. So this queries via a JOIN
+   * against `edges.metadata` instead of a `nodes.metadata` column — same
+   * LIKE-prefilter-then-correctness-check shape as the JSON-in-JS
+   * convention, just anchored on the table that actually stores metadata
+   * for this row type.
+   */
+  getVbaCallStubs(): Node[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT n.* FROM nodes n
+         JOIN edges e ON e.target = n.id
+         WHERE n.kind = 'function' AND n.language = 'vba'
+           AND e.kind = 'calls' AND e.metadata LIKE '%"stub":true%'`
+      )
+      .all() as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Repoint an edge's `target` + `metadata` in place, leaving all other
+   * columns (source, kind, line, col, provenance) untouched. Used by
+   * `resolveVbaCallStubs` to redirect a stub `calls` edge to its resolved
+   * real node (#12). `metadataJson` is the caller's already-serialized JSON
+   * text (or null to clear it) — mirrors `insertEdge`'s convention of
+   * storing edge metadata as TEXT.
+   */
+  repointEdgeTarget(edgeId: number, newTargetId: string, metadataJson: string | null): void {
+    if (!this.stmts.repointEdgeTarget) {
+      this.stmts.repointEdgeTarget = this.db.prepare(
+        'UPDATE edges SET target = ?, metadata = ? WHERE id = ?'
+      );
+    }
+    this.stmts.repointEdgeTarget.run(newTargetId, metadataJson, edgeId);
+  }
+
+  /**
+   * Delete a single edge row by its AUTOINCREMENT id. Used by
+   * `resolveVbaCallStubs` to collapse a duplicate `(source,target,kind)`
+   * edge onto an already-repointed one (F1) instead of leaving two
+   * identical rows.
+   */
+  deleteEdgeById(id: number): void {
+    if (!this.stmts.deleteEdgeById) {
+      this.stmts.deleteEdgeById = this.db.prepare('DELETE FROM edges WHERE id = ?');
+    }
+    this.stmts.deleteEdgeById.run(id);
+  }
+
+  /**
+   * True iff a `(source, target, kind)` edge row already exists. Used by
+   * `resolveVbaCallStubs` to detect a would-be duplicate before repointing
+   * a second stub edge onto the same real target (F1 duplicate-collapse).
+   */
+  edgeExists(source: string, target: string, kind: EdgeKind): boolean {
+    if (!this.stmts.edgeExists) {
+      this.stmts.edgeExists = this.db.prepare(
+        'SELECT 1 FROM edges WHERE source = ? AND target = ? AND kind = ? LIMIT 1'
+      );
+    }
+    const row = this.stmts.edgeExists.get(source, target, kind);
+    return row !== undefined;
   }
 
   /**

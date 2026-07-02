@@ -37,6 +37,7 @@ import {
 import { generateNodeId } from './tree-sitter-helpers';
 import {
   joinLineContinuations,
+  preprocessConditionalCompilation,
   stripVbaComments,
   extractStringLiterals,
 } from './vba-preprocess';
@@ -117,12 +118,13 @@ export class VbaExtractor {
         return this.result(startTime);
       }
 
-      // Pre-process pipeline (per design): join continuations, strip comments,
-      // then we sweep the joined-but-uncommented source for call sites and
-      // SQL strings. Comments are gone before regex runs, so no commented
-      // SQL can match the SQL regex.
+      // Pre-process pipeline (per design): join continuations, blank inactive
+      // conditional-compilation branches, strip comments, then sweep the
+      // joined-but-uncommented source. The conditional preprocessor preserves
+      // line count by replacing directives/inactive lines with empty strings.
       const joined = joinLineContinuations(this.source);
-      const uncommented = stripVbaComments(joined);
+      const preprocessed = preprocessConditionalCompilation(joined);
+      const uncommented = stripVbaComments(preprocessed);
 
       // Create the file node.
       this.nodes.push(this.createFileNode());
@@ -303,6 +305,10 @@ export class VbaExtractor {
   private static readonly PROC_RE =
     /^\s*((?:Public|Private|Friend|Static)\s+)?(?:Static\s+)?(Sub|Function|Property(?:\s+(?:Get|Let|Set))?)\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
+  /** `[visibility] Declare [PtrSafe] Sub|Function <Name> ...` DLL/API declaration. */
+  private static readonly DLL_DECLARE_RE =
+    /^\s*((?:Public|Private)\s+)?Declare\s+(?:PtrSafe\s+)?(?:Sub|Function)\s+(\p{L}[\p{L}\p{N}_]*)\b/iu;
+
   /**
    * Walk the (uncommented, line-joined) source and emit one `function` node
    * per `Sub` / `Function` / `Property` declaration. Also records the proc
@@ -314,11 +320,12 @@ export class VbaExtractor {
     const lines = src.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
-      const m = VbaExtractor.PROC_RE.exec(line);
+      const declare = VbaExtractor.DLL_DECLARE_RE.exec(line);
+      const m = declare ?? VbaExtractor.PROC_RE.exec(line);
       if (!m) continue;
       const visibilityRaw = (m[1] ?? '').trim();
-      const kindRaw = (m[2] ?? '').trim().toLowerCase();
-      const name = m[3] ?? '';
+      const kindRaw = declare ? 'function' : (m[2] ?? '').trim().toLowerCase();
+      const name = declare ? (m[2] ?? '') : (m[3] ?? '');
       if (!name) continue;
       const lineNum = i + 1;
 
@@ -385,6 +392,9 @@ export class VbaExtractor {
         visibility,
         updatedAt: Date.now(),
       };
+      if (declare) {
+        fnNode.metadata = { isDeclare: true };
+      }
       this.nodes.push(fnNode);
       // Cache the first node emitted for this name — `findFunctionNodeByName`
       // (audit S2) becomes O(1) instead of O(n) per call site.
@@ -394,6 +404,25 @@ export class VbaExtractor {
       // Fix 1: also index by startLine so Property Get/Let/Set with the same
       // name can each be found by their exact declaration line.
       this.functionNodeByStartLine.set(lineNum, fnNode);
+
+      if (declare) {
+        if (this.moduleOrClassNode) {
+          this.edges.push({
+            source: this.moduleOrClassNode.id,
+            target: nodeId,
+            kind: 'contains',
+          });
+        } else {
+          const edge: Edge = {
+            source: '',
+            target: nodeId,
+            kind: 'contains',
+          };
+          this.edges.push(edge);
+          this.pendingModuleOrClassSource.push(edge);
+        }
+        continue;
+      }
 
       // Hueco 3: synthesize the event-handler edge for Access naming
       // convention `<ControlName>_<EventName>` (e.g. `ComandoAltaPM_Click`,
@@ -677,15 +706,6 @@ export class VbaExtractor {
     /^\s*(?:(Public|Private|Friend|Global)\s+)?Const\s+(.+)$/i;
 
   /**
-   * One declared name inside a `Const` body. A name sits at a declaration
-   * boundary (start-of-body or after a comma), optionally followed by
-   * `As <Type>`, then `=`. Run with /g over the CONST_DECL_RE group 2 so
-   * multi-name lines (`Const A = 1, B = 2`) emit one node per name.
-   */
-  private static readonly CONST_NAME_RE =
-    /(?:^|,)\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:As\s+[\p{L}\p{N}_.]+\s*)?=/giu;
-
-  /**
    * Fold a VBA visibility keyword to the canonical lowercase enum, matching
    * the procedure convention: `Private` → 'private'; `Public`, `Global`,
    * `Friend`, or none → 'public' (VBA's default module-level `Const`/`Enum`
@@ -786,11 +806,13 @@ export class VbaExtractor {
       if (constDecl) {
         const visibility = VbaExtractor.foldVisibility(constDecl[1] ?? '');
         const body = constDecl[2] ?? '';
-        VbaExtractor.CONST_NAME_RE.lastIndex = 0;
-        let cm: RegExpExecArray | null;
-        while ((cm = VbaExtractor.CONST_NAME_RE.exec(body)) !== null) {
-          const constName = cm[1] ?? '';
+        const declarations = parseConstDeclarations(body);
+        for (const declaration of declarations) {
+          const constName = declaration.name;
           if (!constName) continue;
+          if (declaration.value !== null) {
+            this.localConstants.set(constName.toLowerCase(), declaration.value);
+          }
           const constId = generateNodeId(
             this.filePath,
             'constant',
@@ -856,9 +878,8 @@ export class VbaExtractor {
   /** SQL wrapper helpers — order matters because `db.Execute` is a suffix of others. */
   private static readonly SQL_WRAPPERS: ReadonlyArray<{ name: string; re: RegExp }> = [
     { name: 'DoCmd.RunSQL', re: /\bDoCmd\.RunSQL\s+"((?:[^"]|"")*)"/g },
-    { name: 'CurrentDb.OpenRecordset', re: /\bCurrentDb\.OpenRecordset\s+"((?:[^"]|"")*)"/g },
-    { name: 'CurrentDb.Execute', re: /\bCurrentDb\.Execute\s+"((?:[^"]|"")*)"/g },
-    { name: 'db.Execute', re: /\bdb\.Execute\s+"((?:[^"]|"")*)"/g },
+    { name: '*db.OpenRecordset', re: /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.OpenRecordset\s+"((?:[^"]|"")*)"/giu },
+    { name: '*db.Execute', re: /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.Execute\s+"((?:[^"]|"")*)"/giu },
     // Fix 4 (Issue #4): inline-literal forms `getdb().Execute "..."` and
     // `getdb().OpenRecordset "..."` — the variable form is covered by
     // SQL_VAR_EXEC_RE but the direct-literal form was missing.
@@ -869,16 +890,15 @@ export class VbaExtractor {
   /**
    * `DoCmd.OpenForm "<FormName>"` modelling regex — B4 (hueco 6).
    *
-   * Real VBA idiom (matches both forms):
+   * Real VBA idiom (matches literal and bare-identifier forms):
    *   `DoCmd.OpenForm "MyForm"`
+   *   `DoCmd.OpenForm FORM_MY_FORM`
    *   `DoCmd.OpenForm "MyForm", acNormal, , , acFormEdit`
    *
-   * Captures the form NAME (group 1) so the extractor can synthesize an
-   * `opens-form` heuristic edge from the calling Sub to a stub for the
-   * target form. The trailing positional args (`acNormal`, `acFormEdit`,
-   * etc.) are intentionally NOT captured — the orchestrator's scope decision
-   * was to cover ONLY `OpenForm` for this commit; `OpenReport`, `OpenQuery`,
-   * `OpenTable`, … are flagged in the commit body as follow-up work.
+   * Captures the first argument (group 1). String literals are unwrapped;
+   * bare identifiers resolve against local Const declarations, falling back
+   * to the identifier name when unknown. The trailing positional args
+   * (`acNormal`, `acFormEdit`, etc.) are intentionally NOT captured.
    *
    * Why a separate dispatch: `DoCmd` is in `RUNTIME_RECEIVER_BLACKLIST`
    * (R4 invariant), so `DoCmd.OpenForm` is intentionally SKIPPED by the
@@ -887,7 +907,8 @@ export class VbaExtractor {
    * matches BEFORE the call-site scan and uses its own dispatch to emit
    * the `opens-form` edge instead — sharing no logic with CALL_RE.
    */
-  private static readonly OPEN_FORM_RE = /\bDoCmd\.OpenForm\s+"([^"]+)"/g;
+  private static readonly OPEN_FORM_ARG_RE =
+    /\bDoCmd\.OpenForm\s+("(?:(?:[^"]|"")*)"|\p{L}[\p{L}\p{N}_]*)/gu;
 
   /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
   private static readonly SQL_VAR_ASSIGN_RE =
@@ -895,7 +916,7 @@ export class VbaExtractor {
 
   /** SQL wrapper called with a variable, e.g. `getdb().Execute m_SQL`. */
   private static readonly SQL_VAR_EXEC_RE =
-    /\b(?:getdb\(\)|CurrentDb|db)\.(?:OpenRecordset|Execute)\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
+    /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.(?:OpenRecordset|Execute)\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
 
   /** SQL table-name regex scoped to FROM / INTO / UPDATE. */
   private static readonly SQL_TABLE_RE =
@@ -1057,6 +1078,26 @@ export class VbaExtractor {
     if (entry.qualified) return false; // DAO.Recordset etc. → silent
     if (VbaExtractor.PRIMITIVE_TYPES.has(entry.outer.toLowerCase())) return false;
     return true;
+  }
+
+  /**
+   * #12a: resolve the "receiver type" used to build a qualified call-stub's
+   * name/qualifiedName. When `receiverName` is a file-local variable typed
+   * as a candidate project class (`isLocalProjectClassVar`), returns the
+   * RESOLVED CLASS NAME from `localVarTypeMap` (e.g. `m_NCOp` typed
+   * `As NCOperaciones` → `'NCOperaciones'`) so the stub's qualifiedName
+   * matches the real `.cls` method's `${className}.${proc}` shape and the
+   * post-extraction resolver (#12b) can find it via an exact qualifiedName
+   * match. Otherwise returns `receiverName` unchanged — this is the case
+   * for `.bas`-qualified module calls (`modUtils.Foo`), where the receiver
+   * IS already the target module's name and no resolution is needed.
+   */
+  private resolveReceiverType(receiverName: string): string {
+    if (this.isLocalProjectClassVar(receiverName)) {
+      const entry = this.localVarTypeMap.get(receiverName.toLowerCase());
+      if (entry) return entry.outer;
+    }
+    return receiverName;
   }
 
   private sweepCallsAndSql(src: string): void {
@@ -1235,7 +1276,13 @@ export class VbaExtractor {
         });
       } else {
         // Qualified `Receiver.Member(...)` — synthesize the call target.
-        const qualified = `${receiver}.${member}`;
+        // #12a: `receiverType` resolves to the real class name when
+        // `receiver` is a declared project-class local var (matching a real
+        // `.cls` method's `${className}.${proc}` qualifiedName shape so the
+        // #12b resolver can find it by exact match); otherwise it's the raw
+        // `receiver` text unchanged (e.g. `.bas`-qualified module calls).
+        const receiverType = this.resolveReceiverType(receiver);
+        const qualified = `${receiverType}.${member}`;
         // Avoid emitting duplicate edges for the same call (within a line).
         const dedupeKey = `${from.name}->${qualified}@${lineNum}`;
         if (this.callDedupe.has(dedupeKey)) continue;
@@ -1262,6 +1309,10 @@ export class VbaExtractor {
             startColumn: col,
             endColumn: col + qualified.length,
             visibility: 'public',
+            // #12a: tag the stub so the post-extraction resolver (#12b)
+            // can find and repoint it. Mirrors the DoCmd.OpenForm stub
+            // precedent (`emitOpensFormEdge`).
+            metadata: { stub: true },
             updatedAt: Date.now(),
           });
         }
@@ -1270,7 +1321,12 @@ export class VbaExtractor {
           target: synthId,
           kind: 'calls',
           provenance: 'heuristic',
-          metadata: { synthesizedBy: 'vba-name-resolution' },
+          metadata: {
+            synthesizedBy: 'vba-name-resolution',
+            stub: true,
+            receiverType,
+            member,
+          },
           line: lineNum,
           column: col,
         });
@@ -1501,7 +1557,15 @@ export class VbaExtractor {
     member: string,
     lineNum: number,
   ): void {
-    const qualified = `${receiver}.${member}`;
+    // #12a: the caller already checked `isLocalProjectClassVar(receiver)`
+    // before calling this method, so `resolveReceiverType` always returns
+    // the RESOLVED CLASS NAME here — the stub's name/qualifiedName matches
+    // the real `.cls` method's `${className}.${proc}` shape (e.g.
+    // `m_NCOp` typed `As NCOperaciones` → `NCOperaciones.Registrar`, not
+    // `m_NCOp.Registrar`) so the #12b resolver can find it by exact
+    // qualifiedName match.
+    const receiverType = this.resolveReceiverType(receiver);
+    const qualified = `${receiverType}.${member}`;
     const dedupeKey = `${caller.name}->${qualified}@${lineNum}`;
     if (this.callDedupe.has(dedupeKey)) return;
     this.callDedupe.add(dedupeKey);
@@ -1521,6 +1585,7 @@ export class VbaExtractor {
         startColumn: 0,
         endColumn: qualified.length,
         visibility: 'public',
+        metadata: { stub: true },
         updatedAt: Date.now(),
       });
     }
@@ -1529,7 +1594,12 @@ export class VbaExtractor {
       target: synthId,
       kind: 'calls',
       provenance: 'heuristic',
-      metadata: { synthesizedBy: 'vba-name-resolution' },
+      metadata: {
+        synthesizedBy: 'vba-name-resolution',
+        stub: true,
+        receiverType,
+        member,
+      },
       line: lineNum,
       column: 0,
     });
@@ -1558,11 +1628,9 @@ export class VbaExtractor {
    * flagged this as acceptable for B4 — only `OpenForm` is in scope.
    * `OpenReport`, `OpenQuery`, `OpenTable`, … are follow-up work.
    *
-   * Scope note: this regex matches ONLY the literal-string form
-   * `DoCmd.OpenForm "X"`. Variable-form calls like
-   * `DoCmd.OpenForm m_FormName` are intentionally NOT captured here
-   * because resolving the variable to a concrete form name would
-   * require data-flow analysis that is out of scope.
+   * Scope note: this regex matches literal-string and bare-identifier forms.
+   * Bare identifiers are resolved only through local `Const` declarations;
+   * arbitrary variable data-flow remains intentionally out of scope.
    */
   private scanOpenFormCalls(
     line: string,
@@ -1572,12 +1640,15 @@ export class VbaExtractor {
     // Each regex has /g so we MUST reset `lastIndex` before use; cloning
     // the regex is the simplest way to avoid leaking state across lines.
     const localRe = new RegExp(
-      VbaExtractor.OPEN_FORM_RE.source,
-      VbaExtractor.OPEN_FORM_RE.flags,
+      VbaExtractor.OPEN_FORM_ARG_RE.source,
+      VbaExtractor.OPEN_FORM_ARG_RE.flags,
     );
     let m: RegExpExecArray | null;
     while ((m = localRe.exec(line)) !== null) {
-      const targetFormName = (m[1] ?? '').trim();
+      const rawArg = (m[1] ?? '').trim();
+      const targetFormName = rawArg.startsWith('"')
+        ? unwrapVbaStringLiteral(rawArg)
+        : (this.localConstants.get(rawArg.toLowerCase()) ?? rawArg);
       if (!targetFormName) continue;
       this.emitOpensFormEdge(caller, targetFormName, lineNum, m.index);
     }
@@ -1681,6 +1752,19 @@ export class VbaExtractor {
     }
   }
 
+  /**
+   * #13 fix: `sql = sql & "..."` (self-referential concatenation) must
+   * ACCUMULATE the new fragment onto whatever was already tracked for
+   * `varName`, not overwrite it. Overwriting silently dropped earlier
+   * fragments' tables — typically the initial `FROM <table>` in
+   * `sql = "SELECT * FROM tblA"` followed by `sql = sql & " WHERE x=1"`.
+   *
+   * Detection: the RHS (`m[2]`, trimmed) starts with `<varName> &`,
+   * case-insensitively — matching VBA's case-insensitive identifiers (`Sql`
+   * and `sql` are the same variable). A genuine fresh assignment (RHS does
+   * NOT start with the self-reference) still RESETS tracking — that
+   * behavior is unchanged.
+   */
   private trackSqlVariableAssignment(
     lines: string[],
     lineIndex: number,
@@ -1689,10 +1773,19 @@ export class VbaExtractor {
     const line = lines[lineIndex] ?? '';
     const m = VbaExtractor.SQL_VAR_ASSIGN_RE.exec(line);
     if (!m) return;
-    const varName = (m[1] ?? '').toLowerCase();
-    const sqlText = this.collectStringLiteralText(lines, lineIndex);
-    if (!sqlText) return;
-    sqlVariables.set(varName, sqlText);
+    const rawVarName = m[1] ?? '';
+    const varName = rawVarName.toLowerCase();
+    const rhs = (m[2] ?? '').trim();
+    const newFragment = this.collectStringLiteralText(lines, lineIndex);
+    if (!newFragment) return;
+
+    const selfRefRe = new RegExp(`^${escapeRegExpLiteral(rawVarName)}\\s*&`, 'i');
+    const existing = sqlVariables.get(varName);
+    if (existing !== undefined && selfRefRe.test(rhs)) {
+      sqlVariables.set(varName, `${existing} ${newFragment}`);
+    } else {
+      sqlVariables.set(varName, newFragment);
+    }
   }
 
   private collectStringLiteralText(lines: string[], startIndex: number): string {
@@ -1789,7 +1882,91 @@ export class VbaExtractor {
    * qualified statement-form calls — only receivers that are file-local variables
    * typed as a SIMPLE (non-qualified, non-primitive) identifier emit edges.
    */
-  private localVarTypeMap = new Map<string, { outer: string; qualified: boolean }>();
+  private localVarTypeMap = new Map<string, {
+    outer: string;
+    qualified: boolean;
+    withEvents?: boolean;
+    variableName?: string;
+    assignedWithSet?: boolean;
+  }>();
+
+  /** Local constant name (lowercase) → simple literal value for OpenForm resolution. */
+  private localConstants = new Map<string, string>();
+}
+
+/**
+ * #13 helper: escape a variable name for safe interpolation into the
+ * self-reference RegExp built by `trackSqlVariableAssignment`. VBA
+ * identifiers are alphanumeric+underscore only, so in practice nothing here
+ * ever needs escaping — this guards against regex metacharacters anyway
+ * rather than assume the input is always well-formed.
+ */
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function parseConstDeclarations(
+  body: string,
+): Array<{ name: string; value: string | null }> {
+  const declarations: Array<{ name: string; value: string | null }> = [];
+  for (const part of splitOutsideVbaStrings(body, ',')) {
+    const m =
+      /^\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:As\s+[^=]+?)?\s*=\s*(.+?)\s*$/iu.exec(part);
+    if (!m) continue;
+    const name = m[1] ?? '';
+    const rawValue = (m[2] ?? '').trim();
+    declarations.push({
+      name,
+      value: rawValue.startsWith('"') ? unwrapVbaStringLiteral(rawValue) : rawValue || null,
+    });
+  }
+  return declarations;
+}
+
+function splitOutsideVbaStrings(value: string, separator: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let inString = false;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    const next = value[i + 1];
+    if (ch === '"') {
+      current += ch;
+      if (inString && next === '"') {
+        current += next;
+        i++;
+        continue;
+      }
+      inString = !inString;
+      continue;
+    }
+    if (!inString && ch === separator) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts;
+}
+
+function unwrapVbaStringLiteral(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith('"')) return trimmed;
+  let text = '';
+  for (let i = 1; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    const next = trimmed[i + 1];
+    if (ch === '"' && next === '"') {
+      text += '"';
+      i++;
+      continue;
+    }
+    if (ch === '"') break;
+    text += ch;
+  }
+  return text;
 }
 
 /**

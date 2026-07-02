@@ -13,6 +13,7 @@ import {
   joinLineContinuations,
   stripVbaComments,
   extractStringLiterals,
+  preprocessConditionalCompilation,
 } from '../src/extraction/vba-preprocess';
 
 describe('joinLineContinuations', () => {
@@ -373,5 +374,73 @@ describe('extractStringLiterals', () => {
     const before = src;
     extractStringLiterals(src);
     expect(src).toBe(before);
+  });
+});
+
+describe('preprocessConditionalCompilation', () => {
+  it('blanks directives and inactive #Else branch while preserving line count', () => {
+    const src = [
+      '#If Win64 Then',
+      'Public Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dw As Long)',
+      '#Else',
+      'Public Declare Sub Sleep Lib "kernel32" (ByVal dw As Long)',
+      '#End If',
+    ].join('\n');
+
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+
+    expect(lines).toHaveLength(src.split('\n').length);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toContain('PtrSafe');
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe('');
+    expect(lines[4]).toBe('');
+  });
+
+  it('evaluates Not/And conditions with modern Windows VBA defaults', () => {
+    const src = [
+      '#If Not Mac And Win64 Then',
+      'Public Sub ActiveBranch()',
+      '#Else',
+      'Public Sub InactiveBranch()',
+      '#End If',
+    ].join('\n');
+
+    const out = preprocessConditionalCompilation(src);
+    expect(out).toContain('ActiveBranch');
+    expect(out).not.toContain('InactiveBranch');
+    expect(out.split('\n')).toHaveLength(src.split('\n').length);
+  });
+
+  it('handles nested inactive parent blocks without leaking active children', () => {
+    const src = [
+      '#If Mac Then',
+      '#If Win64 Then',
+      'Public Sub Wrong()',
+      '#End If',
+      '#Else',
+      'Public Sub Right()',
+      '#End If',
+    ].join('\n');
+
+    const out = preprocessConditionalCompilation(src);
+    expect(out).not.toContain('Wrong');
+    expect(out).toContain('Right');
+  });
+
+  it('treats unsafe or unknown expressions as false without throwing', () => {
+    const src = [
+      '#If CreateObject("WScript.Shell") Then',
+      'Public Sub Unsafe()',
+      '#Else',
+      'Public Sub SafeFallback()',
+      '#End If',
+    ].join('\n');
+
+    expect(() => preprocessConditionalCompilation(src)).not.toThrow();
+    const out = preprocessConditionalCompilation(src);
+    expect(out).not.toContain('Unsafe');
+    expect(out).toContain('SafeFallback');
   });
 });

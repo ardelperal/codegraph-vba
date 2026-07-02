@@ -16,7 +16,11 @@
  *      Both are STRIPPED only when outside double-quoted strings. We walk
  *      character-by-character so a `'` inside `"..."` is preserved.
  *
- *   3. extractStringLiterals(src)
+ *   3. preprocessConditionalCompilation(src)
+ *      Blanks inactive VBA conditional-compilation branches (`#If`, `#ElseIf`,
+ *      `#Else`, `#End If`) while preserving line count.
+ *
+ *   4. extractStringLiterals(src)
  *      Used by SQL-variable tracking to read literal fragments from assignments
  *      such as `m_SQL = "SELECT ..." & ...`. It returns every `"..."` span
  *      with its 1-based line and 0-based column. VBA doubles `"` inside literals
@@ -165,6 +169,110 @@ export function stripVbaComments(src: string): string {
   return out.join('\n');
 }
 
+// -----------------------------------------------------------------------------
+// 3. preprocessConditionalCompilation
+// -----------------------------------------------------------------------------
+
+interface ConditionalFrame {
+  parentActive: boolean;
+  active: boolean;
+  branchTaken: boolean;
+}
+
+const IF_DIRECTIVE = /^\s*#If\s+(.+?)\s+Then\s*$/i;
+const ELSEIF_DIRECTIVE = /^\s*#ElseIf\s+(.+?)\s+Then\s*$/i;
+const ELSE_DIRECTIVE = /^\s*#Else\s*$/i;
+const ENDIF_DIRECTIVE = /^\s*#(?:End\s*If|EndIf)\s*$/i;
+
+/**
+ * Evaluate VBA conditional-compilation directives for the modern Windows
+ * Access/VBA target this extractor is designed around:
+ *   - VBA7 = true
+ *   - Win64 = true
+ *   - Mac = false
+ *
+ * Directives and inactive branch lines are replaced with empty strings so
+ * downstream extraction keeps source-line parity. Unsupported/unsafe
+ * expressions evaluate to false rather than throwing.
+ */
+export function preprocessConditionalCompilation(src: string): string {
+  if (!src) return src;
+  const lines = src.split('\n');
+  const out: string[] = [];
+  const stack: ConditionalFrame[] = [];
+
+  for (const line of lines) {
+    const ifMatch = IF_DIRECTIVE.exec(line);
+    if (ifMatch) {
+      const parentActive = stack.every((frame) => frame.active);
+      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '');
+      stack.push({ parentActive, active, branchTaken: active });
+      out.push('');
+      continue;
+    }
+
+    const elseIfMatch = ELSEIF_DIRECTIVE.exec(line);
+    if (elseIfMatch) {
+      const frame = stack[stack.length - 1];
+      if (frame) {
+        const active =
+          frame.parentActive &&
+          !frame.branchTaken &&
+          evaluateConditionalExpression(elseIfMatch[1] ?? '');
+        frame.active = active;
+        if (active) frame.branchTaken = true;
+      }
+      out.push('');
+      continue;
+    }
+
+    if (ELSE_DIRECTIVE.test(line)) {
+      const frame = stack[stack.length - 1];
+      if (frame) {
+        const active = frame.parentActive && !frame.branchTaken;
+        frame.active = active;
+        if (active) frame.branchTaken = true;
+      }
+      out.push('');
+      continue;
+    }
+
+    if (ENDIF_DIRECTIVE.test(line)) {
+      stack.pop();
+      out.push('');
+      continue;
+    }
+
+    out.push(stack.every((frame) => frame.active) ? line : '');
+  }
+
+  return out.join('\n');
+}
+
+function evaluateConditionalExpression(expr: string): boolean {
+  let normalized = expr.trim();
+  normalized = normalized.replace(/\bThen\s*$/i, '');
+  normalized = normalized.replace(/<>/g, '!==');
+  normalized = normalized.replace(/(?<![<>=])=(?![=])/g, '===');
+  normalized = normalized.replace(/\bVBA7\b/gi, 'true');
+  normalized = normalized.replace(/\bWin64\b/gi, 'true');
+  normalized = normalized.replace(/\bMac\b/gi, 'false');
+  normalized = normalized.replace(/\bAnd\b/gi, '&&');
+  normalized = normalized.replace(/\bOr\b/gi, '||');
+  normalized = normalized.replace(/\bNot\b/gi, '!');
+  normalized = normalized.trim();
+
+  if (!/^(?:true|false|\d+|&&|\|\||!|===|!==|\(|\)|\s)+$/.test(normalized)) {
+    return false;
+  }
+
+  try {
+    return Boolean(Function(`"use strict"; return (${normalized});`)());
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Split `line` into alternating code / string-literal segments and apply
  * `REM_MIDLINE` only to code segments. String segments are returned
@@ -231,7 +339,7 @@ function stripRemInCodeSegments(line: string): string {
 }
 
 // -----------------------------------------------------------------------------
-// 3. extractStringLiterals
+// 4. extractStringLiterals
 // -----------------------------------------------------------------------------
 
 export interface StringLiteralSpan {

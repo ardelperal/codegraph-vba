@@ -1301,7 +1301,13 @@ describe('VbaExtractor — qualified statement-form calls emit heuristic edges (
     );
     expect(hEdges.length).toBeGreaterThanOrEqual(1);
     const target = r.nodes.find((n) => n.id === hEdges[0]?.target);
-    expect(target?.name).toBe('m_NCOp.Registrar');
+    // #12a (intentional, not a regression — see proposal.md Affected Areas):
+    // the stub's name now uses the RESOLVED CLASS TYPE (`NCOperaciones`),
+    // not the raw variable name (`m_NCOp`), so it matches the real `.cls`
+    // method's `${className}.${proc}` qualifiedName shape for the #12b
+    // resolver's exact-match lookup.
+    expect(target?.name).toBe('NCOperaciones.Registrar');
+    expect(target?.metadata?.stub).toBe(true);
   });
 
   it('Receiver.Method (no args, no parens) also emits a heuristic calls edge when receiver is declared', () => {
@@ -1318,7 +1324,10 @@ describe('VbaExtractor — qualified statement-form calls emit heuristic edges (
     );
     expect(hEdges.length).toBeGreaterThanOrEqual(1);
     const target = r.nodes.find((n) => n.id === hEdges[0]?.target);
-    expect(target?.name).toBe('m_Obj.Init');
+    // #12a (intentional, not a regression): resolved-type name, not the
+    // raw variable name.
+    expect(target?.name).toBe('SomeClass.Init');
+    expect(target?.metadata?.stub).toBe(true);
   });
 
   it('Receiver.Method(args) (paren form) is not double-counted by the statement form detector', () => {
@@ -1393,7 +1402,64 @@ describe('VbaExtractor — qualified statement-form calls emit heuristic edges (
     );
     expect(hEdges.length).toBeGreaterThanOrEqual(1);
     const target = r.nodes.find((n) => n.id === hEdges[0]?.target);
-    expect(target?.name).toBe('m_AROp.Eliminar');
+    // #12a (intentional, not a regression): resolved-type name, not the
+    // raw variable name.
+    expect(target?.name).toBe('ARAuditoriaOperaciones.Eliminar');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #12a: qualified call-stub nodes/edges are tagged `metadata.stub === true`
+// so a post-extraction resolver pass (#12b) can find and repoint them.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — call-stub metadata tagging (#12a)', () => {
+  it('qualified paren-form call (scanCallSites): stub node + edge carry the stub-tagging contract', () => {
+    const src = [
+      'Sub Outer()',
+      '  modHelpers.CalcTotal(1, 2)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.stub).toBe(true);
+    // `modHelpers` isn't a declared local var — receiverType falls back to
+    // the raw receiver text (no class-type resolution to apply).
+    expect(hEdge?.metadata?.receiverType).toBe('modHelpers');
+    expect(hEdge?.metadata?.member).toBe('CalcTotal');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.metadata?.stub).toBe(true);
+    expect(target?.name).toBe('modHelpers.CalcTotal');
+  });
+
+  it('class-typed qualified statement-form call: stub node + edge carry the stub-tagging contract, name uses the RESOLVED type', () => {
+    const src = [
+      'Sub Outer()',
+      '  Dim m_NCOp As NCOperaciones',
+      '  m_NCOp.Registrar m_ARAlInicio, p_Error',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.stub).toBe(true);
+    // Proposal (#12): class-typed receivers resolve via localVarTypeMap —
+    // the stub's name/qualifiedName is the RESOLVED CLASS name (matching
+    // the real `.cls` method's `${className}.${proc}` qualifiedName shape),
+    // not the raw variable name `m_NCOp`.
+    expect(hEdge?.metadata?.receiverType).toBe('NCOperaciones');
+    expect(hEdge?.metadata?.member).toBe('Registrar');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.metadata?.stub).toBe(true);
+    expect(target?.name).toBe('NCOperaciones.Registrar');
   });
 });
 
@@ -1603,5 +1669,185 @@ describe('VbaExtractor — Rem comment after SQL does not produce false table re
     expect(sqlEdges).toHaveLength(1);
     const target = r.nodes.find((n) => n.id === sqlEdges[0]?.target);
     expect(target?.name).toBe('tblReal');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #13: trackSqlVariableAssignment must ACCUMULATE across
+// self-referential concatenation (`sql = sql & "..."`), not overwrite.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — SQL variable accumulation across self-referential concatenation (#13)', () => {
+  it('two-fragment self-referential concat retains the FROM table from the first fragment', () => {
+    const src = [
+      'Sub Q()',
+      '  Dim sql As String',
+      '  sql = "SELECT * FROM tblA"',
+      '  sql = sql & " WHERE x=1"',
+      '  db.Execute sql',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const sqlEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const tableNames = sqlEdges.map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+    // Previously: overwrite dropped the first fragment's `FROM tblA` entirely.
+    expect(tableNames).toContain('tblA');
+  });
+
+  it('three-plus fragment accumulation retains tables from every fragment', () => {
+    const src = [
+      'Sub Q()',
+      '  Dim sql As String',
+      '  sql = "SELECT * FROM tblA"',
+      '  sql = sql & " INTO tblB"',
+      '  sql = sql & " WHERE x=1"',
+      '  db.Execute sql',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const sqlEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const tableNames = sqlEdges.map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+    expect(tableNames).toContain('tblA');
+    expect(tableNames).toContain('tblB');
+  });
+
+  it('fresh (non-self-referential) reassignment after use resets tracking', () => {
+    const src = [
+      'Sub Q()',                            // line 1
+      '  Dim sql As String',                // line 2
+      '  sql = "SELECT * FROM tblA"',       // line 3
+      '  db.Execute sql',                   // line 4 — first call, tblA
+      '  sql = "UPDATE tblC SET x=1"',      // line 5 — fresh reassignment
+      '  db.Execute sql',                   // line 6 — second call, tblC only
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const sqlEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const secondCallEdges = sqlEdges.filter((e) => e.line === 6);
+    const secondCallTables = secondCallEdges.map(
+      (e) => r.nodes.find((n) => n.id === e.target)?.name,
+    );
+    expect(secondCallTables).toContain('tblC');
+    expect(secondCallTables).not.toContain('tblA');
+  });
+
+  it('case-insensitive self-reference (Sql = sql & ...) still accumulates', () => {
+    const src = [
+      'Sub Q()',
+      '  Dim Sql As String',
+      '  Sql = "SELECT * FROM tblA"',
+      '  Sql = sql & " WHERE x=1"',
+      '  db.Execute Sql',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const sqlEdges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const tableNames = sqlEdges.map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+    expect(tableNames).toContain('tblA');
+  });
+});
+
+
+describe('VbaExtractor � API declarations and VBA conditional compilation', () => {
+  it('extracts Public Declare PtrSafe Sub as a single-line function node with metadata', () => {
+    const src = [
+      'Option Explicit',
+      'Public Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)',
+      'Sub UseSleep()',
+      '  Sleep 1000',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modApi.bas', src);
+    const sleep = r.nodes.find((n) => n.kind === 'function' && n.name === 'Sleep');
+    expect(sleep).toBeDefined();
+    expect(sleep?.visibility).toBe('public');
+    expect(sleep?.startLine).toBe(2);
+    expect(sleep?.endLine).toBe(2);
+    expect(sleep?.metadata?.isDeclare).toBe(true);
+
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'UseSleep');
+    const call = r.edges.find((e) => e.kind === 'calls' && e.source === caller?.id && e.target === sleep?.id);
+    expect(call).toBeDefined();
+  });
+
+  it('conditional compilation hides inactive duplicate Declare branch', () => {
+    const src = [
+      '#If VBA7 Then',
+      'Public Declare PtrSafe Function GetTickCount Lib "kernel32" () As Long',
+      '#Else',
+      'Public Declare Function GetTickCount Lib "kernel32" () As Long',
+      '#End If',
+    ].join('\n');
+
+    const r = extract('src/modules/modApi.bas', src);
+    const declarations = r.nodes.filter((n) => n.kind === 'function' && n.name === 'GetTickCount');
+    expect(declarations).toHaveLength(1);
+    expect(declarations[0]?.startLine).toBe(2);
+    expect(declarations[0]?.metadata?.isDeclare).toBe(true);
+  });
+});
+
+describe('VbaExtractor � custom db variables and OpenForm constants', () => {
+  it('extracts inline SQL executed through custom variables ending in db', () => {
+    const src = [
+      'Sub Q(p_db As Object)',
+      '  p_db.Execute "SELECT * FROM Employees"',
+      '  m_Db.OpenRecordset "SELECT * FROM Orders"',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modSql.bas', src);
+    const tables = r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .sort();
+
+    expect(tables).toEqual(['Employees', 'Orders']);
+  });
+
+  it('extracts SQL variable execution through a custom db variable but not db_test', () => {
+    const src = [
+      'Sub Q(p_db As Object, db_test As Object)',
+      '  sql = "SELECT * FROM Included"',
+      '  p_db.Execute sql',
+      '  db_test.Execute "SELECT * FROM Excluded"',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modSql.bas', src);
+    const tables = r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+
+    expect(tables).toContain('Included');
+    expect(tables).not.toContain('Excluded');
+  });
+
+  it('resolves local string constants in DoCmd.OpenForm and falls back for unknown constants', () => {
+    const src = [
+      'Const FORM_EMPLOYEES = "frmEmployees", FORM_ORDERS As String = "frmOrders"',
+      'Sub OpenKnown()',
+      '  DoCmd.OpenForm FORM_EMPLOYEES',
+      '  DoCmd.OpenForm FORM_ORDERS',
+      '  DoCmd.OpenForm FORM_UNKNOWN',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modForms.bas', src);
+    const targets = r.edges
+      .filter((e) => e.kind === 'opens-form')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .sort();
+
+    expect(targets).toEqual(['FORM_UNKNOWN', 'frmEmployees', 'frmOrders']);
   });
 });

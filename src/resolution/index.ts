@@ -1355,6 +1355,154 @@ export class ReferenceResolver {
     return edges.length;
   }
 
+  /**
+   * VBA #12b — post-extraction resolver pass (vba-graph-connectivity-fixes,
+   * issue #12). Repoints qualified call-stub `calls` edges (tagged
+   * `metadata.stub === true` by the extractor's #12a stub-tagging) to their
+   * REAL cross-file target node when uniquely resolvable:
+   *  - **Class-typed**: exact `qualifiedName` match. #12a already renamed
+   *    the stub's name/qualifiedName to `${resolvedClassType}.${member}`
+   *    (via `localVarTypeMap`), matching a real `.cls` method's own
+   *    `${className}.${proc}` qualifiedName shape exactly.
+   *  - **`.bas`-qualified fallback**: when the exact match finds nothing
+   *    (the common case for `modUtils.Foo` — real `.bas` function
+   *    qualifiedNames are bare, no module prefix), narrow bare-member
+   *    candidates in `.bas` files to the ones whose containing module's
+   *    identity equals the stub's receiver text (case-insensitive).
+   * Zero or ambiguous (2+) candidates at either step DECLINE — the stub
+   * (and its edges, whose `metadata.stub` stays `true`) is left untouched;
+   * never a crash.
+   *
+   * Duplicate `(source,target,'calls')` rows — e.g. two call sites in one
+   * Sub targeting the same real method — are collapsed to ONE surviving
+   * edge (F1): `edges` has an AUTOINCREMENT PK and no unique constraint, so
+   * blindly repointing every incoming edge would leave duplicate rows that
+   * make `codegraph_node`/explore double-count the caller.
+   *
+   * Invoked at the `resolveChainedCallsViaConformance()` lifecycle slot in
+   * both `indexAll()` and `sync()` (src/index.ts). Idempotent: a stub that
+   * was already resolved in a prior pass no longer exists (its node was
+   * deleted), so `getVbaCallStubs()` won't return it again; re-running with
+   * no new stubs is a no-op.
+   */
+  resolveVbaCallStubs(): number {
+    const stubs = this.queries.getVbaCallStubs();
+    if (stubs.length === 0) return 0;
+
+    // Every currently-live stub node id — used to exclude STUB nodes from
+    // ever being picked as a "real" match candidate. Without this, two call
+    // sites to the SAME qualified name (e.g. `x.Registrar` called twice at
+    // different lines — F1's own duplicate-collapse fixture) would each
+    // synthesize their own stub with an IDENTICAL qualifiedName but a
+    // DIFFERENT id (the synthetic id includes the call-site line number),
+    // and an exact-qualifiedName lookup would see the real node PLUS both
+    // sibling stubs and wrongly decline as "ambiguous".
+    const stubIds = new Set(stubs.map((s) => s.id));
+
+    // Tuples `(source\0newTarget)` already repointed THIS PASS — combined
+    // with a DB `edgeExists` check (for rows that predate this pass) to
+    // decide collapse-vs-repoint per incoming edge.
+    const seenTuples = new Set<string>();
+    let repointedCount = 0;
+
+    for (const stub of stubs) {
+      const target = this.resolveVbaCallStubTarget(stub, stubIds);
+      const incoming = this.queries.getIncomingEdges(stub.id, ['calls']);
+
+      if (!target) {
+        // Ambiguous or unmatched — leave the stub and its edges untouched.
+        continue;
+      }
+
+      for (const edge of incoming) {
+        if (edge.id === undefined) continue; // defensive — DB reads always set it
+        const tupleKey = `${edge.source}\0${target.id}`;
+        if (seenTuples.has(tupleKey) || this.queries.edgeExists(edge.source, target.id, 'calls')) {
+          // A repoint for this exact (source, realTarget) pair already
+          // exists (this pass or a prior one) — drop the duplicate instead
+          // of leaving a second identical edge row.
+          this.queries.deleteEdgeById(edge.id);
+          continue;
+        }
+        seenTuples.add(tupleKey);
+        // F5: clear the stub flag but KEEP synthesizedBy/receiverType/member
+        // — the edge is still a heuristic VBA-name-resolution edge, just no
+        // longer a dead end.
+        const meta = { ...(edge.metadata ?? {}), stub: false };
+        this.queries.repointEdgeTarget(edge.id, target.id, JSON.stringify(meta));
+        repointedCount++;
+      }
+
+      // Every incoming edge is now either repointed or collapsed away — the
+      // stub is never an edge SOURCE (it's a synthetic call TARGET only),
+      // so it's safe to delete now that nothing references it.
+      this.queries.deleteNode(stub.id);
+    }
+
+    return repointedCount;
+  }
+
+  /**
+   * Resolve a single VBA call-stub node to its real target, or `null` when
+   * unresolvable/ambiguous. See `resolveVbaCallStubs` for the two-step
+   * strategy (exact qualifiedName match, then `.bas` module-scoped
+   * fallback).
+   */
+  private resolveVbaCallStubTarget(stub: Node, stubIds: Set<string>): Node | null {
+    const isRealCandidate = (n: Node) =>
+      n.id !== stub.id &&
+      !stubIds.has(n.id) &&
+      n.kind === 'function' &&
+      n.language === 'vba';
+
+    // Step 1: exact qualifiedName match (class-typed stubs land here — see
+    // #12a's resolved-type rename).
+    const exact = this.queries
+      .getNodesByQualifiedNameExact(stub.qualifiedName)
+      .filter(isRealCandidate);
+    if (exact.length === 1) return exact[0]!;
+    if (exact.length >= 2) return null;
+
+    // Step 2: `.bas`-qualified fallback. `stub.qualifiedName` is
+    // `${receiver}.${member}` where `receiver` didn't resolve to a
+    // project-class type at extraction time (kept as raw receiver text —
+    // the `.bas`-qualified-call case, since the extractor's
+    // `resolveReceiverType` only substitutes for DECLARED local class
+    // vars).
+    const dot = stub.qualifiedName.indexOf('.');
+    if (dot <= 0) return null;
+    const receiver = stub.qualifiedName.slice(0, dot);
+    const member = stub.qualifiedName.slice(dot + 1);
+    if (!member) return null;
+
+    // Bare-name candidates in ANY `.bas` file — real `.bas` function
+    // qualifiedNames carry no module prefix (unlike `.cls` methods), so a
+    // bare-name lookup is the only way to find them.
+    const memberCandidates = this.queries
+      .getNodesByName(member)
+      .filter(
+        (n) =>
+          isRealCandidate(n) && n.filePath.toLowerCase().endsWith('.bas'),
+      );
+    if (memberCandidates.length === 0) return null;
+
+    // Narrow to the `.bas` file(s) whose module identity (VB_Name, i.e. the
+    // sibling `module` node's name) equals `receiver`, case-insensitive —
+    // `.bas` calls are always `Module.Member`, so `receiver` IS the target
+    // module's own name.
+    const moduleFiles = new Set(
+      this.queries
+        .getNodesByLowerName(receiver.toLowerCase())
+        .filter((n) => n.kind === 'module' && n.language === 'vba')
+        .map((n) => n.filePath),
+    );
+    if (moduleFiles.size === 0) return null;
+
+    const narrowed = memberCandidates.filter((n) => moduleFiles.has(n.filePath));
+    if (narrowed.length === 1) return narrowed[0]!;
+    return null; // 0 or 2+ after narrowing — decline
+  }
+
   private gateLanguage(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {
     if (!result) return result;
     const tgt = this.getLanguageFromNodeId(result.targetNodeId);

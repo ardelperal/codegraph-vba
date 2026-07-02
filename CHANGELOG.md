@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.3.4] - 2026-07-02
+
 ### New Features
 
 - VBA API declarations and conditional-compilation branches are now extracted correctly: `Declare` / `Declare PtrSafe` statements become single-line function nodes, inactive `#If` branches are hidden without changing line numbers, custom `*db` SQL wrappers emit table references, and `DoCmd.OpenForm` resolves local string constants.
@@ -534,3 +537,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.3.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.0
 [1.3.1]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.1
 [1.3.2]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.2
+[1.3.4]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.4

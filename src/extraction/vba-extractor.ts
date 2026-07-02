@@ -1059,6 +1059,26 @@ export class VbaExtractor {
     return true;
   }
 
+  /**
+   * #12a: resolve the "receiver type" used to build a qualified call-stub's
+   * name/qualifiedName. When `receiverName` is a file-local variable typed
+   * as a candidate project class (`isLocalProjectClassVar`), returns the
+   * RESOLVED CLASS NAME from `localVarTypeMap` (e.g. `m_NCOp` typed
+   * `As NCOperaciones` → `'NCOperaciones'`) so the stub's qualifiedName
+   * matches the real `.cls` method's `${className}.${proc}` shape and the
+   * post-extraction resolver (#12b) can find it via an exact qualifiedName
+   * match. Otherwise returns `receiverName` unchanged — this is the case
+   * for `.bas`-qualified module calls (`modUtils.Foo`), where the receiver
+   * IS already the target module's name and no resolution is needed.
+   */
+  private resolveReceiverType(receiverName: string): string {
+    if (this.isLocalProjectClassVar(receiverName)) {
+      const entry = this.localVarTypeMap.get(receiverName.toLowerCase());
+      if (entry) return entry.outer;
+    }
+    return receiverName;
+  }
+
   private sweepCallsAndSql(src: string): void {
     const lines = src.split('\n');
     const procedureStartLines = new Set<number>();
@@ -1235,7 +1255,13 @@ export class VbaExtractor {
         });
       } else {
         // Qualified `Receiver.Member(...)` — synthesize the call target.
-        const qualified = `${receiver}.${member}`;
+        // #12a: `receiverType` resolves to the real class name when
+        // `receiver` is a declared project-class local var (matching a real
+        // `.cls` method's `${className}.${proc}` qualifiedName shape so the
+        // #12b resolver can find it by exact match); otherwise it's the raw
+        // `receiver` text unchanged (e.g. `.bas`-qualified module calls).
+        const receiverType = this.resolveReceiverType(receiver);
+        const qualified = `${receiverType}.${member}`;
         // Avoid emitting duplicate edges for the same call (within a line).
         const dedupeKey = `${from.name}->${qualified}@${lineNum}`;
         if (this.callDedupe.has(dedupeKey)) continue;
@@ -1262,6 +1288,10 @@ export class VbaExtractor {
             startColumn: col,
             endColumn: col + qualified.length,
             visibility: 'public',
+            // #12a: tag the stub so the post-extraction resolver (#12b)
+            // can find and repoint it. Mirrors the DoCmd.OpenForm stub
+            // precedent (`emitOpensFormEdge`).
+            metadata: { stub: true },
             updatedAt: Date.now(),
           });
         }
@@ -1270,7 +1300,12 @@ export class VbaExtractor {
           target: synthId,
           kind: 'calls',
           provenance: 'heuristic',
-          metadata: { synthesizedBy: 'vba-name-resolution' },
+          metadata: {
+            synthesizedBy: 'vba-name-resolution',
+            stub: true,
+            receiverType,
+            member,
+          },
           line: lineNum,
           column: col,
         });
@@ -1501,7 +1536,15 @@ export class VbaExtractor {
     member: string,
     lineNum: number,
   ): void {
-    const qualified = `${receiver}.${member}`;
+    // #12a: the caller already checked `isLocalProjectClassVar(receiver)`
+    // before calling this method, so `resolveReceiverType` always returns
+    // the RESOLVED CLASS NAME here — the stub's name/qualifiedName matches
+    // the real `.cls` method's `${className}.${proc}` shape (e.g.
+    // `m_NCOp` typed `As NCOperaciones` → `NCOperaciones.Registrar`, not
+    // `m_NCOp.Registrar`) so the #12b resolver can find it by exact
+    // qualifiedName match.
+    const receiverType = this.resolveReceiverType(receiver);
+    const qualified = `${receiverType}.${member}`;
     const dedupeKey = `${caller.name}->${qualified}@${lineNum}`;
     if (this.callDedupe.has(dedupeKey)) return;
     this.callDedupe.add(dedupeKey);
@@ -1521,6 +1564,7 @@ export class VbaExtractor {
         startColumn: 0,
         endColumn: qualified.length,
         visibility: 'public',
+        metadata: { stub: true },
         updatedAt: Date.now(),
       });
     }
@@ -1529,7 +1573,12 @@ export class VbaExtractor {
       target: synthId,
       kind: 'calls',
       provenance: 'heuristic',
-      metadata: { synthesizedBy: 'vba-name-resolution' },
+      metadata: {
+        synthesizedBy: 'vba-name-resolution',
+        stub: true,
+        receiverType,
+        member,
+      },
       line: lineNum,
       column: 0,
     });
@@ -1681,6 +1730,19 @@ export class VbaExtractor {
     }
   }
 
+  /**
+   * #13 fix: `sql = sql & "..."` (self-referential concatenation) must
+   * ACCUMULATE the new fragment onto whatever was already tracked for
+   * `varName`, not overwrite it. Overwriting silently dropped earlier
+   * fragments' tables — typically the initial `FROM <table>` in
+   * `sql = "SELECT * FROM tblA"` followed by `sql = sql & " WHERE x=1"`.
+   *
+   * Detection: the RHS (`m[2]`, trimmed) starts with `<varName> &`,
+   * case-insensitively — matching VBA's case-insensitive identifiers (`Sql`
+   * and `sql` are the same variable). A genuine fresh assignment (RHS does
+   * NOT start with the self-reference) still RESETS tracking — that
+   * behavior is unchanged.
+   */
   private trackSqlVariableAssignment(
     lines: string[],
     lineIndex: number,
@@ -1689,10 +1751,19 @@ export class VbaExtractor {
     const line = lines[lineIndex] ?? '';
     const m = VbaExtractor.SQL_VAR_ASSIGN_RE.exec(line);
     if (!m) return;
-    const varName = (m[1] ?? '').toLowerCase();
-    const sqlText = this.collectStringLiteralText(lines, lineIndex);
-    if (!sqlText) return;
-    sqlVariables.set(varName, sqlText);
+    const rawVarName = m[1] ?? '';
+    const varName = rawVarName.toLowerCase();
+    const rhs = (m[2] ?? '').trim();
+    const newFragment = this.collectStringLiteralText(lines, lineIndex);
+    if (!newFragment) return;
+
+    const selfRefRe = new RegExp(`^${escapeRegExpLiteral(rawVarName)}\\s*&`, 'i');
+    const existing = sqlVariables.get(varName);
+    if (existing !== undefined && selfRefRe.test(rhs)) {
+      sqlVariables.set(varName, `${existing} ${newFragment}`);
+    } else {
+      sqlVariables.set(varName, newFragment);
+    }
   }
 
   private collectStringLiteralText(lines: string[], startIndex: number): string {
@@ -1790,6 +1861,17 @@ export class VbaExtractor {
    * typed as a SIMPLE (non-qualified, non-primitive) identifier emit edges.
    */
   private localVarTypeMap = new Map<string, { outer: string; qualified: boolean }>();
+}
+
+/**
+ * #13 helper: escape a variable name for safe interpolation into the
+ * self-reference RegExp built by `trackSqlVariableAssignment`. VBA
+ * identifiers are alphanumeric+underscore only, so in practice nothing here
+ * ever needs escaping — this guards against regex metacharacters anyway
+ * rather than assume the input is always well-formed.
+ */
+function escapeRegExpLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

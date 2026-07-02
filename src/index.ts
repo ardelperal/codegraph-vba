@@ -429,6 +429,10 @@ export class CodeGraph {
           // Same lifecycle for `this.<member>` callback registrations whose
           // member is inherited from a supertype (#808).
           this.resolver.resolveDeferredThisMemberRefs();
+          // VBA #12b: repoint qualified call-stub edges to their real
+          // cross-file target now that the whole project has been indexed
+          // (needs every file's nodes/edges to be resolvable candidates).
+          this.resolver.resolveVbaCallStubs();
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -553,6 +557,9 @@ export class CodeGraph {
           // Same lifecycle for `this.<member>` callback registrations whose
           // member is inherited from a supertype (#808).
           this.resolver.resolveDeferredThisMemberRefs();
+          // VBA #12b: same lifecycle — repoint any newly-emitted qualified
+          // call-stub edges to their real cross-file target (#12).
+          this.resolver.resolveVbaCallStubs();
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.

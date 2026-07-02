@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- Cross-file VBA calls like `m_Op.Registrar ...` or `modUtils.Foo(...)` now resolve to their real target method or function instead of dead-ending at a placeholder node, so `codegraph_explore`, `codegraph callers`, and `codegraph query` can follow a call across `.cls`/`.bas` files instead of stopping at the calling file.
+- Multi-fragment SQL built up with `sql = sql & "..."` no longer drops the table references from the earlier fragments (typically the initial `FROM <table>`) — every table touched across the full concatenated statement is now linked.
 
 ## [1.3.2] - 2026-06-30
 

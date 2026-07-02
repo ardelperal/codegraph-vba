@@ -222,6 +222,16 @@ export interface Node {
  * An edge representing a relationship between two nodes
  */
 export interface Edge {
+  /**
+   * Database row id (AUTOINCREMENT PK on the `edges` table). Only populated
+   * when the edge was read back from the DB (e.g. via `getIncomingEdges`);
+   * undefined for edges constructed in-memory by an extractor/resolver
+   * before insertion. Needed by `resolveVbaCallStubs` to target a specific
+   * row for `repointEdgeTarget`/`deleteEdgeById` (vba-graph-connectivity-
+   * fixes, #12) since `edges` has no natural unique key.
+   */
+  id?: number;
+
   /** Source node ID */
   source: string;
 

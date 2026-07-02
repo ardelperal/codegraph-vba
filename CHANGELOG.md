@@ -10,6 +10,17 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 
+## [1.3.5] - 2026-07-02
+
+### New Features
+
+- VBA event declarations, user-defined `Type` blocks, and Win32 `Declare` statements are now first-class graph nodes. `RaiseEvent` calls link back to their declared `event`, `WithEvents` declarations emit subscriber edges, `Type ... End Type` members are queryable, and API declarations now carry DLL / alias / PtrSafe metadata while remaining traceable from call sites.
+- Node metadata is now persisted in the SQLite schema so extractor annotations such as constant values, Declare DLL details, and Type member types survive full indexing and are visible through graph queries.
+
+### Documentation
+
+- The VBA / Access README section now documents the full node-kind surface for roadmap issues #25 and #26: enum, enum_member, constant, query, event, type, type_member, declare, form-layout, and form-instance-control.
+
 ## [1.3.4] - 2026-07-02
 
 ### New Features

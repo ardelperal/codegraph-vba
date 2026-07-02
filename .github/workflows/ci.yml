@@ -29,11 +29,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Match the engines field: >=20.0.0 <25.0.0. 22 is the active LTS,
-        # 20 is the previous LTS we still promise. We don't add 24 here
-        # because Node 24 changed sqlite bindings and we want the matrix
-        # to reflect supported configurations, not chase the latest.
-        node-version: [20, 22]
+        # Match the engines field: >=22.5.0 <25.0.0. CodeGraph uses the
+        # built-in node:sqlite API, which is only available from Node 22.5+.
+        node-version: [22]
         # Linux is the gating runner — every PR must pass it. Windows is
         # advisory: certain tests have pre-existing Windows-only EPERM
         # failures documented in CLAUDE.md, so we don't block PRs on it.
@@ -41,13 +39,7 @@ jobs:
         # fails the PR, but a Windows-only failure shows up as a yellow
         # check rather than red.
         os: [ubuntu-latest, windows-latest]
-        exclude:
-          # Reduce CI minutes by running Windows only on the active LTS.
-          # Windows on Node 20 would mostly test "did Windows break again"
-          # without telling us anything Node 22 doesn't already.
-          - os: windows-latest
-            node-version: 20
-    continue-on-error: ${{ matrix.os == 'windows-latest' || matrix.node-version == 20 }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

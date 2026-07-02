@@ -5,11 +5,10 @@
  * load-bearing e2e coverage lives in `extraction-vba-realfixtures.test.ts`
  * per the Windows CI VBA regression subset requirement.
  *
- * `nodes` has no `metadata` column (only `edges` does — see schema.sql), so
  * `getVbaCallStubs()` finds candidate stub nodes via a JOIN against
- * `edges.metadata` (which DOES persist) rather than a `nodes.metadata` LIKE
- * prefilter — see the design-deviation note in
- * `src/db/queries.ts::getVbaCallStubs`.
+ * `edges.metadata` rather than `nodes.metadata`: the stub flag is a
+ * relationship fact about an unresolved call edge, not an intrinsic property
+ * of the target symbol.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
@@ -121,6 +120,28 @@ describe('VBA call-stub DB primitives', () => {
 
       const stubs = q.getVbaCallStubs();
       expect(stubs.map((n) => n.id)).not.toContain('notafunc');
+    });
+  });
+
+  describe('node metadata persistence', () => {
+    it('round-trips node metadata through the nodes table', () => {
+      q.insertNode({
+        ...makeVbaFunctionNode('decl', 'GetTickCount'),
+        kind: 'declare',
+        metadata: {
+          dll: 'kernel32',
+          declareKind: 'function',
+          ptrSafe: true,
+        },
+      });
+
+      const node = q.getNodeById('decl');
+
+      expect(node?.metadata).toEqual({
+        dll: 'kernel32',
+        declareKind: 'function',
+        ptrSafe: true,
+      });
     });
   });
 

@@ -1756,8 +1756,8 @@ describe('VbaExtractor â€” SQL variable accumulation across self-referential con
 });
 
 
-describe('VbaExtractor — API declarations and VBA conditional compilation', () => {
-  it('extracts Public Declare PtrSafe Sub as a single-line function node with metadata', () => {
+describe('VbaExtractor ï¿½ API declarations and VBA conditional compilation', () => {
+  it('extracts Public Declare PtrSafe Sub as a single-line declare node with metadata', () => {
     const src = [
       'Option Explicit',
       'Public Declare PtrSafe Sub Sleep Lib "kernel32" (ByVal dwMilliseconds As Long)',
@@ -1767,12 +1767,16 @@ describe('VbaExtractor — API declarations and VBA conditional compilation', () =
     ].join('\n');
 
     const r = extract('src/modules/modApi.bas', src);
-    const sleep = r.nodes.find((n) => n.kind === 'function' && n.name === 'Sleep');
+    const sleep = r.nodes.find((n) => n.kind === 'declare' && n.name === 'Sleep');
     expect(sleep).toBeDefined();
     expect(sleep?.visibility).toBe('public');
     expect(sleep?.startLine).toBe(2);
     expect(sleep?.endLine).toBe(2);
-    expect(sleep?.metadata?.isDeclare).toBe(true);
+    expect(sleep?.metadata).toEqual(expect.objectContaining({
+      dll: 'kernel32',
+      declareKind: 'sub',
+      ptrSafe: true,
+    }));
 
     const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'UseSleep');
     const call = r.edges.find((e) => e.kind === 'calls' && e.source === caller?.id && e.target === sleep?.id);
@@ -1789,14 +1793,14 @@ describe('VbaExtractor — API declarations and VBA conditional compilation', () =
     ].join('\n');
 
     const r = extract('src/modules/modApi.bas', src);
-    const declarations = r.nodes.filter((n) => n.kind === 'function' && n.name === 'GetTickCount');
+    const declarations = r.nodes.filter((n) => n.kind === 'declare' && n.name === 'GetTickCount');
     expect(declarations).toHaveLength(1);
     expect(declarations[0]?.startLine).toBe(2);
-    expect(declarations[0]?.metadata?.isDeclare).toBe(true);
+    expect(declarations[0]?.metadata?.ptrSafe).toBe(true);
   });
 });
 
-describe('VbaExtractor — custom db variables and OpenForm constants', () => {
+describe('VbaExtractor ï¿½ custom db variables and OpenForm constants', () => {
   it('extracts inline SQL executed through custom variables ending in db', () => {
     const src = [
       'Sub Q(p_db As Object)',

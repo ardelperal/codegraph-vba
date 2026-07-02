@@ -386,13 +386,31 @@ The two are **sibling tools**: Dysflow owns the Access binary round-trip (sync, 
 | **`Implements IFoo`** | `.cls` declares `Implements IFoo` | — | Emits an `implements` edge from the class to `IFoo` |
 | **`Dim x As Foo.Bar`** | `.bas`/`.cls` qualified type reference | — | `references` edge to `Foo` with `synthesizedBy: 'vba-name-resolution'`; silent when unresolvable |
 | **`WithEvents m_X As Form_Foo`** | `.cls` listener declaration | — | `references` edge to `Form_Foo` with `synthesizedBy: 'vba-withevents'` — closes the event-driven form flow |
+| **`Event Foo(...)` / `RaiseEvent Foo(...)`** | `.cls` custom event declaration + raise site | — | `event` node plus `raises-event` edges from the raising procedure; `WithEvents` also emits `subscribes-event` edges with the listener variable name |
+| **`Type T ... End Type`** | `.bas`/`.cls` user-defined type declaration | — | `type` node plus `type_member` child nodes linked by `type-member` edges and member type metadata |
+| **`Declare PtrSafe Function X Lib "dll"`** | `.bas`/`.cls` Win32/API declaration | — | `declare` node with DLL, alias, kind, and PtrSafe metadata; VBA call sites still emit `calls` edges to it |
+| **`Enum` / `Const` domain dictionaries** | `.bas`/`.cls` enum blocks and module constants | — | `enum`, `enum_member`, and `constant` nodes linked to their module/class; constant string values are preserved in metadata for local resolution |
+| **Saved Access QueryDefs** | `queries/<Name>.sql` | — | `query` node per Dysflow-exported `.sql` file with `references` edges to tables named by `FROM` / `JOIN` / `INTO` / `UPDATE` |
 | **`New Clase(...)`** | `.bas`/`.cls` instantiation | — | `references` edge with `synthesizedBy: 'vba-new-binding'` |
 | **SQL in VBA strings** | `.bas`/`.cls` SQL inside `DoCmd.RunSQL` / `CurrentDb.OpenRecordset` / `CurrentDb.Execute` / `db.Execute` | — | Table names extracted from `FROM`/`INTO`/`UPDATE <table>` → `references` edges with `synthesizedBy: 'vba-sql-table'` |
 
 **Hard invariants** enforced by the extractor and verified by tests:
 
 - **`.cls` is the canonical source for form code.** `.form.txt` emits **zero** `function` / `sub` / `class` nodes — only the form-level `module` node and `property` nodes per control. Dysflow overwrites `.form.txt`'s embedded code on the next import, so emitting code from there would be both wrong and ephemeral.
-- **A `.bas` with only `Public Const` declarations** (no Subs, Functions, Properties, Implements, or Dim) emits the `file` node only — no `module` / `class` per REQ-CODE-10.
+- **Option-only files stay silent.** A `.bas` containing only `Option ...` directives emits zero symbol nodes; a `.bas` with only `Enum`, `Const`, `Event`, `Type`, or `Declare` declarations DOES emit its module node because those declarations are real graph symbols.
+
+**VBA / Access node kinds added by the fork:**
+
+| Node kind | Meaning |
+|---|---|
+| `enum` / `enum_member` | VBA `Enum` block and its members |
+| `constant` | VBA `Const` declaration; string values are kept in metadata when available |
+| `query` | Dysflow-exported saved Access query (`queries/<Name>.sql`) |
+| `event` | VBA custom `Event` declaration |
+| `type` / `type_member` | VBA user-defined `Type ... End Type` and each declared member |
+| `declare` | Win32/API `Declare` / `Declare PtrSafe` statement |
+| `form-layout` | `.form.txt` / `.report.txt` form/report container |
+| `form-instance-control` | Access control instance from form/report UI text |
 
 **Scope:** Dysflow-managed projects only (Dysflow's `.form.txt` / `.report.txt` SaveAsText format). Legacy `.frm` / `.dsr` Access binary formats are not in scope.
 

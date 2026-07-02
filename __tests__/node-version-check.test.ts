@@ -7,7 +7,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildNode25BlockBanner, buildNodeTooOldBanner, MIN_NODE_MAJOR } from '../src/bin/node-version-check';
+import {
+  buildNode25BlockBanner,
+  buildNodeTooOldBanner,
+  MIN_NODE_MAJOR,
+  MIN_NODE_MINOR,
+  isBelowMinimumNodeVersion,
+} from '../src/bin/node-version-check';
 
 describe('buildNode25BlockBanner', () => {
   it('embeds the reported Node version in the header', () => {
@@ -50,10 +56,17 @@ describe('buildNodeTooOldBanner', () => {
   });
 
   it('states the supported floor matching MIN_NODE_MAJOR', () => {
-    expect(MIN_NODE_MAJOR).toBe(20);
-    expect(buildNodeTooOldBanner('18.0.0')).toContain(
-      `requires Node.js ${MIN_NODE_MAJOR} or newer`
-    );
+    expect(MIN_NODE_MAJOR).toBe(22);
+    expect(MIN_NODE_MINOR).toBe(5);
+    expect(buildNodeTooOldBanner('20.0.0')).toContain('requires Node.js 22.5 or newer');
+    expect(buildNodeTooOldBanner('22.4.0')).toContain('built-in node:sqlite');
+  });
+
+  it('rejects Node 20 and Node 22 before node:sqlite became available', () => {
+    expect(isBelowMinimumNodeVersion('20.19.0')).toBe(true);
+    expect(isBelowMinimumNodeVersion('22.4.0')).toBe(true);
+    expect(isBelowMinimumNodeVersion('22.5.0')).toBe(false);
+    expect(isBelowMinimumNodeVersion('24.0.0')).toBe(false);
   });
 
   it('points users to Node 22 LTS via nvm and Homebrew', () => {

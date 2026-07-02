@@ -158,6 +158,12 @@ export class VbaExtractor {
       const procs = this.sweepProcedures(uncommented);
       if (procs.length > 0) hasAnySymbols = true;
 
+      // Sweep: first-class Event / Type / Declare declarations (roadmap #26).
+      // This runs before call-site scanning so `RaiseEvent Foo` and calls to a
+      // `Declare` can resolve to real local nodes rather than fall through.
+      const declarationCount = this.sweepEventsTypesAndDeclares(uncommented);
+      if (declarationCount > 0) hasAnySymbols = true;
+
       // Sweep: Implements (REQ-CODE-5).
       const implCount = this.sweepImplements(uncommented);
       if (implCount > 0) hasAnySymbols = true;
@@ -305,10 +311,6 @@ export class VbaExtractor {
   private static readonly PROC_RE =
     /^\s*((?:Public|Private|Friend|Static)\s+)?(?:Static\s+)?(Sub|Function|Property(?:\s+(?:Get|Let|Set))?)\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
-  /** `[visibility] Declare [PtrSafe] Sub|Function <Name> ...` DLL/API declaration. */
-  private static readonly DLL_DECLARE_RE =
-    /^\s*((?:Public|Private)\s+)?Declare\s+(?:PtrSafe\s+)?(?:Sub|Function)\s+(\p{L}[\p{L}\p{N}_]*)\b/iu;
-
   /**
    * Walk the (uncommented, line-joined) source and emit one `function` node
    * per `Sub` / `Function` / `Property` declaration. Also records the proc
@@ -320,12 +322,11 @@ export class VbaExtractor {
     const lines = src.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
-      const declare = VbaExtractor.DLL_DECLARE_RE.exec(line);
-      const m = declare ?? VbaExtractor.PROC_RE.exec(line);
+      const m = VbaExtractor.PROC_RE.exec(line);
       if (!m) continue;
       const visibilityRaw = (m[1] ?? '').trim();
-      const kindRaw = declare ? 'function' : (m[2] ?? '').trim().toLowerCase();
-      const name = declare ? (m[2] ?? '') : (m[3] ?? '');
+      const kindRaw = (m[2] ?? '').trim().toLowerCase();
+      const name = m[3] ?? '';
       if (!name) continue;
       const lineNum = i + 1;
 
@@ -392,9 +393,6 @@ export class VbaExtractor {
         visibility,
         updatedAt: Date.now(),
       };
-      if (declare) {
-        fnNode.metadata = { isDeclare: true };
-      }
       this.nodes.push(fnNode);
       // Cache the first node emitted for this name — `findFunctionNodeByName`
       // (audit S2) becomes O(1) instead of O(n) per call site.
@@ -404,25 +402,6 @@ export class VbaExtractor {
       // Fix 1: also index by startLine so Property Get/Let/Set with the same
       // name can each be found by their exact declaration line.
       this.functionNodeByStartLine.set(lineNum, fnNode);
-
-      if (declare) {
-        if (this.moduleOrClassNode) {
-          this.edges.push({
-            source: this.moduleOrClassNode.id,
-            target: nodeId,
-            kind: 'contains',
-          });
-        } else {
-          const edge: Edge = {
-            source: '',
-            target: nodeId,
-            kind: 'contains',
-          };
-          this.edges.push(edge);
-          this.pendingModuleOrClassSource.push(edge);
-        }
-        continue;
-      }
 
       // Hueco 3: synthesize the event-handler edge for Access naming
       // convention `<ControlName>_<EventName>` (e.g. `ComandoAltaPM_Click`,
@@ -519,6 +498,171 @@ export class VbaExtractor {
       }
     }
     return procs;
+  }
+
+  /** `[visibility] Event <Name>(...)` custom event declaration. */
+  private static readonly EVENT_DECL_RE =
+    /^\s*((?:Public|Private|Friend)\s+)?Event\s+(\p{L}[\p{L}\p{N}_]*)\b/iu;
+
+  /** `[visibility] Type <Name>` user-defined type block start. */
+  private static readonly TYPE_START_RE =
+    /^\s*((?:Public|Private|Friend)\s+)?Type\s+(\p{L}[\p{L}\p{N}_]*)\b/iu;
+
+  /** `End Type` user-defined type block end. */
+  private static readonly TYPE_END_RE = /^\s*End\s+Type\b/iu;
+
+  /** `<MemberName> As <Type>` inside a user-defined type block. */
+  private static readonly TYPE_MEMBER_RE =
+    /^\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:\([^)]*\))?\s+As\s+(.+?)\s*$/iu;
+
+  /** `[visibility] Declare [PtrSafe] Sub|Function <Name> Lib "dll" [Alias "x"] ...` */
+  private static readonly DLL_DECLARE_RE =
+    /^\s*((?:Public|Private)\s+)?Declare\s+(PtrSafe\s+)?(Sub|Function)\s+(\p{L}[\p{L}\p{N}_]*)\s+Lib\s+"([^"]+)"(?:\s+Alias\s+"([^"]+)")?/iu;
+
+  /**
+   * Roadmap #26 declaration sweep:
+   * - Event declarations become `event` nodes and `RaiseEvent` can point to them.
+   * - Type...End Type blocks become `type` + `type_member` nodes.
+   * - Win32 API Declare statements become `declare` nodes, while still being
+   *   cached by name so normal call-site scanning can emit `calls` edges.
+   */
+  private sweepEventsTypesAndDeclares(src: string): number {
+    const lines = src.split('\n');
+    let count = 0;
+    let currentType: { id: string; name: string } | null = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? '';
+      const lineNum = i + 1;
+
+      if (currentType) {
+        if (VbaExtractor.TYPE_END_RE.test(line)) {
+          currentType = null;
+          continue;
+        }
+        const member = VbaExtractor.TYPE_MEMBER_RE.exec(line);
+        if (member) {
+          const memberName = member[1] ?? '';
+          const memberType = (member[2] ?? '').trim();
+          if (!memberName) continue;
+          const memberId = generateNodeId(this.filePath, 'type_member', memberName, lineNum);
+          this.nodes.push({
+            id: memberId,
+            kind: 'type_member',
+            name: memberName,
+            qualifiedName: `${currentType.name}.${memberName}`,
+            filePath: this.filePath,
+            language: 'vba',
+            startLine: lineNum,
+            endLine: lineNum,
+            startColumn: 0,
+            endColumn: line.length,
+            metadata: { memberType },
+            updatedAt: Date.now(),
+          });
+          this.edges.push({
+            source: currentType.id,
+            target: memberId,
+            kind: 'type-member',
+            provenance: 'parser',
+          });
+        }
+        continue;
+      }
+
+      const eventDecl = VbaExtractor.EVENT_DECL_RE.exec(line);
+      if (eventDecl) {
+        const visibility = VbaExtractor.foldVisibility(eventDecl[1] ?? '');
+        const name = eventDecl[2] ?? '';
+        if (!name) continue;
+        const eventId = generateNodeId(this.filePath, 'event', name, lineNum);
+        const eventNode: Node = {
+          id: eventId,
+          kind: 'event',
+          name,
+          qualifiedName: this.classNamePrefix ? `${this.classNamePrefix}.${name}` : name,
+          filePath: this.filePath,
+          language: 'vba',
+          startLine: lineNum,
+          endLine: lineNum,
+          startColumn: 0,
+          endColumn: line.length,
+          visibility,
+          updatedAt: Date.now(),
+        };
+        this.nodes.push(eventNode);
+        this.localEvents.set(name.toLowerCase(), eventNode);
+        this.pushContainsFromModule(eventId);
+        count++;
+        continue;
+      }
+
+      const typeStart = VbaExtractor.TYPE_START_RE.exec(line);
+      if (typeStart) {
+        const visibility = VbaExtractor.foldVisibility(typeStart[1] ?? '');
+        const name = typeStart[2] ?? '';
+        if (!name) continue;
+        const typeId = generateNodeId(this.filePath, 'type', name, lineNum);
+        this.nodes.push({
+          id: typeId,
+          kind: 'type',
+          name,
+          qualifiedName: this.classNamePrefix ? `${this.classNamePrefix}.${name}` : name,
+          filePath: this.filePath,
+          language: 'vba',
+          startLine: lineNum,
+          endLine: lineNum,
+          startColumn: 0,
+          endColumn: line.length,
+          visibility,
+          updatedAt: Date.now(),
+        });
+        this.pushContainsFromModule(typeId);
+        currentType = { id: typeId, name };
+        count++;
+        continue;
+      }
+
+      const declaration = VbaExtractor.DLL_DECLARE_RE.exec(line);
+      if (declaration) {
+        const visibility = VbaExtractor.foldVisibility(declaration[1] ?? '');
+        const ptrSafe = !!declaration[2];
+        const declareKind = (declaration[3] ?? '').toLowerCase();
+        const name = declaration[4] ?? '';
+        const dll = declaration[5] ?? '';
+        const aliasName = declaration[6] ?? undefined;
+        if (!name) continue;
+        const declareId = generateNodeId(this.filePath, 'declare', name, lineNum);
+        const declareNode: Node = {
+          id: declareId,
+          kind: 'declare',
+          name,
+          qualifiedName: this.classNamePrefix ? `${this.classNamePrefix}.${name}` : name,
+          filePath: this.filePath,
+          language: 'vba',
+          startLine: lineNum,
+          endLine: lineNum,
+          startColumn: 0,
+          endColumn: line.length,
+          visibility,
+          metadata: {
+            dll,
+            declareKind,
+            ptrSafe,
+            ...(aliasName ? { aliasName } : {}),
+          },
+          updatedAt: Date.now(),
+        };
+        this.nodes.push(declareNode);
+        if (!this.functionNodeByName.has(name)) {
+          this.functionNodeByName.set(name, declareNode);
+        }
+        this.pushContainsFromModule(declareId);
+        count++;
+      }
+    }
+
+    return count;
   }
 
   /** Implements regex. */
@@ -676,9 +820,28 @@ export class VbaExtractor {
             this.localVarTypeMap.set(weVarName.toLowerCase(), {
               outer: formType,
               qualified: false,
+              withEvents: true,
+              variableName: weVarName,
             });
           }
           this.emitReference(formType, lineNum, 0, 'vba-withevents');
+          const targetId = generateNodeId(this.filePath, 'class', formType, 0);
+          const subscriberEdge: Edge = {
+            source: this.moduleOrClassNode?.id ?? '',
+            target: targetId,
+            kind: 'subscribes-event',
+            provenance: 'heuristic',
+            metadata: {
+              synthesizedBy: 'vba-withevents',
+              variableName: weVarName || undefined,
+            },
+            line: lineNum,
+            column: 0,
+          };
+          this.edges.push(subscriberEdge);
+          if (!this.moduleOrClassNode) {
+            this.pendingModuleOrClassSource.push(subscriberEdge);
+          }
           count++;
         }
       }
@@ -713,7 +876,7 @@ export class VbaExtractor {
    * sweep uses so visibility is consistent across symbol kinds).
    */
   private static foldVisibility(raw: string): 'public' | 'private' {
-    return raw.toLowerCase() === 'private' ? 'private' : 'public';
+    return raw.trim().toLowerCase() === 'private' ? 'private' : 'public';
   }
 
   /**
@@ -831,6 +994,7 @@ export class VbaExtractor {
             startColumn: 0,
             endColumn: line.length,
             visibility,
+            metadata: declaration.value !== null ? { value: declaration.value } : undefined,
             updatedAt: Date.now(),
           });
           this.pushContainsFromModule(constId);
@@ -1157,7 +1321,9 @@ export class VbaExtractor {
       // Don't scan call sites on the line that declares the procedure — it
       // would match the proc name itself in `Sub Outer()`.
       if (!procedureStartLines.has(lineNum) && stack.length > 0) {
-        this.scanCallSites(callScanLine, stack[stack.length - 1]!, lineNum);
+        const currentProc = stack[stack.length - 1]!;
+        this.scanRaiseEvents(callScanLine, currentProc, lineNum);
+        this.scanCallSites(callScanLine, currentProc, lineNum);
       }
 
       // Hueco 1: capture `Me.<Control>` references (property assignments,
@@ -1240,6 +1406,28 @@ export class VbaExtractor {
     }
   }
 
+  private static readonly RAISE_EVENT_RE =
+    /\bRaiseEvent\s+(\p{L}[\p{L}\p{N}_]*)\b/giu;
+
+  private scanRaiseEvents(line: string, from: ProcInfo, lineNum: number): void {
+    VbaExtractor.RAISE_EVENT_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = VbaExtractor.RAISE_EVENT_RE.exec(line)) !== null) {
+      const eventName = m[1] ?? '';
+      const eventNode = this.localEvents.get(eventName.toLowerCase());
+      if (!eventNode) continue;
+      this.edges.push({
+        source: this.findOrCreateFunctionNodeId(from),
+        target: eventNode.id,
+        kind: 'raises-event',
+        provenance: 'parser',
+        metadata: { eventName },
+        line: lineNum,
+        column: m.index,
+      });
+    }
+  }
+
   private scanCallSites(line: string, from: ProcInfo, lineNum: number): void {
     VbaExtractor.CALL_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -1262,9 +1450,6 @@ export class VbaExtractor {
 
       if (!member) {
         // Bare `Name(...)` — same-file resolution.
-        const bucket = this.localProcs.get(receiver);
-        const local = bucket?.[0];
-        if (!local) continue; // unresolvable — silent per spec R4.
         const localFuncNode = this.findFunctionNodeByName(receiver);
         if (!localFuncNode) continue;
         this.edges.push({
@@ -1475,8 +1660,6 @@ export class VbaExtractor {
     if (procName === caller.name) return; // skip self-call
     if (VbaExtractor.CALL_KEYWORD_BLACKLIST.has(procName)) return;
     if (VbaExtractor.RUNTIME_RECEIVER_BLACKLIST.has(procName)) return;
-    const bucket = this.localProcs.get(procName);
-    if (!bucket || !bucket[0]) return;
     const target = this.findFunctionNodeByName(procName);
     if (!target) return;
     this.edges.push({
@@ -1892,6 +2075,9 @@ export class VbaExtractor {
 
   /** Local constant name (lowercase) → simple literal value for OpenForm resolution. */
   private localConstants = new Map<string, string>();
+
+  /** Local event name (lowercase) → event node for `RaiseEvent` edge emission. */
+  private localEvents = new Map<string, Node>();
 }
 
 /**

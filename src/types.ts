@@ -31,6 +31,10 @@ export const NODE_KINDS = [
   'constant',
   'enum',
   'enum_member',
+  'event',
+  'type',
+  'type_member',
+  'declare',
   'type_alias',
   'namespace',
   'parameter',
@@ -82,7 +86,10 @@ export type EdgeKind =
   // `metadata.targetFormName` until the target `.cls`/`.form.txt` is
   // indexed and resolved.
   | 'event-handler'
-  | 'opens-form';
+  | 'opens-form'
+  | 'raises-event'
+  | 'subscribes-event'
+  | 'type-member';
 
 /**
  * Supported programming languages. See NODE_KINDS for why this is a

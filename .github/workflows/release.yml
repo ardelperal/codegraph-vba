@@ -38,16 +38,14 @@ jobs:
           # If you ever add a ruleset that gates `main`, restore the
           # `token: ${{ secrets.RELEASE_PAT }}` line and create a PAT with
           # `contents:write` scoped to this repo.
-      - uses: pnpm/action-setup@v4
-        # version is read from package.json's `packageManager` field — don't
-        # pin it here, or pnpm/action-setup refuses with "Multiple versions
-        # of pnpm specified".
-
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
           cache: pnpm
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10.16.1
 
       - run: pnpm install --frozen-lockfile
       - name: Ensure zip/unzip

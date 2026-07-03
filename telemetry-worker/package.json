@@ -11,5 +11,8 @@
   "devDependencies": {
     "typescript": "^5.0.0",
     "wrangler": "^4.36.0"
+  },
+  "overrides": {
+    "undici": "^7.28.0"
   }
 }

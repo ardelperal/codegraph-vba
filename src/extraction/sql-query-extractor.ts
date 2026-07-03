@@ -41,12 +41,20 @@ export class SqlQueryExtractor {
   }
 
   /**
-   * Table name following `FROM` / `JOIN` / `INTO` / `UPDATE`. Captures either a
-   * bracketed name (which may contain spaces, e.g. `[Order Details]`) or a bare
-   * identifier. `\p{L}` covers accented identifiers common in localized schemas.
+   * Table name following `FROM` / `JOIN` / `INTO` / `UPDATE`. Captures an optional
+   * bracketed/unbracketed schema prefix followed by `.`, so `FROM dbo.tblCustomers`
+   * and `FROM [My Schema].[My Table]` come through as one composite reference.
+   * Without the prefix the regex still matches a single identifier (bracketed
+   * or bare) byte-identical to the old shape. `\p{L}` covers accented identifiers
+   * common in localized schemas.
+   *
+   * The captured composite goes to `sweepTables`, which strips ALL brackets
+   * (including internal ones in the bracketed-schema case) — so the public
+   * node name is the unwrapped form `dbo.tblCustomers` / `My Schema.My Table`,
+   * matching how plain `[Order Details]` is also unwrapped to `Order Details`.
    */
   private static readonly TABLE_RE =
-    /\b(?:FROM|JOIN|INTO|UPDATE)\s+(\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)/giu;
+    /\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
 
   extract(): ExtractionResult {
     const startTime = Date.now();
@@ -123,7 +131,13 @@ export class SqlQueryExtractor {
     let m: RegExpExecArray | null;
     while ((m = re.exec(this.source)) !== null) {
       const raw = (m[1] ?? '').trim();
-      const table = raw.replace(/^\[|\]$/g, '').trim();
+      // Strip ALL brackets (including internal ones in the bracketed-schema case
+      // `[My Schema].[My Table]`), so the public node name is the unwrapped form
+      // `My Schema.My Table`. Same shape `VbaExtractor.emitSqlTableReferences`
+      // already produces. A plain bracketed name `[Order Details]` reduces to
+      // `Order Details` here too (no internal brackets), so existing tests are
+      // unaffected.
+      const table = raw.replace(/[\[\]]/g, '').trim();
       if (!table) continue;
       const key = table.toLowerCase();
       if (seen.has(key)) continue;

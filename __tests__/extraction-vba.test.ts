@@ -239,6 +239,62 @@ End Sub`;
     expect(target?.name).toBe('tblCustomers');
   });
 
+  it('db.Execute with schema-qualified FROM (dbo.tblCustomers) emits one composite reference', () => {
+    // REGRESSION GUARD for the SQL_TABLE_RE schema-prefix extension:
+    // previously the regex stopped at `dbo` (period is not in `\p{L}[\p{L}\p{N}_]*`)
+    // and silently dropped `tblCustomers`. The fix extends the capture to allow an
+    // optional bracketed/unbracketed schema prefix followed by `.`, so the whole
+    // `dbo.tblCustomers` comes through as a single composite table reference.
+    const src = `Sub Q()
+  db.Execute "SELECT * FROM dbo.tblCustomers"
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    const edges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const tableTargets = edges.map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+    expect(tableTargets).toEqual(['dbo.tblCustomers']);
+    // The schema prefix must NOT leak as a separate node.
+    expect(r.nodes.some((n) => n.name === 'dbo')).toBe(false);
+    expect(r.nodes.some((n) => n.name === 'tblCustomers')).toBe(false);
+  });
+
+  it('db.Execute with bracketed schema-qualified FROM ([My Schema].[My Table]) emits one composite reference', () => {
+    // The unwrapped form is what the consumer code already emits for plain bracketed
+    // names (`[Order Details]` → `Order Details`), so the schema-qualified form is
+    // also unwrapped: `[My Schema].[My Table]` → `My Schema.My Table`. Documented
+    // in the commit body and applied consistently to BOTH regexes.
+    const src = `Sub Q()
+  db.Execute "SELECT * FROM [My Schema].[My Table]"
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    const edges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const tableTargets = edges.map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+    expect(tableTargets).toEqual(['My Schema.My Table']);
+    // Neither the bracketed schema nor the bracketed table name should leak.
+    expect(r.nodes.some((n) => n.name === '[My Schema]')).toBe(false);
+    expect(r.nodes.some((n) => n.name === '[My Table]')).toBe(false);
+    expect(r.nodes.some((n) => n.name === 'My Schema')).toBe(false);
+    expect(r.nodes.some((n) => n.name === 'My Table')).toBe(false);
+  });
+
+  it('db.Execute with plain (un-qualified) FROM still emits just the table name (regression guard)', () => {
+    // The new schema-prefix is OPTIONAL — `FROM tblCustomers` must produce exactly
+    // one node named `tblCustomers`, byte-identical to the pre-fix behaviour.
+    const src = `Sub Q()
+  db.Execute "SELECT * FROM tblCustomers"
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    const edges = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table',
+    );
+    const tableTargets = edges.map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+    expect(tableTargets).toEqual(['tblCustomers']);
+    expect(r.nodes.some((n) => n.name === 'tblCustomers')).toBe(true);
+  });
+
   it('CurrentDb.Execute UPDATE resolves table', () => {
     const src = `Sub U()
   CurrentDb.Execute "UPDATE tblOrders SET Status = 1"

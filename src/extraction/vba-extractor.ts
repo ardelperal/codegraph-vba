@@ -1091,15 +1091,30 @@ export class VbaExtractor {
 
   /**
    * SQL table-name regex scoped to the clauses that introduce a table
-   * reference: `FROM <t>`, `INTO <t>`, `UPDATE <t>`, `JOIN <t>`. Adding
+   * reference: `FROM <t>`, `JOIN <t>`, `INTO <t>`, `UPDATE <t>`. Adding
    * `JOIN` lets the scanner pick up tables from joined fragments that
    * arrive via `&`-concatenated wrapper literals (e.g.
    * `db.Execute "FROM A" & " JOIN B"`); without it the second literal's
    * table was silently dropped even though the wrapper regex now matches
    * the chain.
+   *
+   * The captured table name is an optional bracketed/unbracketed schema
+   * prefix followed by a `.`, then a bracketed-or-bare identifier — so
+   * `FROM dbo.tblCustomers` and `FROM [My Schema].[My Table]` come
+   * through as one composite reference. Without the prefix the regex
+   * still matches a single identifier byte-identical to the old shape.
+   * Brackets in the captured composite are stripped by
+   * `emitSqlTableReferences` (`replace(/[\[\]]/g, '')`), so the public
+   * node name is the unwrapped form `dbo.tblCustomers` /
+   * `My Schema.My Table` — matching how plain `[Order Details]` is also
+   * unwrapped to `Order Details`. The identifier class
+   * `\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*` (same as the saved-queries
+   * `TABLE_RE` in `sql-query-extractor.ts`) ensures bracketed names
+   * with spaces — `[Order Details]`, `[My Schema]`, `[My Table]` —
+   * are captured whole.
    */
   private static readonly SQL_TABLE_RE =
-    /\b(?:FROM|INTO|UPDATE|JOIN)\s+(\[?\p{L}[\p{L}\p{N}_]*\]?)/giu;
+    /\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
 
   /**
    * `Me.<ControlName>` reference capture — hole 1 of VBA control-modeling.

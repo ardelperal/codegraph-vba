@@ -1283,6 +1283,10 @@ export class VbaExtractor {
   private static readonly SET_NEW_RE =
     /\bSet\s+(\p{L}[\p{L}\p{N}_]*)\s*=\s*New\s+(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?/iu;
 
+  /** Issue #43: track the receiver for `With <expr>` / `End With` blocks. */
+  private static readonly WITH_START_RE = /^\s*With\b\s+(.+?)\s*$/iu;
+  private static readonly WITH_END_RE = /^\s*End\s+With\b/iu;
+
   /** Keywords we never want to match as call receivers. */
   private static readonly CALL_KEYWORD_BLACKLIST = new Set([
     'If',
@@ -1440,10 +1444,52 @@ export class VbaExtractor {
    */
   private resolveReceiverType(receiverName: string): string {
     if (this.isLocalProjectClassVar(receiverName)) {
-      const entry = this.localVarTypeMap.get(receiverName.toLowerCase());
+      const key = receiverName.replace(/^\[|\]$/g, '').toLowerCase();
+      const entry = this.localVarTypeMap.get(key);
       if (entry) return entry.outer;
     }
     return receiverName;
+  }
+
+  private normalizeWithReceiver(expr: string): string | null {
+    let receiver = expr.trim();
+    if (!receiver) return null;
+    if (/^Call\s/i.test(receiver)) receiver = receiver.replace(/^Call\s+/i, '').trimStart();
+    if (receiver.startsWith('[')) {
+      const m = /^\[([^\]]+)\]/u.exec(receiver);
+      if (!m) return null;
+      receiver = m[1] ?? '';
+    } else {
+      const m = /^(\p{L}[\p{L}\p{N}_]*)/u.exec(receiver);
+      if (!m) return null;
+      receiver = m[1] ?? '';
+    }
+    if (!receiver) return null;
+    if (VbaExtractor.CALL_KEYWORD_BLACKLIST.has(receiver)) return null;
+    if (VbaExtractor.RUNTIME_RECEIVER_BLACKLIST.has(receiver)) return null;
+    return receiver;
+  }
+
+  private detectWithMemberCall(line: string): { member: string } | null {
+    let trimmed = line.trimStart();
+    if (!trimmed) return null;
+    if (/^Call\s/i.test(trimmed)) trimmed = trimmed.replace(/^Call\s+/i, '').trimStart();
+    if (trimmed.startsWith("'") || /^Rem(\s|$)/i.test(trimmed)) return null;
+    if (!trimmed.startsWith('.')) return null;
+    const memberRest = trimmed.slice(1);
+    const memberM = /^(\p{L}[\p{L}\p{N}_]*)/u.exec(memberRest);
+    if (!memberM) return null;
+    const member = memberM[1] ?? '';
+    const afterMember = memberRest.slice(member.length);
+    if (afterMember.length > 0) {
+      const ch = afterMember.charAt(0);
+      if (ch !== '(' && ch !== ' ' && ch !== '\t') return null;
+      const argsText = afterMember.trimStart();
+      if (argsText.startsWith('=')) return null;
+    }
+    if (VbaExtractor.CALL_KEYWORD_BLACKLIST.has(member)) return null;
+    if (VbaExtractor.RUNTIME_RECEIVER_BLACKLIST.has(member)) return null;
+    return { member };
   }
 
   private sweepCallsAndSql(src: string): void {
@@ -1463,6 +1509,7 @@ export class VbaExtractor {
     // as dead code (its `procStack` was never read after the loop). One
     // pass suffices.
     const stack: ProcInfo[] = [];
+    const withReceiverStack: string[] = [];
     const sqlVariables = new Map<string, string>();
     // C2 fix: track each procedure's `endLine` (the line containing the
     // matching `End Sub`/`End Function`/`End Property`) keyed by its
@@ -1499,6 +1546,20 @@ export class VbaExtractor {
       // mistakenly treated as call sites.  SQL scanning still uses the original
       // line because SQL lives INSIDE string literals.
       const callScanLine = VbaExtractor.maskStringContent(line);
+
+      if (stack.length > 0 && VbaExtractor.WITH_END_RE.test(callScanLine)) {
+        withReceiverStack.pop();
+        continue;
+      }
+
+      if (stack.length > 0 && !procedureStartLines.has(lineNum)) {
+        const withStart = VbaExtractor.WITH_START_RE.exec(callScanLine);
+        if (withStart) {
+          const receiver = this.normalizeWithReceiver(withStart[1] ?? '');
+          if (receiver) withReceiverStack.push(receiver);
+          continue;
+        }
+      }
 
       // Don't scan call sites on the line that declares the procedure — it
       // would match the proc name itself in `Sub Outer()`.
@@ -1596,6 +1657,15 @@ export class VbaExtractor {
               this.emitQualifiedStatementCallEdge(caller, qualStmt.receiver, qualStmt.member, lineNum);
             }
           }
+
+	          const withReceiver = withReceiverStack[withReceiverStack.length - 1];
+	          if (withReceiver) {
+	            const withCall = this.detectWithMemberCall(clauseLine);
+	            if (withCall && this.isLocalProjectClassVar(withReceiver)) {
+	              const caller = stack[stack.length - 1]!;
+	              this.emitQualifiedStatementCallEdge(caller, withReceiver, withCall.member, lineNum);
+	            }
+          }
         }
 
         // B4 (hueco 6): `DoCmd.OpenForm "FormName"` modelling.
@@ -1621,6 +1691,7 @@ export class VbaExtractor {
         const caller2 = stack[stack.length - 1]!;
         this.scanOpenFormCalls(line, caller2, lineNum);
       }
+
     }
 
     // Apply endLine to every emitted function node keyed by its startLine.

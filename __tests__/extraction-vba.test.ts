@@ -2980,3 +2980,120 @@ describe('VbaExtractor — single-line `If … Then` statement-form calls (Issue
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #43: member calls inside `With <receiver>` blocks.
+//
+// VBA uses `.Member` inside a With block as shorthand for
+// `<receiver>.Member`. Before the fix, the extractor saw a leading dot and
+// emitted no call edge, so real form/service helpers hidden behind With blocks
+// disappeared from the graph.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — With block implicit receiver calls (Issue #43)', () => {
+  it('statement-form `.Registrar "data"` inside `With svc` emits a calls edge to the declared class receiver', () => {
+    const src = [
+      'Sub F()',
+      '  Dim svc As ACService',
+      '  With svc',
+      '    .Registrar "data"',
+      '  End With',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find((e) => {
+      if (e.kind !== 'calls' || e.provenance !== 'heuristic') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'ACService.Registrar';
+    });
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.synthesizedBy).toBe('vba-name-resolution');
+    expect(hEdge?.metadata?.receiverType).toBe('ACService');
+    expect(hEdge?.metadata?.member).toBe('Registrar');
+  });
+
+  it('paren-form `.Registrar("data")` inside `With svc` emits the same calls edge', () => {
+    const src = [
+      'Sub F()',
+      '  Dim svc As ACService',
+      '  With svc',
+      '    .Registrar("data")',
+      '  End With',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const target = r.nodes.find((n) => n.name === 'ACService.Registrar');
+    expect(target?.metadata?.stub).toBe(true);
+    const edge = r.edges.find((e) => e.kind === 'calls' && e.target === target?.id);
+    expect(edge).toBeDefined();
+  });
+
+  it('property assignment `.Caption = ...` inside a With block stays silent', () => {
+    const src = [
+      'Sub F()',
+      '  Dim label As LabelView',
+      '  With label',
+      '    .Caption = "Done"',
+      '  End With',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const target = r.nodes.find((n) => n.name === 'LabelView.Caption');
+    expect(target).toBeUndefined();
+  });
+
+  it('runtime typed receiver `With rs As DAO.Recordset` keeps `.MoveNext` silent', () => {
+    const src = [
+      'Sub F()',
+      '  Dim rs As DAO.Recordset',
+      '  With rs',
+      '    .MoveNext',
+      '  End With',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const bogusTargets = r.nodes.filter(
+      (n) => n.name === 'rs.MoveNext' || n.name === 'DAO.MoveNext',
+    );
+    expect(bogusTargets).toHaveLength(0);
+  });
+
+  it('nested With blocks restore the outer receiver after `End With`', () => {
+    const src = [
+      'Sub F()',
+      '  Dim outerSvc As OuterService',
+      '  Dim innerSvc As InnerService',
+      '  With outerSvc',
+      '    .Before',
+      '    With innerSvc',
+      '      .Inside',
+      '    End With',
+      '    .After',
+      '  End With',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const callTargets = r.edges
+      .filter((e) => e.kind === 'calls' && e.provenance === 'heuristic')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .filter(Boolean)
+      .sort();
+    expect(callTargets).toContain('OuterService.Before');
+    expect(callTargets).toContain('InnerService.Inside');
+    expect(callTargets).toContain('OuterService.After');
+  });
+
+  it('single-line If clause inside With resolves `.Registrar` through the active receiver', () => {
+    const src = [
+      'Sub F()',
+      '  Dim svc As ACService',
+      '  With svc',
+      '    If ready Then .Registrar "data"',
+      '  End With',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const target = r.nodes.find((n) => n.name === 'ACService.Registrar');
+    expect(target).toBeDefined();
+  });
+});
+

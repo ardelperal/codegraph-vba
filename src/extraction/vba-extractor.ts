@@ -1147,6 +1147,30 @@ export class VbaExtractor {
     /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.(?:OpenRecordset|Execute)\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
 
   /**
+   * Issue #42: `DoCmd.RunSQL <identifier>` (variable form) — the dominant
+   * Access idiom for executing a dynamically-built SQL string. Today only
+   * the literal form `DoCmd.RunSQL "DELETE FROM X"` is tracked via the
+   * `SQL_WRAPPERS` regex at line 1108; the variable form silently dropped
+   * table impact for every procedure that builds SQL in a string and runs
+   * it through `DoCmd.RunSQL`.
+   *
+   * This regex is the DoCmd.RunSQL analogue of `SQL_VAR_EXEC_RE` above and
+   * is iterated by `scanSqlInLine` (lines 2051+). When a match is found,
+   * the captured identifier is resolved against `sqlVariables` (populated
+   * by `trackSqlVariableAssignment` with `&`-accumulate semantics — Issue
+   * #13) and the resulting SQL string drives `emitSqlTableReferences`.
+   *
+   * The optional `(?:\(\))?` + `\s*\(?` shape lets the regex match both
+   * the parenthesised form `DoCmd.RunSQL(strSQL)` and the no-paren form
+   * `DoCmd.RunSQL strSQL` that the existing SQL_WRAPPERS literal regex
+   * does not cover. The captured identifier is the only thing we need —
+   * we DO NOT try to parse what the variable points at; that's the
+   * existing `sqlVariables` map's job.
+   */
+  private static readonly SQL_VAR_DOCMD_RUNSQL_RE =
+    /\bDoCmd\.RunSQL\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
+
+  /**
    * SQL table-name regex scoped to the clauses that introduce a table
    * reference: `FROM <t>`, `JOIN <t>`, `INTO <t>`, `UPDATE <t>`. Adding
    * `JOIN` lets the scanner pick up tables from joined fragments that
@@ -2079,6 +2103,26 @@ export class VbaExtractor {
     let vm: RegExpExecArray | null;
     while ((vm = localRe.exec(line)) !== null) {
       const varName = (vm[1] ?? '').toLowerCase();
+      const sqlString = sqlVariables.get(varName);
+      if (!sqlString) continue;
+      this.emitSqlTableReferences(sqlString, lineNum, dedupe);
+    }
+
+    // Issue #42: `DoCmd.RunSQL <identifier>` (variable form). Mirrors the
+    // SQL_VAR_EXEC_RE path above but for the Access-style `DoCmd.RunSQL`
+    // idiom — the dominant pattern in real-world VBA modules. Resolve the
+    // captured identifier against `sqlVariables` (populated by
+    // `trackSqlVariableAssignment` with `&`-accumulate semantics, Issue
+    // #13) and feed the resolved SQL string into `emitSqlTableReferences`.
+    // Unresolved identifiers (no row in the map) are silently skipped —
+    // same graceful-no-op contract as SQL_VAR_EXEC_RE.
+    const docmdLocalRe = new RegExp(
+      VbaExtractor.SQL_VAR_DOCMD_RUNSQL_RE.source,
+      VbaExtractor.SQL_VAR_DOCMD_RUNSQL_RE.flags,
+    );
+    let dm: RegExpExecArray | null;
+    while ((dm = docmdLocalRe.exec(line)) !== null) {
+      const varName = (dm[1] ?? '').toLowerCase();
       const sqlString = sqlVariables.get(varName);
       if (!sqlString) continue;
       this.emitSqlTableReferences(sqlString, lineNum, dedupe);

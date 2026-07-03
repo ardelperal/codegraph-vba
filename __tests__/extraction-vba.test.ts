@@ -1934,6 +1934,94 @@ describe('VbaExtractor — SQL wrapper captures multi-literal concat chains', ()
 });
 
 
+// ---------------------------------------------------------------------------
+// Issue #42: `DoCmd.RunSQL <identifier>` (variable form) must emit the same
+// `vba-sql-table` references the literal form already emits.
+//
+// Today only `DoCmd.RunSQL "DELETE FROM X"` (literal) and `*db.Execute strSQL`
+// (variable form on the `*db` family) are tracked. The dominant Access idiom
+// `DoCmd.RunSQL strSQL` is invisible — table impact drops for every procedure
+// that builds SQL in a string and runs it through `DoCmd.RunSQL`.
+//
+// Mirrors the existing `*db.Execute strSQL` coverage at lines 340-354
+// (variable form for the `*db` family) but for the `DoCmd.RunSQL` method
+// form. The SQL_VAR_ASSIGN_RE → trackSqlVariableAssignment path (Issue #13)
+// already populates `sqlVariables` with `&`-accumulate semantics, so the
+// concatenated-SQL atom validates that #13's accumulation flows through the
+// new path.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — DoCmd.RunSQL with variable argument emits SQL table references (Issue #42)', () => {
+  function sqlTableNames(r: ReturnType<typeof extract>): string[] {
+    return r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .filter((n): n is string => typeof n === 'string');
+  }
+
+  it('DoCmd.RunSQL strSQL with strSQL = "DELETE FROM TbX" emits TbX', () => {
+    // Happy path: the variable form `DoCmd.RunSQL strSQL` must resolve
+    // `strSQL` against the procedure-local `sqlVariables` map (populated by
+    // `trackSqlVariableAssignment`) and emit `TbX` as a vba-sql-table.
+    const src = [
+      'Sub F()',
+      '  Dim strSQL As String',
+      '  strSQL = "DELETE FROM TbX"',
+      '  DoCmd.RunSQL strSQL',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/F.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toContain('TbX');
+  });
+
+  it('DoCmd.RunSQL strSQL with `&`-concatenated SQL emits the initial FROM-table (Issue #13 accumulation through the new path)', () => {
+    // Validates that the existing `&`-accumulate semantics
+    // (`trackSqlVariableAssignment`) flows through the new DoCmd.RunSQL
+    // variable path. The first literal declares `TbA`; the chained literal
+    // adds a `WHERE` clause (no extra table). Only `TbA` should be emitted.
+    const src = [
+      'Sub F()',
+      '  Dim strSQL As String',
+      '  strSQL = "DELETE FROM TbA "',
+      '  strSQL = strSQL & " WHERE id = 1"',
+      '  DoCmd.RunSQL strSQL',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/F.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toContain('TbA');
+  });
+
+  it('literal `DoCmd.RunSQL "DELETE FROM TbY"` still emits TbY (regression guard)', () => {
+    // The new regex must not break the existing literal-form coverage
+    // already exercised at line 1856 ("DoCmd.RunSQL single literal").
+    const src = [
+      'Sub Q()',
+      '  DoCmd.RunSQL "DELETE FROM TbY"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toEqual(['TbY']);
+  });
+
+  it('DoCmd.RunSQL with an undeclared identifier emits zero vba-sql-table edges', () => {
+    // Negative: when the captured identifier was never assigned (no row in
+    // `sqlVariables`), the new path must stay silent — same behavior as the
+    // existing `*db.Execute <undeclared>` path (graceful no-op).
+    const src = [
+      'Sub F()',
+      '  DoCmd.RunSQL undeclared_var',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/F.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toEqual([]);
+  });
+});
+
+
 describe('VbaExtractor � API declarations and VBA conditional compilation', () => {
   it('extracts Public Declare PtrSafe Sub as a single-line declare node with metadata', () => {
     const src = [

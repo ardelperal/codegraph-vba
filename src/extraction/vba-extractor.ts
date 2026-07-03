@@ -1083,9 +1083,17 @@ export class VbaExtractor {
   private static readonly SQL_VAR_EXEC_RE =
     /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.(?:OpenRecordset|Execute)\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
 
-  /** SQL table-name regex scoped to FROM / INTO / UPDATE. */
+  /**
+   * SQL table-name regex scoped to the clauses that introduce a table
+   * reference: `FROM <t>`, `INTO <t>`, `UPDATE <t>`, `JOIN <t>`. Adding
+   * `JOIN` lets the scanner pick up tables from joined fragments that
+   * arrive via `&`-concatenated wrapper literals (e.g.
+   * `db.Execute "FROM A" & " JOIN B"`); without it the second literal's
+   * table was silently dropped even though the wrapper regex now matches
+   * the chain.
+   */
   private static readonly SQL_TABLE_RE =
-    /\b(?:FROM|INTO|UPDATE)\s+(\[?\p{L}[\p{L}\p{N}_]*\]?)/giu;
+    /\b(?:FROM|INTO|UPDATE|JOIN)\s+(\[?\p{L}[\p{L}\p{N}_]*\]?)/giu;
 
   /**
    * `Me.<ControlName>` reference capture — hole 1 of VBA control-modeling.
@@ -1908,6 +1916,40 @@ export class VbaExtractor {
     });
   }
 
+  /**
+   * Regex matching the chained `& "..."` literals that may follow a
+   * wrapper's first literal on the same physical line. Captures the
+   * literal CONTENT (group 1); the surrounding `&` and quotes are
+   * structural, not data. VBA allows whitespace around `&` and around
+   * the inner quotes — handled with `\s*`. The `((?:[^"]|"")*)` body
+   * mirrors the wrapper regex so a `""` inside a chained literal still
+   * decodes to a single `"`.
+   *
+   * Cross-physical-line concat via `_` continuation is OUT OF SCOPE for
+   * v1 (deferred; see commit message).
+   */
+  private static readonly SQL_WRAPPER_CHAIN_RE = /&\s*"((?:[^"]|"")*)"/g;
+
+  /**
+   * Given the text that follows a SQL wrapper's first literal on the same
+   * physical line, return the contents of every `& "..."` chained literal
+   * in source order. Operates per-physical-line only — VBA `_` line
+   * continuation across physical lines is handled separately by
+   * `collectStringLiteralText` for the variable-assignment path.
+   */
+  private collectSqlWrapperChain(rest: string): string[] {
+    const out: string[] = [];
+    const re = new RegExp(
+      VbaExtractor.SQL_WRAPPER_CHAIN_RE.source,
+      VbaExtractor.SQL_WRAPPER_CHAIN_RE.flags,
+    );
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(rest)) !== null) {
+      out.push(m[1] ?? '');
+    }
+    return out;
+  }
+
   private scanSqlInLine(
     line: string,
     lineNum: number,
@@ -1919,7 +1961,16 @@ export class VbaExtractor {
       const localRe = new RegExp(re.source, re.flags);
       let m: RegExpExecArray | null;
       while ((m = localRe.exec(line)) !== null) {
-        this.emitSqlTableReferences(m[1] ?? '', lineNum, dedupe);
+        const firstLiteral = m[1] ?? '';
+        // After the wrapper regex consumes up to and including the closing
+        // `"` of the first literal, walk the rest of the line for any
+        // `& "..."` chains and concatenate every literal's content. Joining
+        // with a space (mirrors `collectStringLiteralText`) keeps adjacent
+        // `FROM tblA` & `FROM tblB` separated so `SQL_TABLE_RE` finds both.
+        const rest = line.slice(m.index + m[0].length);
+        const chain = this.collectSqlWrapperChain(rest);
+        const joined = [firstLiteral, ...chain].join(' ');
+        this.emitSqlTableReferences(joined, lineNum, dedupe);
       }
     }
 

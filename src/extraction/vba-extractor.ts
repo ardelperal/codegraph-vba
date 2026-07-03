@@ -1265,6 +1265,24 @@ export class VbaExtractor {
    */
   private static readonly ME_CONTROL_RE = /\bMe\.(\p{L}[\p{L}\p{N}_]*)/gu;
 
+  /**
+   * Issue #46: scan `Set <var> = New <Type>[.<Inner>]` lines — the dominant
+   * VBA late-instantiation idiom. Run inside `sweepCallsAndSql`'s proc-stack
+   * loop so the surrounding procedure is known. For each match:
+   *   - register `<var>` in `localVarTypeMap` with `outer=<Type>`,
+   *     `qualified=<hasInner>`, `assignedWithSet=true` so the PR #61 refined
+   *     gate lets subsequent `<var>.Member ...` qualified calls resolve via
+   *     the resolved class name;
+   *   - emit a `references` edge from the module/class node to a synthetic
+   *     node named `<Type>`, tagged `synthesizedBy: 'vba-set-new'`.
+   *
+   * Groups: (1) variable name, (2) outer type, (3) optional inner type.
+   * Operates on the MASKED line (string-literal content already replaced
+   * with spaces) so `Set x = New Foo` inside a string literal never matches.
+   */
+  private static readonly SET_NEW_RE =
+    /\bSet\s+(\p{L}[\p{L}\p{N}_]*)\s*=\s*New\s+(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?/iu;
+
   /** Keywords we never want to match as call receivers. */
   private static readonly CALL_KEYWORD_BLACKLIST = new Set([
     'If',
@@ -1528,6 +1546,35 @@ export class VbaExtractor {
       // (where the body lives on subsequent lines) keeps working through
       // the existing per-line scan that picks up the body line.
       if (stack.length > 0 && !procedureStartLines.has(lineNum)) {
+        // Issue #46: `Set x = New <Type>[.<Inner>]` late-instantiation.
+        // Run BEFORE the call-site scan so a later `<x>.Member ...` line
+        // finds `x` already registered in `localVarTypeMap` and the PR #61
+        // refined gate lets the qualified call resolve to `<Type>.Member`.
+        const setNew = VbaExtractor.SET_NEW_RE.exec(callScanLine);
+        if (setNew) {
+          const varName = setNew[1] ?? '';
+          const outerType = setNew[2] ?? '';
+          const innerType = setNew[3] ?? '';
+          if (varName && outerType) {
+            // Skip primitives defensively — `Set x = New Long` is nonsense
+            // in practice but the gate is cheap and consistent with the
+            // Dim sweep's PRIMITIVE_TYPES guard.
+            if (!VbaExtractor.PRIMITIVE_TYPES.has(outerType.toLowerCase())) {
+              this.localVarTypeMap.set(varName.toLowerCase(), {
+                outer: outerType,
+                // Mirror `Dim x As Foo.Bar`: qualified `Set rs = New
+                // DAO.Recordset` registers `qualified: true` so the PR #61
+                // gate keeps downstream `rs.Method` calls silent (DAO is
+                // a runtime / external library, not a project class).
+                qualified: !!innerType,
+                assignedWithSet: true,
+                variableName: varName,
+              });
+              this.emitReference(outerType, lineNum, 0, 'vba-set-new');
+            }
+          }
+        }
+
         const clauseLines = this.splitSingleLineIfClauses(callScanLine);
         for (const clauseLine of clauseLines) {
           const stmtCall = this.detectStatementCall(clauseLine);

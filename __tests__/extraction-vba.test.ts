@@ -2465,6 +2465,120 @@ describe('VbaExtractor — Variant / untyped vars do not emit qualified-call stu
 });
 
 // ---------------------------------------------------------------------------
+// Issue #46: capture `Set x = New ClassName` late-instantiation.
+//
+// VBA's dominant idiom is `Set svc = New ACService` followed by
+// `svc.Registrar datos`. The PR #61 refined gate already supports
+// resolving `svc.Method` when `svc` is in `localVarTypeMap` — but the gate
+// is populated only by `Dim` (and `Global`/`Static` since #47). A late
+// `Set x = New Foo` without an accompanying typed `Dim x As Foo` left `x`
+// invisible to the gate, so `x.Method` was silently dropped.
+//
+// The fix: scan `Set x = New <Type>[.<Inner>]` lines in the same
+// proc-stack order as the `Dim` sweep, emit a `references` edge tagged
+// `vba-set-new`, AND register `x` in `localVarTypeMap` so the PR #61
+// refined gate lets subsequent qualified calls resolve.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — Set x = New ClassName instantiations (Issue #46)', () => {
+  it('happy path (statement form): Set svc = New ACService + svc.Registrar "data" emits a vba-set-new references edge AND a calls edge to ACService.Registrar', () => {
+    const src = [
+      'Sub F()',
+      '  Set svc = New ACService',
+      '  svc.Registrar "data"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+
+    // 1. references edge to ACService tagged vba-set-new.
+    const setRefs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-set-new',
+    );
+    expect(setRefs.length).toBeGreaterThanOrEqual(1);
+    const refTarget = r.nodes.find((n) => n.id === setRefs[0]?.target);
+    expect(refTarget?.name).toBe('ACService');
+
+    // 2. calls edge from F to ACService.Registrar (resolved via the PR #61
+    //    refined gate, because `svc` is now in localVarTypeMap with outer=ACService).
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdges.length).toBeGreaterThanOrEqual(1);
+    const callsTarget = r.nodes.find((n) => n.id === hEdges[0]?.target);
+    expect(callsTarget?.name).toBe('ACService.Registrar');
+  });
+
+  it('happy path (paren form): Set svc = New ACService + svc.Registrar("data") emits the same calls edge to ACService.Registrar', () => {
+    const src = [
+      'Sub F()',
+      '  Set svc = New ACService',
+      '  svc.Registrar("data")',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdges.length).toBeGreaterThanOrEqual(1);
+    const callsTarget = r.nodes.find((n) => n.id === hEdges[0]?.target);
+    expect(callsTarget?.name).toBe('ACService.Registrar');
+  });
+
+  it('qualified New type: Set rs = New DAO.Recordset emits a vba-set-new references edge to DAO AND keeps rs.MoveNext silent (qualified type suppresses calls)', () => {
+    const src = [
+      'Sub Q()',
+      '  Set rs = New DAO.Recordset',
+      '  rs.MoveNext',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+
+    // 1. references edge to DAO tagged vba-set-new.
+    const setRefs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-set-new',
+    );
+    expect(setRefs.length).toBeGreaterThanOrEqual(1);
+    const refTarget = r.nodes.find((n) => n.id === setRefs[0]?.target);
+    expect(refTarget?.name).toBe('DAO');
+
+    // 2. No calls edge for rs.MoveNext or DAO.MoveNext — qualified type
+    //    registers `qualified: true` in localVarTypeMap, mirroring
+    //    `Dim rs As DAO.Recordset` semantics so the PR #61 gate stays silent.
+    const callsEdges = r.edges.filter((e) => {
+      if (e.kind !== 'calls' || e.provenance !== 'heuristic') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'rs.MoveNext' || tgt?.name === 'DAO.MoveNext';
+    });
+    expect(callsEdges).toHaveLength(0);
+  });
+
+  it('regression: Dim x As New Foo still emits a vba-name-resolution references edge to Foo (auto-instantiation path unchanged)', () => {
+    const src = `Dim x As New Foo`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('Foo');
+  });
+
+  it('module-scope Set svc = New ACService (no enclosing Sub/Function) emits no vba-set-new references edge', () => {
+    // The Set scan lives inside sweepCallsAndSql, which is gated on the
+    // proc-stack being non-empty (consistent with how every other call-site
+    // detector handles module scope). A bare `Set svc = New ACService` at
+    // module scope is silently a no-op.
+    const src = `Set svc = New ACService`;
+    const r = extract('src/modules/Mod.bas', src);
+    const setRefs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-set-new',
+    );
+    expect(setRefs).toHaveLength(0);
+  });
+});
+
 // Issue #54: bracketed receivers in qualified calls.
 //
 // VBA in Access projects supports module/object names with spaces

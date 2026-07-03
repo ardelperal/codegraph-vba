@@ -743,12 +743,23 @@ export class VbaExtractor {
    * Globally scan all `identifier As [New] TypePart1[.TypePart2]` on a
    * variable declaration line. Run with /g after confirming DIM_DECL_PREFIX_RE.
    *
-   * Groups: (1) variable name, (2) type outer part, (3) type inner part (if qualified).
+   * Groups: (1) variable name, (2) bracketed outer type, (3) unbracketed
+   * outer type, (4) bracketed inner type (if qualified), (5) unbracketed
+   * inner type. The variable name is always bare (`Dim` cannot declare a
+   * bracketed variable). The TYPE position accepts BOTH bracketed names
+   * with spaces (e.g. `[Clase Con Espacios]`) and bare identifiers — the
+   * bracketed capture wins when present. Only one of (2)/(3) and one of
+   * (4)/(5) is ever populated per match.
    * `(?:New\s+)?` consumes the VBA auto-instantiation keyword so it is
    * never captured as the type name (Fix 1).
+   *
+   * Issue #54: extends the type alternative to accept `[Name With Spaces]`
+   * so `Dim x As [Clase Con Espacios]` emits a `references` edge to
+   * `Clase Con Espacios` (brackets unwrapped). The unwrap is applied in
+   * the sweep loop by picking the bracketed capture group when present.
    */
   private static readonly DIM_ALL_VARS_RE =
-    /\b(\p{L}[\p{L}\p{N}_]*)\s+As\s+(?:New\s+)?(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?/giu;
+    /\b(\p{L}[\p{L}\p{N}_]*)\s+As\s+(?:New\s+)?(?:\[([^\]]+)\]|(\p{L}[\p{L}\p{N}_]*))(?:\.(?:\[([^\]]+)\]|(\p{L}[\p{L}\p{N}_]*)))?/giu;
 
   /**
    * Bare-declared variable capture for the `Dim|Private|Public|Global|Static`
@@ -809,8 +820,14 @@ export class VbaExtractor {
         let m: RegExpExecArray | null;
         while ((m = VbaExtractor.DIM_ALL_VARS_RE.exec(line)) !== null) {
           const varName = m[1] ?? '';
-          const outerType = m[2] ?? '';
-          const innerType = m[3] ?? '';
+          // Issue #54: DIM_ALL_VARS_RE groups (2) and (3) are alternative
+          // captures for the same outer-type position — the bracketed
+          // alternative wins when present, the bare one otherwise. The
+          // captured value is already unwrapped (the `[...]` is consumed
+          // by the regex, group (2) holds the inner content). Same shape
+          // for the inner type at groups (4)/(5).
+          const outerType = m[2] ?? m[3] ?? '';
+          const innerType = m[4] ?? m[5] ?? '';
 
           // Fix 2 (Issue #2): populate the local var type map so that
           // `sweepCallsAndSql` can gate qualified statement-form calls.
@@ -1096,12 +1113,21 @@ export class VbaExtractor {
    *  - While inside a procedure, scan the line for call-site patterns and
    *    SQL-wrapper patterns.
    *
-   * Call-site regex: `(?<!\w)([A-Za-z_]\w*)(?:\.([A-Za-z_]\w*))?\s*\(` —
-   * captures either `Name(...)` (same-file candidate) or `Receiver.Member(...)`
-   * (qualified — emit a synthetic node + heuristic edge).
+   * Call-site regex captures either `Name(...)` (same-file candidate) or
+   * `Receiver.Member(...)` (qualified — emit a synthetic node + heuristic
+   * edge). The receiver AND member alternatives accept BOTH the bare form
+   * (`Foo`) and the VBA bracketed form (`[Foo Bar]`) — bracketed captures
+   * win when present. Only one of (1)/(2) and one of (3)/(4) is ever
+   * populated per match. Brackets are stripped by the regex itself (the
+   * capture groups hold the inner content), so callers receive unwrapped
+   * identifiers and the `${name}.${proc}` stub shape stays canonical.
+   *
+   * Issue #54: the bracketed alternative was previously absent, so
+   * `[FUNCIONES UTILES].FormatearFecha(fecha)` (a real Dysflow-exported
+   * idiom for modules with spaces in their names) was silently dropped.
    */
   private static readonly CALL_RE =
-    /(?<![\w.])(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?\s*\(/gu;
+    /(?<![\w.])(?:\[([^\]]+)\]|(\p{L}[\p{L}\p{N}_]*))(?:\.(?:\[([^\]]+)\]|(\p{L}[\p{L}\p{N}_]*)))?\s*\(/gu;
 
   /** SQL wrapper helpers — order matters because `db.Execute` is a suffix of others. */
   private static readonly SQL_WRAPPERS: ReadonlyArray<{ name: string; re: RegExp }> = [
@@ -1322,9 +1348,20 @@ export class VbaExtractor {
    * qualified, non-primitive) identifier — a candidate project-defined class.
    * Qualified types (e.g. `DAO.Recordset`) and primitives (`String`, `Long`)
    * return false so runtime/DAO calls are suppressed.
+   *
+   * Issue #54 (defensive): brackets are stripped from the lookup key, so a
+   * caller that forgets to unwrap a bracketed name still finds the
+   * corresponding entry. This is a no-op when the name is already bare —
+   * the unwrap pattern only matches an opening `[` at the start and a
+   * closing `]` at the end. Today's call sites (`scanCallSites`,
+   * `detectQualifiedStatementCall`) already unwrap in the regex captures,
+   * so this defensive strip is a belt-and-braces guard for any future
+   * caller that forgets.
    */
   private isLocalProjectClassVar(receiverName: string): boolean {
-    const entry = this.localVarTypeMap.get(receiverName.toLowerCase());
+    // Issue #54: strip a single leading `[` and/or trailing `]` if present.
+    const key = receiverName.replace(/^\[|\]$/g, '').toLowerCase();
+    const entry = this.localVarTypeMap.get(key);
     if (!entry) return false; // not declared in this file → silent
     if (entry.qualified) return false; // DAO.Recordset etc. → silent
     if (VbaExtractor.PRIMITIVE_TYPES.has(entry.outer.toLowerCase())) return false;
@@ -1519,8 +1556,15 @@ export class VbaExtractor {
     VbaExtractor.CALL_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = VbaExtractor.CALL_RE.exec(line)) !== null) {
-      const receiver = m[1] ?? '';
-      const member = m[2] ?? '';
+      // Issue #54: CALL_RE groups (1)/(2) are alternative captures for the
+      // receiver position, (3)/(4) for the member position. The bracketed
+      // alternative wins when present; the captured value is already
+      // unwrapped by the regex (it captures only the inner content, not
+      // the surrounding `[...]`). Result: a `[FUNCIONES UTILES]` receiver
+      // surfaces here as `FUNCIONES UTILES` so the downstream blacklist
+      // checks and `resolveReceiverType` lookup see the bare identifier.
+      const receiver = m[1] ?? m[2] ?? '';
+      const member = m[3] ?? m[4] ?? '';
       if (!receiver) continue;
       // Skip VBA control-flow keywords.
       if (VbaExtractor.CALL_KEYWORD_BLACKLIST.has(receiver)) continue;
@@ -1804,19 +1848,23 @@ export class VbaExtractor {
     if (trimmed.startsWith("'") || /^Rem(\s|$)/i.test(trimmed)) return null;
     // Skip declarations.
     if (/^(Dim|Private|Public|Static|Global|Const|ReDim)\s/i.test(trimmed)) return null;
-    // Extract receiver identifier.
-    const receiverM = /^(\p{L}[\p{L}\p{N}_]*)/u.exec(trimmed);
+    // Issue #54: the receiver alternative accepts BOTH the bare form
+    // (`Foo`) and the VBA bracketed form (`[Foo Bar]`). The bracketed
+    // alternative wins when present; the captured value is already
+    // unwrapped by the regex (it captures only the inner content, not
+    // the surrounding `[...]`). The same shape applies to the member.
+    const receiverM = /^(?:\[([^\]]+)\]|(\p{L}[\p{L}\p{N}_]*))/u.exec(trimmed);
     if (!receiverM) return null;
-    const receiver = receiverM[1] ?? '';
-    const rest = trimmed.slice(receiver.length);
+    const receiver = receiverM[1] ?? receiverM[2] ?? '';
+    const rest = trimmed.slice(receiverM[0].length);
     // Must have a dot separator.
     if (!rest.startsWith('.')) return null;
     // Extract member identifier.
     const memberRest = rest.slice(1); // skip the dot
-    const memberM = /^(\p{L}[\p{L}\p{N}_]*)/u.exec(memberRest);
+    const memberM = /^(?:\[([^\]]+)\]|(\p{L}[\p{L}\p{N}_]*))/u.exec(memberRest);
     if (!memberM) return null;
-    const member = memberM[1] ?? '';
-    const afterMember = memberRest.slice(member.length);
+    const member = memberM[1] ?? memberM[2] ?? '';
+    const afterMember = memberRest.slice(memberM[0].length);
     // Must NOT be followed by `(` — the paren form is handled by CALL_RE.
     if (afterMember.startsWith('(')) return null;
     // Must be followed by space/tab (args present) OR end of line (no args).

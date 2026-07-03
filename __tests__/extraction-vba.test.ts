@@ -2376,3 +2376,192 @@ describe('VbaExtractor — Variant / untyped vars do not emit qualified-call stu
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #54: bracketed receivers in qualified calls.
+//
+// VBA in Access projects supports module/object names with spaces
+// (`FUNCIONES UTILES.bas`, `Funciones Generales.bas`). Call sites qualify
+// such modules with brackets:
+//   `[FUNCIONES UTILES].FormatearFecha(fecha)`     — paren form
+//   `[FUNCIONES UTILES].FormatearFecha fecha`     — statement form
+//   `Dim x As [Clase Con Espacios]`               — bracketed type in Dim
+//
+// Before the fix, `CALL_RE`, `detectQualifiedStatementCall`, and the type
+// alternative in `DIM_ALL_VARS_RE` only accepted `\p{L}[\p{L}\p{N}_]*` for
+// the identifier token — so bracketed-qualified calls were invisible and the
+// corpus from a Dysflow-managed project silently dropped cross-module
+// references to modules with spaces in their names.
+//
+// Fix: extend the receiver / type / var-name alternatives to accept the
+// bracketed form (`[Name With Spaces]`), and unwrap brackets BEFORE the
+// blacklist checks and the `resolveReceiverType` lookup so the stub's
+// `qualifiedName` matches the `${name}.${proc}` shape.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — bracketed receivers (Issue #54)', () => {
+  it('paren form `[FUNCIONES UTILES].FormatearFecha(fecha)` emits a heuristic calls edge to `FUNCIONES UTILES.FormatearFecha`', () => {
+    // The bracketed module-name receiver is unwrapped to `FUNCIONES UTILES`
+    // before the `localVarTypeMap` lookup and the `qualified` shape is built.
+    // `FUNCIONES UTILES` is NOT a file-local declared variable (no Dim for
+    // it), so the paren-form path's "undeclared receiver → stub → resolver
+    // repoints" gate applies: the heuristic stub is emitted and the post-
+    // extraction resolver may repoint it to a real
+    // `[FUNCIONES UTILES].FormatearFecha` if one exists.
+    const src = [
+      'Sub Outer()',
+      '  [FUNCIONES UTILES].FormatearFecha(fecha)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('FUNCIONES UTILES');
+    expect(hEdge?.metadata?.member).toBe('FormatearFecha');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('FUNCIONES UTILES.FormatearFecha');
+    expect(target?.metadata?.stub).toBe(true);
+    // Brackets must NOT leak into the target node name.
+    expect(r.nodes.some((n) => n.name === '[FUNCIONES UTILES]')).toBe(false);
+    expect(
+      r.nodes.some((n) => n.name === '[FUNCIONES UTILES].FormatearFecha'),
+    ).toBe(false);
+  });
+
+  it('statement form `m_FU.FormatearFecha fecha` (declared via bracketed Dim `As [FUNCIONES UTILES]`) emits edge to `FUNCIONES UTILES.FormatearFecha`', () => {
+    // AC #2: when the bracketed type appears in a Dim declaration
+    // (`Dim m_FU As [FUNCIONES UTILES]`), DIM_ALL_VARS_RE unwraps the
+    // brackets and stores `FUNCIONES UTILES` as the resolved outer type
+    // for `m_FU` in `localVarTypeMap`. The subsequent
+    // `m_FU.FormatearFecha fecha` call is then gated by
+    // `isLocalProjectClassVar('m_FU') === true`, and
+    // `resolveReceiverType('m_FU')` returns the unwrapped class name —
+    // so the stub's qualifiedName matches `FUNCIONES UTILES.FormatearFecha`.
+    //
+    // Note: the literal prompt example `[FUNCIONES UTILES].FormatearFecha fecha`
+    // (with the bracketed module name as the call receiver, no Dim) is
+    // intentionally SILENT — same gate as the existing
+    // `UnknownExternal.Whatever` "unresolvable qualified call" atom. The
+    // regex must accept the bracketed form (proven by the paren-form test
+    // above) but the gate on `isLocalProjectClassVar` is unchanged.
+    const src = [
+      'Sub Outer()',
+      '  Dim m_FU As [FUNCIONES UTILES]',
+      '  m_FU.FormatearFecha fecha',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('FUNCIONES UTILES');
+    expect(hEdge?.metadata?.member).toBe('FormatearFecha');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('FUNCIONES UTILES.FormatearFecha');
+    expect(target?.metadata?.stub).toBe(true);
+    // Brackets must NOT leak into the target node name.
+    expect(r.nodes.some((n) => n.name === '[FUNCIONES UTILES]')).toBe(false);
+  });
+
+  it('`Dim x As [Clase Con Espacios]` emits a vba-name-resolution references edge to `Clase Con Espacios`', () => {
+    // The TYPE position in DIM_ALL_VARS_RE accepts bracketed identifiers
+    // with spaces and the brackets are unwrapped before populating the
+    // reference edge's target name.
+    const src = `Dim x As [Clase Con Espacios]`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('Clase Con Espacios');
+    // Brackets must NOT leak into the target node name.
+    expect(r.nodes.some((n) => n.name === '[Clase Con Espacios]')).toBe(false);
+  });
+
+  it('regression: plain (non-bracketed) `Foo.Bar(...)` keeps the existing qualified-call shape', () => {
+    // Critical regression guard: the new bracketed alternative must not
+    // shift byte-identical behaviour for the dominant un-bracketed shape.
+    // `Foo` is undeclared → heuristic stub `Foo.Bar` is emitted unchanged.
+    const src = [
+      'Sub Outer()',
+      '  Foo.Bar(1, 2)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('Foo');
+    expect(hEdge?.metadata?.member).toBe('Bar');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('Foo.Bar');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+
+  it('regression: cross-module `modUtils.Foo(1)` keeps the existing qualified-call shape', () => {
+    // Critical regression guard: the dominant `.bas`-qualified call shape
+    // must keep emitting the existing `modUtils.Foo` heuristic stub
+    // byte-identical to today. `modUtils` is NOT in `localVarTypeMap`, so
+    // the existing undeclared-receiver → heuristic stub path applies.
+    const src = [
+      'Sub Outer()',
+      '  modUtils.Foo(1)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('modUtils');
+    expect(hEdge?.metadata?.member).toBe('Foo');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('modUtils.Foo');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+
+  it('regression: class-typed `m_Service.Method(1)` keeps the existing resolved-class qualified-call shape', () => {
+    // Critical regression guard: the class-typed local-var qualified-call
+    // shape must keep resolving the receiver as the declared class type
+    // (`Service`, not `m_Service`) so the stub's qualifiedName matches
+    // the real `.cls` method's `${className}.${proc}` shape.
+    const src = [
+      'Sub Outer()',
+      '  Dim m_Service As Service',
+      '  m_Service.Method(1)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('Service');
+    expect(hEdge?.metadata?.member).toBe('Method');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('Service.Method');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+});
+

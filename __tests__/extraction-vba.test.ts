@@ -2033,3 +2033,59 @@ describe('VbaExtractor — regression: `Dim`/`Private`/`Public` shape unchanged 
   });
 });
 
+describe('VbaExtractor — Declare statements emit metadata.isDeclare (spec compliance)', () => {
+  // The spec at openspec/changes/archive/vba-api-declarations/specs/
+  // vba-extraction-enhancements/spec.md (Requirement: DLL API Declarations
+  // Extraction, item 3) mandates that every declare node carries
+  // `metadata.isDeclare === true`. The other metadata fields (dll,
+  // declareKind, ptrSafe, optional aliasName) keep their existing values;
+  // this block adds the missing flag and a regression guard for the
+  // existing field shapes.
+
+  it('bare Declare Sub (no PtrSafe, no Alias) carries metadata.isDeclare === true', () => {
+    const src = [
+      'Option Explicit',
+      'Declare Sub Foo Lib "kernel32" ()',
+    ].join('\n');
+
+    const r = extract('src/modules/modApi.bas', src);
+    const foo = r.nodes.find((n) => n.kind === 'declare' && n.name === 'Foo');
+    expect(foo).toBeDefined();
+    expect(foo?.metadata?.isDeclare).toBe(true);
+  });
+
+  it('Declare PtrSafe Function with Alias carries metadata.isDeclare === true and round-trips alias', () => {
+    const src = [
+      'Option Explicit',
+      'Declare PtrSafe Function Bar Lib "user32" Alias "MessageBoxA" (ByVal hWnd As Long, ByVal lpText As String, ByVal lpCaption As String, ByVal uType As Long) As Long',
+    ].join('\n');
+
+    const r = extract('src/modules/modApi.bas', src);
+    const bar = r.nodes.find((n) => n.kind === 'declare' && n.name === 'Bar');
+    expect(bar).toBeDefined();
+    expect(bar?.metadata?.isDeclare).toBe(true);
+    expect(bar?.metadata?.aliasName).toBe('MessageBoxA');
+  });
+
+  it('regression: existing Declare metadata fields (dll, declareKind, ptrSafe, aliasName) keep their shape', () => {
+    // Regression guard. The fix in src/extraction/vba-extractor.ts is
+    // purely additive — it MUST NOT alter the shape of metadata.dll,
+    // metadata.declareKind, metadata.ptrSafe, or metadata.aliasName.
+    const src = [
+      'Option Explicit',
+      'Declare PtrSafe Function GetTickCount Lib "kernel32" Alias "GetTickCount64" () As Long',
+    ].join('\n');
+
+    const r = extract('src/modules/modApi.bas', src);
+    const node = r.nodes.find((n) => n.kind === 'declare' && n.name === 'GetTickCount');
+    expect(node).toBeDefined();
+    expect(node?.metadata).toEqual(expect.objectContaining({
+      isDeclare: true,
+      dll: 'kernel32',
+      declareKind: 'function',
+      ptrSafe: true,
+      aliasName: 'GetTickCount64',
+    }));
+  });
+});
+

@@ -647,6 +647,7 @@ export class VbaExtractor {
           endColumn: line.length,
           visibility,
           metadata: {
+            isDeclare: true,
             dll,
             declareKind,
             ptrSafe,

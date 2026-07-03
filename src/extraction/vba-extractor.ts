@@ -441,26 +441,42 @@ export class VbaExtractor {
       // See vba-form-extractor.ts:findControlName for the matching real
       // form-instance-control node emission.
       const handler = parseEventHandlerName(name);
-      const isFormCodeBehind = /Form_[^/\\]*\.cls$/i.test(this.filePath);
+      // Prefix-driven sibling binding (issue #41). Both `Form_*.cls` and
+      // `Report_*.cls` Dysflow code-behind files share the same code path;
+      // only the sibling extension differs (`.form.txt` vs `.report.txt`).
+      // The check is on the BASENAME prefix so a class called
+      // `FormularioVentas.cls` or `ReportingHelper.cls` (no trailing
+      // underscore) does not match — the trailing `_` is the discriminator.
+      // Any other `.cls` (e.g. `InformeRiesgoPDFServicio.cls` with methods
+      // like `GenerarHTML_Principal`) gets `codeBehindExt === null` and is
+      // skipped, preserving the original Form_-only guard's behaviour for
+      // non-form classes.
+      const basename = path.basename(this.filePath).toLowerCase();
+      const codeBehindExt = basename.startsWith('report_')
+        ? '.report.txt'
+        : basename.startsWith('form_')
+          ? '.form.txt'
+          : null;
+      const isFormCodeBehind = codeBehindExt !== null;
       if (handler && isFormCodeBehind) {
-        const formFilePath = this.filePath.replace(/\.cls$/i, '.form.txt');
+        const siblingPath = this.filePath.replace(/\.cls$/i, codeBehindExt!);
         const controlNodeId = generateNodeId(
-          formFilePath,
+          siblingPath,
           'form-instance-control',
           handler.controlName,
           0,
         );
         // Stub form-instance-control: local so the per-file edge filter
         // passes the event-handler edge. Overwritten by the real node
-        // emitted from the sibling .form.txt at index time (same id, same
-        // schema, INSERT OR REPLACE). No metadata.controlType here — the
-        // .form.txt side carries the real control type.
+        // emitted from the sibling .form.txt (or .report.txt) at index time
+        // (same id, same schema, INSERT OR REPLACE). No metadata.controlType
+        // here — the sibling side carries the real control type.
         this.nodes.push({
           id: controlNodeId,
           kind: 'form-instance-control',
           name: handler.controlName,
-          qualifiedName: `${formFilePath}::${handler.controlName}`,
-          filePath: formFilePath,
+          qualifiedName: `${siblingPath}::${handler.controlName}`,
+          filePath: siblingPath,
           language: 'vba',
           startLine: 0,
           endLine: 0,

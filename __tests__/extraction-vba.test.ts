@@ -2267,3 +2267,112 @@ describe('VbaExtractor — Declare statements emit metadata.isDeclare (spec comp
   });
 });
 
+// ---------------------------------------------------------------------------
+// Antigravity audit Task 3: Variant / untyped local vars must NOT emit a
+// qualified-call `calls` edge to a stub named `<receiver>.<member>`. The
+// receiver is registered into `localVarTypeMap` as a primitive (`variant`,
+// `object`, ...) when the source declares it either as `Dim x` (no `As`
+// clause) or `Dim x As Variant|Object|...`; the qualified-call site scan
+// then skips ONLY when the receiver is mapped as a primitive, leaving the
+// "undeclared receiver → stub → resolver repoints" path intact for
+// cross-module qualified calls like `modUtils.Foo(...)`.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — Variant / untyped vars do not emit qualified-call stubs', () => {
+  it('bare `Dim x` followed by `x.Method(1)` emits zero calls edges to a stub named `x.Method`', () => {
+    // Bug fixed: a bare `Dim x` registers `x` as `variant` in
+    // `localVarTypeMap`. The qualified paren-form call `x.Method(1)` is
+    // then gated and emits no heuristic calls edge to a dead-end
+    // `x.Method` stub. (The statement form `x.Method 1` was already silent
+    // because `detectQualifiedStatementCall` requires the receiver be in
+    // `localVarTypeMap` — the bug lived in the paren-form path.)
+    const src = [
+      'Sub F()',
+      '  Dim x',
+      '  x.Method(1)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const stubEdges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'x.Method';
+    });
+    expect(stubEdges).toHaveLength(0);
+    const stubNodes = r.nodes.filter((n) => n.name === 'x.Method');
+    expect(stubNodes).toHaveLength(0);
+  });
+
+  it('explicit `Dim x As Variant` followed by `x.Foo(1)` emits zero calls edges to a stub named `x.Foo`', () => {
+    // Bug fixed: an explicit `Dim x As Variant` registers `x` as `variant`
+    // in `localVarTypeMap`. The qualified paren-form call `x.Foo(1)` is
+    // gated.
+    const src = [
+      'Sub F2()',
+      '  Dim x As Variant',
+      '  x.Foo(1)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const stubEdges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'x.Foo';
+    });
+    expect(stubEdges).toHaveLength(0);
+    const stubNodes = r.nodes.filter((n) => n.name === 'x.Foo');
+    expect(stubNodes).toHaveLength(0);
+  });
+
+  it('regression: `Dim m_Srv As Srv` followed by `m_Srv.Registrar` still emits a calls edge to `Srv.Registrar` (resolved)', () => {
+    // Regression guard: project-class typed receivers (non-primitive) keep
+    // their existing emission behavior. The refined gate skips ONLY when
+    // the receiver is mapped as a primitive.
+    const src = [
+      'Sub F3()',
+      '  Dim m_Srv As Srv',
+      '  m_Srv.Registrar 1',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdges.length).toBeGreaterThanOrEqual(1);
+    const target = r.nodes.find((n) => n.id === hEdges[0]?.target);
+    expect(target?.name).toBe('Srv.Registrar');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+
+  it('regression: cross-module qualified call `modUtils.Foo(1)` still emits a calls edge to `modUtils.Foo`', () => {
+    // Critical regression guard: the refined gate MUST NOT regress
+    // cross-module qualified calls. `modUtils` is NOT in
+    // `localVarTypeMap` (it is not declared as a local variable) so the
+    // refined gate is skipped and the existing heuristic stub is
+    // emitted — the post-extraction resolver may repoint it to a real
+    // `modUtils.Foo` if one exists. (The statement form `modUtils.Foo 1`
+    // is silent today because `detectQualifiedStatementCall` already
+    // gates on `isLocalProjectClassVar` — the paren form is the path
+    // being fixed and the regression guard pins it.)
+    const src = [
+      'Sub F4()',
+      '  modUtils.Foo(1)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdges.length).toBeGreaterThanOrEqual(1);
+    const stubEdge = hEdges.find((e) => {
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'modUtils.Foo';
+    });
+    expect(stubEdge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === stubEdge?.target);
+    expect(target?.metadata?.stub).toBe(true);
+  });
+});
+

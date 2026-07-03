@@ -751,6 +751,31 @@ export class VbaExtractor {
     /\b(\p{L}[\p{L}\p{N}_]*)\s+As\s+(?:New\s+)?(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?/giu;
 
   /**
+   * Bare-declared variable capture for the `Dim|Private|Public|Global|Static`
+   * prefix. Captures (1) the variable name. Used to register bare `Dim x`
+   * (no `As` clause) and explicit-primitive `Dim x As Long|String|...`
+   * declarations into `localVarTypeMap` so the type tracking is consistent
+   * across all three Dim shapes:
+   *
+   *   `Dim x`                → outer = 'variant' (VBA default)
+   *   `Dim x As Variant`     → outer = 'variant'  (PRIMITIVE_TYPES member)
+   *   `Dim x As Long`        → outer = 'long'     (PRIMITIVE_TYPES member)
+   *   `Dim x As Foo`         → outer = 'foo'      (project class — non-primitive)
+   *
+   * Antigravity audit Task 3: the previous `DIM_ALL_VARS_RE` only matched
+   * the `... As <Type>` form, so a bare `Dim x` was invisible to
+   * `isLocalProjectClassVar` / `scanCallSites` and `x.Method(1)` produced
+   * a dead-end `calls` edge to a stub named `x.Method` that no resolver
+   * could repoint. Registering bare Dim with `outer = 'variant'` closes
+   * the gate, so `scanCallSites` skips ONLY when the receiver is mapped
+   * as a primitive — leaving the "undeclared receiver → stub → resolver
+   * repoints" path intact for cross-module qualified calls like
+   * `modUtils.Foo(1)` (`modUtils` is not in `localVarTypeMap`).
+   */
+  private static readonly BARE_DIM_VAR_RE =
+    /^\s*(?:Dim|Private|Public|Global|Static)\s+(\p{L}[\p{L}\p{N}_]*)\s*(?:,|$|\b)/iu;
+
+  /**
    * VBA primitive type names — skipped when emitted as Dim targets so
    * we don't pollute the graph with `As Long` / `As String` references.
    * Fix 4: all entries are LOWERCASE and the lookup lowercases the
@@ -809,6 +834,38 @@ export class VbaExtractor {
             if (outerType && !VbaExtractor.PRIMITIVE_TYPES.has(outerType.toLowerCase())) {
               this.emitReference(outerType, lineNum, 0, 'vba-name-resolution');
               count++;
+            }
+          }
+        }
+
+        // Antigravity audit Task 3: bare `Dim x` (no `As` clause) and
+        // explicit-primitive `Dim x As <primitive>` declarations must
+        // still register `x` in `localVarTypeMap` so the qualified-call
+        // site scan in `scanCallSites` can gate the dead-end stub that
+        // no resolver could ever repoint.
+        //
+        // Captures the FIRST variable name only. Multi-variable bare
+        // Dim (e.g. `Dim a, b, c` without an `As` clause) is rare in
+        // real Dysflow fixtures and is intentionally NOT tracked here —
+        // those bare variables fall back to the undeclared-receiver
+        // path, which is the conservative choice. Skip if the typed-form
+        // loop already populated the entry.
+        const bm = VbaExtractor.BARE_DIM_VAR_RE.exec(line);
+        if (bm) {
+          const varName = bm[1] ?? '';
+          if (varName) {
+            const key = varName.toLowerCase();
+            if (!this.localVarTypeMap.has(key)) {
+              // Look for an `As <Type>` continuation on the same line so the
+              // outer type matches the existing typed-form behaviour. If
+              // absent, the variable is implicit `Variant` per VBA semantics.
+              const asRe = /\bAs\s+(\p{L}[\p{L}\p{N}_]*)/iu;
+              const asMatch = asRe.exec(line);
+              const outer = asMatch ? (asMatch[1] ?? '').toLowerCase() : 'variant';
+              this.localVarTypeMap.set(key, {
+                outer,
+                qualified: false,
+              });
             }
           }
         }
@@ -1496,6 +1553,26 @@ export class VbaExtractor {
         // `.cls` method's `${className}.${proc}` qualifiedName shape so the
         // #12b resolver can find it by exact match); otherwise it's the raw
         // `receiver` text unchanged (e.g. `.bas`-qualified module calls).
+        //
+        // Antigravity audit Task 3 (refined gate): if `receiver` is a
+        // file-local variable declared as a PRIMITIVE (Variant, Object,
+        // Empty, Null, LongPtr, LongLong, New, Long, String, ...), skip
+        // emission. The previous behaviour emitted a heuristic `calls`
+        // edge to a stub named `<receiver>.<member>` that no resolver
+        // could ever repoint (Variant can hold anything, including
+        // runtime singletons; the stub is dead-end graph pollution).
+        //
+        // This refined gate does NOT regress cross-module qualified
+        // calls like `modUtils.Foo(1)` because `modUtils` is never
+        // declared as a file-local variable and therefore is NOT in
+        // `localVarTypeMap` — `localVarTypeMap.has(receiver.toLowerCase())`
+        // returns false and the gate is skipped. The "stub emitted for
+        // undeclared receivers → resolver repoints if a real module
+        // exists" behaviour is preserved.
+        const recvEntry = this.localVarTypeMap.get(receiver.toLowerCase());
+        if (recvEntry && VbaExtractor.PRIMITIVE_TYPES.has(recvEntry.outer.toLowerCase())) {
+          continue;
+        }
         const receiverType = this.resolveReceiverType(receiver);
         const qualified = `${receiverType}.${member}`;
         // Avoid emitting duplicate edges for the same call (within a line).

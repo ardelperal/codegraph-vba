@@ -1934,6 +1934,94 @@ describe('VbaExtractor — SQL wrapper captures multi-literal concat chains', ()
 });
 
 
+// ---------------------------------------------------------------------------
+// Issue #42: `DoCmd.RunSQL <identifier>` (variable form) must emit the same
+// `vba-sql-table` references the literal form already emits.
+//
+// Today only `DoCmd.RunSQL "DELETE FROM X"` (literal) and `*db.Execute strSQL`
+// (variable form on the `*db` family) are tracked. The dominant Access idiom
+// `DoCmd.RunSQL strSQL` is invisible — table impact drops for every procedure
+// that builds SQL in a string and runs it through `DoCmd.RunSQL`.
+//
+// Mirrors the existing `*db.Execute strSQL` coverage at lines 340-354
+// (variable form for the `*db` family) but for the `DoCmd.RunSQL` method
+// form. The SQL_VAR_ASSIGN_RE → trackSqlVariableAssignment path (Issue #13)
+// already populates `sqlVariables` with `&`-accumulate semantics, so the
+// concatenated-SQL atom validates that #13's accumulation flows through the
+// new path.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — DoCmd.RunSQL with variable argument emits SQL table references (Issue #42)', () => {
+  function sqlTableNames(r: ReturnType<typeof extract>): string[] {
+    return r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .filter((n): n is string => typeof n === 'string');
+  }
+
+  it('DoCmd.RunSQL strSQL with strSQL = "DELETE FROM TbX" emits TbX', () => {
+    // Happy path: the variable form `DoCmd.RunSQL strSQL` must resolve
+    // `strSQL` against the procedure-local `sqlVariables` map (populated by
+    // `trackSqlVariableAssignment`) and emit `TbX` as a vba-sql-table.
+    const src = [
+      'Sub F()',
+      '  Dim strSQL As String',
+      '  strSQL = "DELETE FROM TbX"',
+      '  DoCmd.RunSQL strSQL',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/F.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toContain('TbX');
+  });
+
+  it('DoCmd.RunSQL strSQL with `&`-concatenated SQL emits the initial FROM-table (Issue #13 accumulation through the new path)', () => {
+    // Validates that the existing `&`-accumulate semantics
+    // (`trackSqlVariableAssignment`) flows through the new DoCmd.RunSQL
+    // variable path. The first literal declares `TbA`; the chained literal
+    // adds a `WHERE` clause (no extra table). Only `TbA` should be emitted.
+    const src = [
+      'Sub F()',
+      '  Dim strSQL As String',
+      '  strSQL = "DELETE FROM TbA "',
+      '  strSQL = strSQL & " WHERE id = 1"',
+      '  DoCmd.RunSQL strSQL',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/F.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toContain('TbA');
+  });
+
+  it('literal `DoCmd.RunSQL "DELETE FROM TbY"` still emits TbY (regression guard)', () => {
+    // The new regex must not break the existing literal-form coverage
+    // already exercised at line 1856 ("DoCmd.RunSQL single literal").
+    const src = [
+      'Sub Q()',
+      '  DoCmd.RunSQL "DELETE FROM TbY"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toEqual(['TbY']);
+  });
+
+  it('DoCmd.RunSQL with an undeclared identifier emits zero vba-sql-table edges', () => {
+    // Negative: when the captured identifier was never assigned (no row in
+    // `sqlVariables`), the new path must stay silent — same behavior as the
+    // existing `*db.Execute <undeclared>` path (graceful no-op).
+    const src = [
+      'Sub F()',
+      '  DoCmd.RunSQL undeclared_var',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/F.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toEqual([]);
+  });
+});
+
+
 describe('VbaExtractor � API declarations and VBA conditional compilation', () => {
   it('extracts Public Declare PtrSafe Sub as a single-line declare node with metadata', () => {
     const src = [
@@ -2488,6 +2576,407 @@ describe('VbaExtractor — Set x = New ClassName instantiations (Issue #46)', ()
       (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-set-new',
     );
     expect(setRefs).toHaveLength(0);
+  });
+});
+
+// Issue #54: bracketed receivers in qualified calls.
+//
+// VBA in Access projects supports module/object names with spaces
+// (`FUNCIONES UTILES.bas`, `Funciones Generales.bas`). Call sites qualify
+// such modules with brackets:
+//   `[FUNCIONES UTILES].FormatearFecha(fecha)`     — paren form
+//   `[FUNCIONES UTILES].FormatearFecha fecha`     — statement form
+//   `Dim x As [Clase Con Espacios]`               — bracketed type in Dim
+//
+// Before the fix, `CALL_RE`, `detectQualifiedStatementCall`, and the type
+// alternative in `DIM_ALL_VARS_RE` only accepted `\p{L}[\p{L}\p{N}_]*` for
+// the identifier token — so bracketed-qualified calls were invisible and the
+// corpus from a Dysflow-managed project silently dropped cross-module
+// references to modules with spaces in their names.
+//
+// Fix: extend the receiver / type / var-name alternatives to accept the
+// bracketed form (`[Name With Spaces]`), and unwrap brackets BEFORE the
+// blacklist checks and the `resolveReceiverType` lookup so the stub's
+// `qualifiedName` matches the `${name}.${proc}` shape.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — bracketed receivers (Issue #54)', () => {
+  it('paren form `[FUNCIONES UTILES].FormatearFecha(fecha)` emits a heuristic calls edge to `FUNCIONES UTILES.FormatearFecha`', () => {
+    // The bracketed module-name receiver is unwrapped to `FUNCIONES UTILES`
+    // before the `localVarTypeMap` lookup and the `qualified` shape is built.
+    // `FUNCIONES UTILES` is NOT a file-local declared variable (no Dim for
+    // it), so the paren-form path's "undeclared receiver → stub → resolver
+    // repoints" gate applies: the heuristic stub is emitted and the post-
+    // extraction resolver may repoint it to a real
+    // `[FUNCIONES UTILES].FormatearFecha` if one exists.
+    const src = [
+      'Sub Outer()',
+      '  [FUNCIONES UTILES].FormatearFecha(fecha)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('FUNCIONES UTILES');
+    expect(hEdge?.metadata?.member).toBe('FormatearFecha');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('FUNCIONES UTILES.FormatearFecha');
+    expect(target?.metadata?.stub).toBe(true);
+    // Brackets must NOT leak into the target node name.
+    expect(r.nodes.some((n) => n.name === '[FUNCIONES UTILES]')).toBe(false);
+    expect(
+      r.nodes.some((n) => n.name === '[FUNCIONES UTILES].FormatearFecha'),
+    ).toBe(false);
+  });
+
+  it('statement form `m_FU.FormatearFecha fecha` (declared via bracketed Dim `As [FUNCIONES UTILES]`) emits edge to `FUNCIONES UTILES.FormatearFecha`', () => {
+    // AC #2: when the bracketed type appears in a Dim declaration
+    // (`Dim m_FU As [FUNCIONES UTILES]`), DIM_ALL_VARS_RE unwraps the
+    // brackets and stores `FUNCIONES UTILES` as the resolved outer type
+    // for `m_FU` in `localVarTypeMap`. The subsequent
+    // `m_FU.FormatearFecha fecha` call is then gated by
+    // `isLocalProjectClassVar('m_FU') === true`, and
+    // `resolveReceiverType('m_FU')` returns the unwrapped class name —
+    // so the stub's qualifiedName matches `FUNCIONES UTILES.FormatearFecha`.
+    //
+    // Note: the literal prompt example `[FUNCIONES UTILES].FormatearFecha fecha`
+    // (with the bracketed module name as the call receiver, no Dim) is
+    // intentionally SILENT — same gate as the existing
+    // `UnknownExternal.Whatever` "unresolvable qualified call" atom. The
+    // regex must accept the bracketed form (proven by the paren-form test
+    // above) but the gate on `isLocalProjectClassVar` is unchanged.
+    const src = [
+      'Sub Outer()',
+      '  Dim m_FU As [FUNCIONES UTILES]',
+      '  m_FU.FormatearFecha fecha',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('FUNCIONES UTILES');
+    expect(hEdge?.metadata?.member).toBe('FormatearFecha');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('FUNCIONES UTILES.FormatearFecha');
+    expect(target?.metadata?.stub).toBe(true);
+    // Brackets must NOT leak into the target node name.
+    expect(r.nodes.some((n) => n.name === '[FUNCIONES UTILES]')).toBe(false);
+  });
+
+  it('`Dim x As [Clase Con Espacios]` emits a vba-name-resolution references edge to `Clase Con Espacios`', () => {
+    // The TYPE position in DIM_ALL_VARS_RE accepts bracketed identifiers
+    // with spaces and the brackets are unwrapped before populating the
+    // reference edge's target name.
+    const src = `Dim x As [Clase Con Espacios]`;
+    const r = extract('src/modules/Mod.bas', src);
+    const refs = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('Clase Con Espacios');
+    // Brackets must NOT leak into the target node name.
+    expect(r.nodes.some((n) => n.name === '[Clase Con Espacios]')).toBe(false);
+  });
+
+  it('regression: plain (non-bracketed) `Foo.Bar(...)` keeps the existing qualified-call shape', () => {
+    // Critical regression guard: the new bracketed alternative must not
+    // shift byte-identical behaviour for the dominant un-bracketed shape.
+    // `Foo` is undeclared → heuristic stub `Foo.Bar` is emitted unchanged.
+    const src = [
+      'Sub Outer()',
+      '  Foo.Bar(1, 2)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('Foo');
+    expect(hEdge?.metadata?.member).toBe('Bar');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('Foo.Bar');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+
+  it('regression: cross-module `modUtils.Foo(1)` keeps the existing qualified-call shape', () => {
+    // Critical regression guard: the dominant `.bas`-qualified call shape
+    // must keep emitting the existing `modUtils.Foo` heuristic stub
+    // byte-identical to today. `modUtils` is NOT in `localVarTypeMap`, so
+    // the existing undeclared-receiver → heuristic stub path applies.
+    const src = [
+      'Sub Outer()',
+      '  modUtils.Foo(1)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('modUtils');
+    expect(hEdge?.metadata?.member).toBe('Foo');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('modUtils.Foo');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+
+  it('regression: class-typed `m_Service.Method(1)` keeps the existing resolved-class qualified-call shape', () => {
+    // Critical regression guard: the class-typed local-var qualified-call
+    // shape must keep resolving the receiver as the declared class type
+    // (`Service`, not `m_Service`) so the stub's qualifiedName matches
+    // the real `.cls` method's `${className}.${proc}` shape.
+    const src = [
+      'Sub Outer()',
+      '  Dim m_Service As Service',
+      '  m_Service.Method(1)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const hEdge = r.edges.find(
+      (e) =>
+        e.kind === 'calls' &&
+        e.provenance === 'heuristic' &&
+        e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('Service');
+    expect(hEdge?.metadata?.member).toBe('Method');
+    const target = r.nodes.find((n) => n.id === hEdge?.target);
+    expect(target?.name).toBe('Service.Method');
+    expect(target?.metadata?.stub).toBe(true);
+  });
+});
+
+// Issue #45: single-line `If <cond> Then <call>` (and `Else <call>`) MUST
+// emit the same `calls` edge as their multi-line / standalone form.
+//
+// Bug: `detectStatementCall` extracted the FIRST identifier of the line —
+// `If` for `If x Then Foo arg`, which is in `CALL_KEYWORD_BLACKLIST`, so
+// the dominant VBA idiom for early-exit guards
+// (`If Err.Number <> 0 Then GestionarError`) was silently dropped. The same
+// gap affected the qualified path. Issue #45 closes that hole: strip the
+// `If … Then` prefix and re-run the statement-form detector on the body,
+// splitting on `Else` and on `:` (multi-statement) so all clauses are
+// captured. `GoTo` / `Exit` / `Resume` clauses are deliberately silent.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — single-line `If … Then` statement-form calls (Issue #45)', () => {
+  it('a bare statement-form call after `If … Then` emits a same-file calls edge', () => {
+    // `If Err.Number <> 0 Then GestionarError` — the canonical early-exit
+    // guard from real Dysflow form fixtures. Pre-#45 this dropped the
+    // `GestionarError` call silently because the leading identifier was
+    // `If`, which is blacklisted as a control-flow keyword.
+    const src = [
+      'Public Sub Caller()',
+      '    If Err.Number <> 0 Then GestionarError',
+      'End Sub',
+      'Public Sub GestionarError()',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const edges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const srcNode = r.nodes.find((n) => n.id === e.source);
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return srcNode?.name === 'Caller' && tgt?.name === 'GestionarError';
+    });
+    expect(edges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('`If x Then Foo Else Bar` emits BOTH Foo and Bar calls edges', () => {
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then ProcesarDato x, True Else LimpiarDato',
+      'End Sub',
+      'Public Sub ProcesarDato(ByVal v As Long, ByVal b As Boolean)',
+      '    \' body',
+      'End Sub',
+      'Public Sub LimpiarDato()',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const procesar = r.nodes.find((n) => n.kind === 'function' && n.name === 'ProcesarDato');
+    const limpiar = r.nodes.find((n) => n.kind === 'function' && n.name === 'LimpiarDato');
+    expect(caller).toBeDefined();
+    expect(procesar).toBeDefined();
+    expect(limpiar).toBeDefined();
+    const edges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.source === caller?.id,
+    );
+    const processedEdge = edges.find((e) => e.target === procesar?.id);
+    const cleanedEdge = edges.find((e) => e.target === limpiar?.id);
+    expect(processedEdge).toBeDefined();
+    expect(cleanedEdge).toBeDefined();
+  });
+
+  it('`GoTo` clause after `If … Then` is silent (GoTo is a control-flow keyword, not a Sub call)', () => {
+    // Defense-in-depth guard at the clause level: even if a project had a
+    // Sub named `GoToSomething`, the clause-level splitter explicitly skips
+    // any sub-clause that starts with the bare `GoTo` keyword (mirrors the
+    // blacklisting in `emitStatementCallEdge`).
+    const src = [
+      'Public Sub Caller()',
+      '    If Err.Number <> 0 Then GoTo fin',
+      'fin:',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    // No calls edge with a `GoTo*` target.
+    const gotoEdges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return typeof tgt?.name === 'string' && /^(GoTo|GoToSomething)/.test(tgt.name);
+    });
+    expect(gotoEdges).toHaveLength(0);
+  });
+
+  it('`Exit Sub` clause after `If … Then` is silent (Exit is a control-flow keyword)', () => {
+    const src = [
+      'Public Sub Caller()',
+      '    If Err.Number <> 0 Then Exit Sub',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const exitEdges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return typeof tgt?.name === 'string' && /^Exit$/i.test(tgt.name);
+    });
+    expect(exitEdges).toHaveLength(0);
+  });
+
+  it('multi-statement `If x Then DoA: DoB` (colon-separated) emits BOTH calls edges', () => {
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then DoA: DoB',
+      'End Sub',
+      'Public Sub DoA()',
+      'End Sub',
+      'Public Sub DoB()',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const doA = r.nodes.find((n) => n.kind === 'function' && n.name === 'DoA');
+    const doB = r.nodes.find((n) => n.kind === 'function' && n.name === 'DoB');
+    expect(caller).toBeDefined();
+    expect(doA).toBeDefined();
+    expect(doB).toBeDefined();
+    const edges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.source === caller?.id,
+    );
+    expect(edges.find((e) => e.target === doA?.id)).toBeDefined();
+    expect(edges.find((e) => e.target === doB?.id)).toBeDefined();
+  });
+
+  it('block-form `If x Then` on its own line with body on next line is unchanged', () => {
+    // Regression guard: the `If … Then` matcher ONLY fires when something
+    // comes after `Then` on the same line (the single-line If shape). When
+    // `Then` is the last token on the line, the body lives on subsequent
+    // lines and is picked up by the existing per-line call-site scan that
+    // already handles bare `Foo` on a line of its own.
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then',
+      '        Foo',
+      '    End If',
+      'End Sub',
+      'Public Sub Foo()',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const foo = r.nodes.find((n) => n.kind === 'function' && n.name === 'Foo');
+    expect(caller).toBeDefined();
+    expect(foo).toBeDefined();
+    // The existing per-line call-site scan emits the edge from `Caller` to
+    // `Foo` regardless of which line `Foo` is on, so this regression
+    // guard asserts the same behavior is preserved.
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.source === caller?.id && e.target === foo?.id,
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('`Call` keyword with statement-form arguments after `If … Then` also emits a calls edge', () => {
+    // The `Call Foo arg` form (Call keyword, no parens) is the same call
+    // shape after the `Call ` keyword is stripped — keep parity with the
+    // pre-existing H1 invariant for `Call Sub 1, 2` standalone.
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then Call GestionarError',
+      'End Sub',
+      'Public Sub GestionarError()',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const gestionar = r.nodes.find((n) => n.kind === 'function' && n.name === 'GestionarError');
+    expect(caller).toBeDefined();
+    expect(gestionar).toBeDefined();
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.source === caller?.id && e.target === gestionar?.id,
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('a qualified statement-form call after `If … Then` follows the existing qualified-call gate', () => {
+    // `m_Srv.Registrar 1` inside an `If … Then` body — pre-#45 this dropped
+    // the call silently because the leading identifier was `If`. Post-fix,
+    // the qualified detector runs on the clause and emits an edge IF the
+    // receiver is in `localVarTypeMap` as a non-primitive (Fix 2 invariant
+    // preserved).
+    const src = [
+      'Sub Outer()',
+      '    Dim m_Srv As Srv',
+      '    If x > 0 Then m_Srv.Registrar 1',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Outer');
+    expect(caller).toBeDefined();
+    // Stub for `Srv.Registrar` (resolved class type, Fix 2 / #12a).
+    const stubEdge = r.edges.find((e) => {
+      if (e.kind !== 'calls') return false;
+      if (e.source !== caller?.id) return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'Srv.Registrar';
+    });
+    expect(stubEdge).toBeDefined();
   });
 });
 

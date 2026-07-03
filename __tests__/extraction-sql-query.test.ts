@@ -92,4 +92,46 @@ describe('SqlQueryExtractor — table references', () => {
     expect(r.errors).toHaveLength(0);
     expect(r.nodes.some((n) => n.kind === 'query')).toBe(true);
   });
+
+  it('captures a schema-qualified FROM (dbo.tblCustomers) as one composite reference', () => {
+    // REGRESSION GUARD for the TABLE_RE schema-prefix extension: previously the
+    // regex stopped at `dbo` (period is not in `\p{L}[\p{L}\p{N}_]*`) and silently
+    // dropped `tblCustomers`. The fix extends the capture to allow an optional
+    // bracketed/unbracketed schema prefix followed by `.`, so the whole
+    // `dbo.tblCustomers` comes through as a single composite table reference.
+    const r = extract('queries/q.sql', 'SELECT * FROM dbo.tblCustomers;');
+    const tableNames = r.nodes
+      .filter((n) => n.kind === 'class')
+      .map((n) => n.name);
+    expect(tableNames).toEqual(['dbo.tblCustomers']);
+    expect(r.nodes.some((n) => n.name === 'dbo')).toBe(false);
+    expect(r.nodes.some((n) => n.name === 'tblCustomers')).toBe(false);
+  });
+
+  it('captures a bracketed schema-qualified FROM ([My Schema].[My Table]) as one composite reference', () => {
+    // The unwrapped form is what the consumer code already emits for plain bracketed
+    // names (`[Order Details]` → `Order Details`), so the schema-qualified form is
+    // also unwrapped: `[My Schema].[My Table]` → `My Schema.My Table`. Same
+    // convention as vba-extractor.
+    const r = extract('queries/q.sql', 'SELECT * FROM [My Schema].[My Table];');
+    const tableNames = r.nodes
+      .filter((n) => n.kind === 'class')
+      .map((n) => n.name);
+    expect(tableNames).toEqual(['My Schema.My Table']);
+    expect(r.nodes.some((n) => n.name === '[My Schema]')).toBe(false);
+    expect(r.nodes.some((n) => n.name === '[My Table]')).toBe(false);
+    expect(r.nodes.some((n) => n.name === 'My Schema')).toBe(false);
+    expect(r.nodes.some((n) => n.name === 'My Table')).toBe(false);
+  });
+
+  it('plain (un-qualified) FROM still emits just the table name (regression guard)', () => {
+    // The new schema-prefix is OPTIONAL — `FROM TbACParaLista` must produce exactly
+    // one node named `TbACParaLista`, byte-identical to the pre-fix behaviour.
+    const r = extract('queries/q.sql', 'SELECT * FROM TbACParaLista;');
+    const tableNames = r.nodes
+      .filter((n) => n.kind === 'class')
+      .map((n) => n.name);
+    expect(tableNames).toEqual(['TbACParaLista']);
+    expect(r.nodes.some((n) => n.name === 'TbACParaLista')).toBe(true);
+  });
 });

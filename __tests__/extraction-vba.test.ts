@@ -1855,3 +1855,181 @@ describe('VbaExtractor � custom db variables and OpenForm constants', () => {
     expect(targets).toEqual(['FORM_UNKNOWN', 'frmEmployees', 'frmOrders']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #47: `Global` module-level and `Static` procedure-local declarations
+// must emit the same `references` edge and `localVarTypeMap` registration as
+// their `Dim` / `Private` / `Public` siblings today. The previous regex
+// `DIM_DECL_PREFIX_RE` only matched `Dim|Private|Public`; today a real-world
+// module using the `Global` keyword for a module-level typed instance
+// (`Global g_Client As Class_Client`) ends up invisible to the extractor and
+// downstream stub/edge resolution. Fix: extend the prefix alternation to
+// include `Global` (and `Static` for the procedure-local case). The primitive
+// gate (PRIMITIVE_TYPES) must still suppress `Global gsNombre As String`
+// cleanly — primitives never emit a references edge and never enter
+// `localVarTypeMap`.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — `Global` module-level declarations (Issue #47)', () => {
+  it('Global g_Client As Class_Client emits a vba-name-resolution references edge to Class_Client', () => {
+    const src = `Global g_Client As Class_Client`;
+    const r = extract('src/modules/modClient.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('Class_Client');
+  });
+
+  it('Global g_Client As Class_Client registers g_Client in localVarTypeMap (so stub/edge resolution resolves the receiver as the class type)', () => {
+    // Indirect proof of `localVarTypeMap.set('gclient', { outer: 'Class_Client', ... })`.
+    // The `receiverType` of a class-typed qualified statement-form call is
+    // populated from the map; if the entry is missing the metadata would
+    // degrade to the raw variable name. See the existing
+    // "class-typed qualified statement-form call" test (#12a) for the contract.
+    const src = [
+      'Global g_Client As Class_Client',
+      'Sub Outer()',
+      '  g_Client.DoWork',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modClient.bas', src);
+    const hEdge = r.edges.find(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('Class_Client');
+    expect(hEdge?.metadata?.member).toBe('DoWork');
+  });
+
+  it('Global gsNombre As String (primitive) emits no reference edge and does not enter localVarTypeMap', () => {
+    const src = [
+      'Global gsNombre As String',
+      'Sub Outer()',
+      '  gsNombre = "x"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modClient.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(0);
+    // Indirect proof that `gsnombre` is NOT in `localVarTypeMap`: a subsequent
+    // qualified statement-form call on `gsNombre` cannot have a class-shaped
+    // `receiverType` since `gsNombre` was never typed as a class. There must
+    // be no calls edge attributed to `gsnombre` as a class receiver.
+    const stmtEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(stmtEdges).toHaveLength(0);
+  });
+
+  it('Global Const X = 1 stays OUT of the Dim sweep (Const has its own sweepEnumsAndConsts path)', () => {
+    // Regression guard: the negative lookahead
+    // `(?!(?:Function|Sub|Property|Const|WithEvents)\b)` in DIM_DECL_PREFIX_RE
+    // keeps `Global Const` routed to `sweepEnumsAndConsts`. Adding `Global`
+    // to the alternation MUST NOT change that contract — `Const` in any
+    // combination still goes through the Const sweep.
+    const src = `Global Const MY_GLOBAL = 1`;
+    const r = extract('src/modules/modConsts.bas', src);
+    // The Dim sweep would have emitted a class-style `vba-name-resolution`
+    // edge with `references`. Const sweep emits a `constant` node instead.
+    const dimRefs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(dimRefs).toHaveLength(0);
+    const constNode = r.nodes.find((n) => n.kind === 'constant' && n.name === 'MY_GLOBAL');
+    expect(constNode).toBeDefined();
+  });
+});
+
+describe('VbaExtractor — `Static` procedure-local declarations (Issue #47)', () => {
+  it('Static m_Cache As MiClase inside a procedure emits a vba-name-resolution references edge to MiClase', () => {
+    const src = [
+      'Sub Outer()',
+      '  Static m_Cache As MiClase',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modCache.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === refs[0]?.target);
+    expect(target?.name).toBe('MiClase');
+  });
+
+  it('Static m_Cache As MiClase registers m_Cache in localVarTypeMap', () => {
+    // Indirect proof: a class-typed qualified statement-form call on
+    // `m_Cache` resolves the receiver as the declared class type.
+    const src = [
+      'Sub Outer()',
+      '  Static m_Cache As MiClase',
+      '  m_Cache.Get',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modCache.bas', src);
+    const hEdge = r.edges.find(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(hEdge).toBeDefined();
+    expect(hEdge?.metadata?.receiverType).toBe('MiClase');
+    expect(hEdge?.metadata?.member).toBe('Get');
+  });
+
+  it('Static s_Label As String (primitive) inside a procedure emits no reference edge', () => {
+    const src = [
+      'Sub Outer()',
+      '  Static s_Label As String',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modCache.bas', src);
+    const refs = r.edges.filter(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(refs).toHaveLength(0);
+  });
+});
+
+describe('VbaExtractor — regression: `Dim`/`Private`/`Public` shape unchanged (Issue #47)', () => {
+  // Regression guard for the existing REQ-CODE-6 / S3 / Issue #1/3 paths.
+  // These tests intentionally mirror the original wording so that the new
+  // `Global`/`Static` alternation does NOT shift `Dim` semantics in any way.
+  it('Dim x As Foo still emits a vba-name-resolution references edge to Foo (unchanged shape)', () => {
+    const src = `Dim x As Foo`;
+    const r = extract('src/modules/Mod.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('Foo');
+  });
+
+  it('Private p_X As SomeType still emits a vba-name-resolution references edge (unchanged shape)', () => {
+    const src = `Private p_X As SomeType`;
+    const r = extract('src/modules/Mod.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('SomeType');
+  });
+
+  it('Public AC As ACAuditoria still emits a vba-name-resolution references edge (unchanged shape)', () => {
+    const src = `Public AC As ACAuditoria`;
+    const r = extract('src/modules/Mod.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(edge).toBeDefined();
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('ACAuditoria');
+  });
+});
+

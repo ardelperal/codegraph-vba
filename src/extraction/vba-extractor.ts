@@ -729,9 +729,14 @@ export class VbaExtractor {
    * DIM_UNQUAL_RE pair with a prefix-check + global scan that handles
    * `As New <Type>`, multi-variable `Dim a As Foo, b As Bar`, and all
    * visibility keywords in one pass.
+   * Issue #47: now also accepts `Global` (module-level typed instance) and
+   * `Static` (procedure-local retention modifier) so they emit the same
+   * `references` edge and `localVarTypeMap` registration as their `Dim`
+   * siblings today. The negative lookahead is unchanged: `Const` is still
+   * routed to `sweepEnumsAndConsts`.
    */
   private static readonly DIM_DECL_PREFIX_RE =
-    /^\s*(?:Dim|Private|Public)\s+(?!(?:Function|Sub|Property|Const|WithEvents)\b)/i;
+    /^\s*(?:Dim|Private|Public|Global|Static)\s+(?!(?:Function|Sub|Property|Const|WithEvents)\b)/i;
 
   /**
    * Globally scan all `identifier As [New] TypePart1[.TypePart2]` on a
@@ -758,9 +763,9 @@ export class VbaExtractor {
     'empty', 'null', 'longptr', 'longlong', 'new',
   ]);
 
-  /** `WithEvents m_X As Form_Foo` — Dim/Private/Public prefix is optional. */
+  /** `WithEvents m_X As Form_Foo` — Dim/Private/Public/Global/Static prefix is optional. */
   private static readonly WITHEVENTS_RE =
-    /^\s*(?:(?:Dim|Private|Public)\s+)?WithEvents\s+\p{L}[\p{L}\p{N}_]*\s+As\s+(\p{L}[\p{L}\p{N}_]*)/iu;
+    /^\s*(?:(?:Dim|Private|Public|Global|Static)\s+)?WithEvents\s+\p{L}[\p{L}\p{N}_]*\s+As\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
   private sweepDimsAndWithEvents(src: string): number {
     const lines = src.split('\n');
@@ -815,7 +820,7 @@ export class VbaExtractor {
         const formType = weMatch[1] ?? '';
         if (formType) {
           // Extract the variable name from the WithEvents line for the map.
-          const weVarM = /^\s*(?:(?:Dim|Private|Public)\s+)?WithEvents\s+(\p{L}[\p{L}\p{N}_]*)/iu.exec(line);
+          const weVarM = /^\s*(?:(?:Dim|Private|Public|Global|Static)\s+)?WithEvents\s+(\p{L}[\p{L}\p{N}_]*)/iu.exec(line);
           const weVarName = weVarM?.[1] ?? '';
           if (weVarName) {
             this.localVarTypeMap.set(weVarName.toLowerCase(), {

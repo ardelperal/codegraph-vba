@@ -1,0 +1,33 @@
+Version =21
+VersionRequired =20
+PublishOption =1
+Checksum =-1122334455
+Begin Report
+    Caption ="Report_PayrollSummary"
+    Width =10000
+    Height =6000
+    Begin TextBox
+        Name ="txtTotal"
+        ControlSource ="Total"
+        Left =1000
+        Top =200
+        Width =3000
+        Height =400
+    End
+    Begin TextBox
+        Name ="txtCount"
+        ControlSource ="Count"
+        Left =1000
+        Top =700
+        Width =3000
+        Height =400
+    End
+    Begin Label
+        Name ="lblHeader"
+        Caption ="Payroll Summary"
+        Left =1000
+        Top =50
+        Width =4000
+        Height =300
+    End
+End

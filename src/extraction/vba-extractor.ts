@@ -441,26 +441,42 @@ export class VbaExtractor {
       // See vba-form-extractor.ts:findControlName for the matching real
       // form-instance-control node emission.
       const handler = parseEventHandlerName(name);
-      const isFormCodeBehind = /Form_[^/\\]*\.cls$/i.test(this.filePath);
+      // Prefix-driven sibling binding (issue #41). Both `Form_*.cls` and
+      // `Report_*.cls` Dysflow code-behind files share the same code path;
+      // only the sibling extension differs (`.form.txt` vs `.report.txt`).
+      // The check is on the BASENAME prefix so a class called
+      // `FormularioVentas.cls` or `ReportingHelper.cls` (no trailing
+      // underscore) does not match — the trailing `_` is the discriminator.
+      // Any other `.cls` (e.g. `InformeRiesgoPDFServicio.cls` with methods
+      // like `GenerarHTML_Principal`) gets `codeBehindExt === null` and is
+      // skipped, preserving the original Form_-only guard's behaviour for
+      // non-form classes.
+      const basename = path.basename(this.filePath).toLowerCase();
+      const codeBehindExt = basename.startsWith('report_')
+        ? '.report.txt'
+        : basename.startsWith('form_')
+          ? '.form.txt'
+          : null;
+      const isFormCodeBehind = codeBehindExt !== null;
       if (handler && isFormCodeBehind) {
-        const formFilePath = this.filePath.replace(/\.cls$/i, '.form.txt');
+        const siblingPath = this.filePath.replace(/\.cls$/i, codeBehindExt!);
         const controlNodeId = generateNodeId(
-          formFilePath,
+          siblingPath,
           'form-instance-control',
           handler.controlName,
           0,
         );
         // Stub form-instance-control: local so the per-file edge filter
         // passes the event-handler edge. Overwritten by the real node
-        // emitted from the sibling .form.txt at index time (same id, same
-        // schema, INSERT OR REPLACE). No metadata.controlType here — the
-        // .form.txt side carries the real control type.
+        // emitted from the sibling .form.txt (or .report.txt) at index time
+        // (same id, same schema, INSERT OR REPLACE). No metadata.controlType
+        // here — the sibling side carries the real control type.
         this.nodes.push({
           id: controlNodeId,
           kind: 'form-instance-control',
           name: handler.controlName,
-          qualifiedName: `${formFilePath}::${handler.controlName}`,
-          filePath: formFilePath,
+          qualifiedName: `${siblingPath}::${handler.controlName}`,
+          filePath: siblingPath,
           language: 'vba',
           startLine: 0,
           endLine: 0,
@@ -1173,6 +1189,30 @@ export class VbaExtractor {
     /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.(?:OpenRecordset|Execute)\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
 
   /**
+   * Issue #42: `DoCmd.RunSQL <identifier>` (variable form) — the dominant
+   * Access idiom for executing a dynamically-built SQL string. Today only
+   * the literal form `DoCmd.RunSQL "DELETE FROM X"` is tracked via the
+   * `SQL_WRAPPERS` regex at line 1108; the variable form silently dropped
+   * table impact for every procedure that builds SQL in a string and runs
+   * it through `DoCmd.RunSQL`.
+   *
+   * This regex is the DoCmd.RunSQL analogue of `SQL_VAR_EXEC_RE` above and
+   * is iterated by `scanSqlInLine` (lines 2051+). When a match is found,
+   * the captured identifier is resolved against `sqlVariables` (populated
+   * by `trackSqlVariableAssignment` with `&`-accumulate semantics — Issue
+   * #13) and the resulting SQL string drives `emitSqlTableReferences`.
+   *
+   * The optional `(?:\(\))?` + `\s*\(?` shape lets the regex match both
+   * the parenthesised form `DoCmd.RunSQL(strSQL)` and the no-paren form
+   * `DoCmd.RunSQL strSQL` that the existing SQL_WRAPPERS literal regex
+   * does not cover. The captured identifier is the only thing we need —
+   * we DO NOT try to parse what the variable points at; that's the
+   * existing `sqlVariables` map's job.
+   */
+  private static readonly SQL_VAR_DOCMD_RUNSQL_RE =
+    /\bDoCmd\.RunSQL\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
+
+  /**
    * SQL table-name regex scoped to the clauses that introduce a table
    * reference: `FROM <t>`, `JOIN <t>`, `INTO <t>`, `UPDATE <t>`. Adding
    * `JOIN` lets the scanner pick up tables from joined fragments that
@@ -1473,24 +1513,41 @@ export class VbaExtractor {
       // Form_FormNCAuditoriaMotivoEliminado.cls fixture contributed
       // nothing to the call graph. Walked here so we share the proc stack
       // already maintained by this loop.
+      //
+      // Issue #45: the statement-call detector used to inspect only the
+      // FIRST identifier of the line, so for `If x Then Foo` it returned
+      // the keyword `If` (which is then dropped by
+      // `emitStatementCallEdge`'s BLACKLIST check) — the actual `Foo` call
+      // after `Then` was silently invisible. Same gap existed on the
+      // `Else`/multi-statement (`:`) and qualified paths. The fix is to
+      // split the line into one or more statement clauses via
+      // `splitSingleLineIfClauses` (which handles `If … Then <body>`,
+      // `Else <body>`, and colon-separated multi-statements) and run the
+      // detectors per clause. Lines that don't match the single-line If
+      // shape pass through unchanged as `[<line>]` so block-form `If`
+      // (where the body lives on subsequent lines) keeps working through
+      // the existing per-line scan that picks up the body line.
       if (stack.length > 0 && !procedureStartLines.has(lineNum)) {
-        const stmtCall = this.detectStatementCall(callScanLine);
-        if (stmtCall) {
-          const caller = stack[stack.length - 1]!;
-          this.emitStatementCallEdge(caller, stmtCall, lineNum);
-        }
+        const clauseLines = this.splitSingleLineIfClauses(callScanLine);
+        for (const clauseLine of clauseLines) {
+          const stmtCall = this.detectStatementCall(clauseLine);
+          if (stmtCall) {
+            const caller = stack[stack.length - 1]!;
+            this.emitStatementCallEdge(caller, stmtCall, lineNum);
+          }
 
-        // Fix 7 + Fix 2: qualified statement-form calls (`Receiver.Member args`) —
-        // the dominant cross-object call shape in real Dysflow fixtures.
-        // `CALL_RE` only matches the paren form; this path covers the no-paren
-        // statement form and emits a heuristic `calls` edge ONLY when the
-        // receiver is a file-local variable typed as a candidate project class
-        // (Fix 2: REQ-CODE-4 "unresolvable call is silent").
-        const qualStmt = this.detectQualifiedStatementCall(callScanLine);
-        if (qualStmt) {
-          const caller = stack[stack.length - 1]!;
-          if (this.isLocalProjectClassVar(qualStmt.receiver)) {
-            this.emitQualifiedStatementCallEdge(caller, qualStmt.receiver, qualStmt.member, lineNum);
+          // Fix 7 + Fix 2: qualified statement-form calls (`Receiver.Member args`) —
+          // the dominant cross-object call shape in real Dysflow fixtures.
+          // `CALL_RE` only matches the paren form; this path covers the no-paren
+          // statement form and emits a heuristic `calls` edge ONLY when the
+          // receiver is a file-local variable typed as a candidate project class
+          // (Fix 2: REQ-CODE-4 "unresolvable call is silent").
+          const qualStmt = this.detectQualifiedStatementCall(clauseLine);
+          if (qualStmt) {
+            const caller = stack[stack.length - 1]!;
+            if (this.isLocalProjectClassVar(qualStmt.receiver)) {
+              this.emitQualifiedStatementCallEdge(caller, qualStmt.receiver, qualStmt.member, lineNum);
+            }
           }
         }
 
@@ -1744,6 +1801,83 @@ export class VbaExtractor {
     // `this.nodes.find(...)` was an O(n) linear scan per call site —
     // meaningful on real .cls files with hundreds of procedures.
     return this.functionNodeByName.get(name);
+  }
+
+  /**
+   * Issue #45: split a single-line VBA `If <cond> Then <body>` into one or
+   * more statement-clause fragments that the existing `detectStatementCall`
+   * and `detectQualifiedStatementCall` detectors can process. Handles:
+   *
+   *   - `If x Then Foo`             → `['Foo']`
+   *   - `If x Then Foo Else Bar`    → `['Foo', 'Bar']`
+   *   - `If x Then DoA: DoB`        → `['DoA', 'DoB']` (colon-separated multi-statement)
+   *   - `If x Then Foo Else A: B`   → `['Foo', 'A', 'B']`
+   *   - `If x Then GoTo fin`        → `[]` (GoTo clause filtered out)
+   *   - `If x Then Exit Sub`        → `[]` (Exit clause filtered out)
+   *
+   * When the line does NOT match a single-line `If … Then` shape — for
+   * instance a block-form `If x Then` whose body lives on subsequent
+   * lines — the splitter returns `[<line>]` (the original input) so
+   * callers can use this method unconditionally and let the existing
+   * per-line scan pick up the body on a separate line.
+   *
+   * `GoTo`, `Exit`, and `Resume` clauses are filtered at the fragment
+   * level (defense in depth): even though `emitStatementCallEdge` already
+   * drops these via the `CALL_KEYWORD_BLACKLIST`, filtering here prevents
+   * any chance of `detectStatementCall`'s generic identifier extractor
+   * matching a substring (e.g. an identifier like `GoToFinishingTouches`)
+   * as a side effect of a richer clause where the keyword happens to be
+   * the leading token.
+   *
+   * `line` is the string-literal-masked scan line. The mask makes global
+   * `:` splitting safe: real VBA colons never appear inside string
+   * literals (already masked to spaces) and never inside expressions
+   * inside parens at the source level (a colon ends a statement in VBA,
+   * so it cannot appear inside a parenthesised argument list either).
+   * The `Else` keyword is a VBA statement-level separator and is
+   * forbidden inside parens or expressions, so splitting on
+   * `\s+Else\s+` does not need paren tracking either.
+   */
+  private splitSingleLineIfClauses(line: string): string[] {
+    const trimmed = line.trimStart();
+    if (!trimmed) return [];
+    // Match `If <cond> Then <body>` with a non-greedy condition. Requiring
+    // at least one whitespace character after `Then` ensures the block
+    // form `If x Then` (with the body on subsequent lines) is left alone
+    // for the existing per-line call-site scan to handle on the body line.
+    const ifThenRe = /^If\s[\s\S]+?\bThen\b\s+/i;
+    const m = ifThenRe.exec(trimmed);
+    if (!m) {
+      // Not a single-line `If … Then` — preserve the original line so the
+      // existing detection path picks it up unchanged.
+      return [line];
+    }
+    const body = trimmed.slice(m[0].length);
+    // Split on top-level `Else` (case-insensitive; word-bounded). The
+    // statement-level-only nature of `Else` in VBA means the regex split
+    // is safe without paren tracking on the masked-line invariant.
+    const elseClauses = body.split(/\s+Else\s+/i);
+    const clauses: string[] = [];
+    for (const elseClause of elseClauses) {
+      // Split each Else-clause on `:` for multi-statement single-line
+      // `If` bodies. VBA expressions never contain `:`, so a global
+      // split is correct on a masked line.
+      const subStatements = elseClause.split(':');
+      for (const sub of subStatements) {
+        const t = sub.trim();
+        if (!t) continue;
+        // Defense in depth: GoTo / Exit / Resume are VBA control-flow
+        // statements, not Sub calls — drop them before they reach the
+        // statement-call detectors. (The existing
+        // `CALL_KEYWORD_BLACKLIST` check in `emitStatementCallEdge`
+        // also covers this; the fragment-level filter keeps the two
+        // intent statements aligned and protects against any future
+        // detector refactor that might relax the BLACKLIST check.)
+        if (/^(?:GoTo|Exit|Resume)\b/i.test(t)) continue;
+        clauses.push(t);
+      }
+    }
+    return clauses;
   }
 
   /**
@@ -2127,6 +2261,26 @@ export class VbaExtractor {
     let vm: RegExpExecArray | null;
     while ((vm = localRe.exec(line)) !== null) {
       const varName = (vm[1] ?? '').toLowerCase();
+      const sqlString = sqlVariables.get(varName);
+      if (!sqlString) continue;
+      this.emitSqlTableReferences(sqlString, lineNum, dedupe);
+    }
+
+    // Issue #42: `DoCmd.RunSQL <identifier>` (variable form). Mirrors the
+    // SQL_VAR_EXEC_RE path above but for the Access-style `DoCmd.RunSQL`
+    // idiom — the dominant pattern in real-world VBA modules. Resolve the
+    // captured identifier against `sqlVariables` (populated by
+    // `trackSqlVariableAssignment` with `&`-accumulate semantics, Issue
+    // #13) and feed the resolved SQL string into `emitSqlTableReferences`.
+    // Unresolved identifiers (no row in the map) are silently skipped —
+    // same graceful-no-op contract as SQL_VAR_EXEC_RE.
+    const docmdLocalRe = new RegExp(
+      VbaExtractor.SQL_VAR_DOCMD_RUNSQL_RE.source,
+      VbaExtractor.SQL_VAR_DOCMD_RUNSQL_RE.flags,
+    );
+    let dm: RegExpExecArray | null;
+    while ((dm = docmdLocalRe.exec(line)) !== null) {
+      const varName = (dm[1] ?? '').toLowerCase();
       const sqlString = sqlVariables.get(varName);
       if (!sqlString) continue;
       this.emitSqlTableReferences(sqlString, lineNum, dedupe);

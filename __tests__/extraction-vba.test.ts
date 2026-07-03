@@ -1755,6 +1755,128 @@ describe('VbaExtractor — SQL variable accumulation across self-referential con
   });
 });
 
+// ---------------------------------------------------------------------------
+// Antigravity audit Task 2: SQL_WRAPPERS must capture the FULL
+// `&`-concatenation chain on a single physical line, not just the first
+// literal. Today `db.Execute "FROM A" & " JOIN B"` only emits A; the wrapper
+// regex's `((?:[^"]|"")*)` stops at the first closing quote. Cross-physical-
+// line concatenation via `_` continuation is OUT OF SCOPE for v1 — see
+// commit message for the deferred-work note.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — SQL wrapper captures multi-literal concat chains', () => {
+  function sqlTableNames(r: ReturnType<typeof extract>): string[] {
+    return r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .filter((n): n is string => typeof n === 'string');
+  }
+
+  it('db.Execute with `&`-joined literals on the same line emits BOTH tables', () => {
+    const src = [
+      'Sub Q()',
+      '  db.Execute "SELECT * FROM A" & " JOIN B ON b.id = a.id"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    // The bug: today only A is emitted because the wrapper regex stops at
+    // the first closing quote. After the fix, both A and B must be emitted.
+    expect(tableNames).toContain('A');
+    expect(tableNames).toContain('B');
+  });
+
+  it('db.Execute single literal (regression guard) emits ONLY that table', () => {
+    const src = [
+      'Sub Q()',
+      '  db.Execute "SELECT * FROM tblA"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toEqual(['tblA']);
+  });
+
+  it('DoCmd.RunSQL single literal (regression guard) emits ONLY that table', () => {
+    const src = [
+      'Sub Q()',
+      '  DoCmd.RunSQL "DELETE FROM tblOld"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toEqual(['tblOld']);
+  });
+
+  it('DoCmd.RunSQL with `&`-joined literals emits BOTH tables', () => {
+    const src = [
+      'Sub Q()',
+      '  DoCmd.RunSQL "DELETE FROM tblOld" & " WHERE id < 100"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toContain('tblOld');
+    // No extra table from the WHERE clause, but the wrapper must not have
+    // been confused by the chain. We assert the exact set: only tblOld.
+    expect(tableNames).toEqual(['tblOld']);
+  });
+
+  it('leading empty literal `"" & "FROM X"` emits ONLY X (no false positive)', () => {
+    const src = [
+      'Sub Q()',
+      '  db.Execute "" & "FROM tblX"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toEqual(['tblX']);
+  });
+
+  it('plain string assignment outside a wrapper does NOT emit a vba-sql-table edge', () => {
+    // Regression guard: a bare assignment to a String variable must not
+    // suddenly start emitting SQL table references just because the wrapper
+    // scanner now also consumes `&`-chained literals. The wrapper scanner
+    // is anchored to a wrapper-call signature — bare `x = "..."` must not
+    // match it.
+    const src = [
+      'Sub Q()',
+      '  Dim msg As String',
+      '  msg = "FROM tblShouldNotEmit"',
+      '  msg = msg & " and more text"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).not.toContain('tblShouldNotEmit');
+    expect(tableNames).toEqual([]);
+  });
+
+  it('getdb().Execute with `&`-joined literals emits BOTH tables', () => {
+    const src = [
+      'Sub Q()',
+      '  getdb().Execute "SELECT * FROM tblA" & " JOIN tblB ON tblB.a_id = tblA.id"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toContain('tblA');
+    expect(tableNames).toContain('tblB');
+  });
+
+  it('db.OpenRecordset with `&`-joined literals emits BOTH tables', () => {
+    const src = [
+      'Sub Q()',
+      '  db.OpenRecordset "SELECT * FROM tblX" & " JOIN tblY ON tblY.x_id = tblX.id"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toContain('tblX');
+    expect(tableNames).toContain('tblY');
+  });
+});
+
 
 describe('VbaExtractor � API declarations and VBA conditional compilation', () => {
   it('extracts Public Declare PtrSafe Sub as a single-line declare node with metadata', () => {

@@ -2376,3 +2376,217 @@ describe('VbaExtractor — Variant / untyped vars do not emit qualified-call stu
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #45: single-line `If <cond> Then <call>` (and `Else <call>`) MUST
+// emit the same `calls` edge as their multi-line / standalone form.
+//
+// Bug: `detectStatementCall` extracted the FIRST identifier of the line —
+// `If` for `If x Then Foo arg`, which is in `CALL_KEYWORD_BLACKLIST`, so
+// the dominant VBA idiom for early-exit guards
+// (`If Err.Number <> 0 Then GestionarError`) was silently dropped. The same
+// gap affected the qualified path. Issue #45 closes that hole: strip the
+// `If … Then` prefix and re-run the statement-form detector on the body,
+// splitting on `Else` and on `:` (multi-statement) so all clauses are
+// captured. `GoTo` / `Exit` / `Resume` clauses are deliberately silent.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — single-line `If … Then` statement-form calls (Issue #45)', () => {
+  it('a bare statement-form call after `If … Then` emits a same-file calls edge', () => {
+    // `If Err.Number <> 0 Then GestionarError` — the canonical early-exit
+    // guard from real Dysflow form fixtures. Pre-#45 this dropped the
+    // `GestionarError` call silently because the leading identifier was
+    // `If`, which is blacklisted as a control-flow keyword.
+    const src = [
+      'Public Sub Caller()',
+      '    If Err.Number <> 0 Then GestionarError',
+      'End Sub',
+      'Public Sub GestionarError()',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const edges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const srcNode = r.nodes.find((n) => n.id === e.source);
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return srcNode?.name === 'Caller' && tgt?.name === 'GestionarError';
+    });
+    expect(edges.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('`If x Then Foo Else Bar` emits BOTH Foo and Bar calls edges', () => {
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then ProcesarDato x, True Else LimpiarDato',
+      'End Sub',
+      'Public Sub ProcesarDato(ByVal v As Long, ByVal b As Boolean)',
+      '    \' body',
+      'End Sub',
+      'Public Sub LimpiarDato()',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const procesar = r.nodes.find((n) => n.kind === 'function' && n.name === 'ProcesarDato');
+    const limpiar = r.nodes.find((n) => n.kind === 'function' && n.name === 'LimpiarDato');
+    expect(caller).toBeDefined();
+    expect(procesar).toBeDefined();
+    expect(limpiar).toBeDefined();
+    const edges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.source === caller?.id,
+    );
+    const processedEdge = edges.find((e) => e.target === procesar?.id);
+    const cleanedEdge = edges.find((e) => e.target === limpiar?.id);
+    expect(processedEdge).toBeDefined();
+    expect(cleanedEdge).toBeDefined();
+  });
+
+  it('`GoTo` clause after `If … Then` is silent (GoTo is a control-flow keyword, not a Sub call)', () => {
+    // Defense-in-depth guard at the clause level: even if a project had a
+    // Sub named `GoToSomething`, the clause-level splitter explicitly skips
+    // any sub-clause that starts with the bare `GoTo` keyword (mirrors the
+    // blacklisting in `emitStatementCallEdge`).
+    const src = [
+      'Public Sub Caller()',
+      '    If Err.Number <> 0 Then GoTo fin',
+      'fin:',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    // No calls edge with a `GoTo*` target.
+    const gotoEdges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return typeof tgt?.name === 'string' && /^(GoTo|GoToSomething)/.test(tgt.name);
+    });
+    expect(gotoEdges).toHaveLength(0);
+  });
+
+  it('`Exit Sub` clause after `If … Then` is silent (Exit is a control-flow keyword)', () => {
+    const src = [
+      'Public Sub Caller()',
+      '    If Err.Number <> 0 Then Exit Sub',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const exitEdges = r.edges.filter((e) => {
+      if (e.kind !== 'calls') return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return typeof tgt?.name === 'string' && /^Exit$/i.test(tgt.name);
+    });
+    expect(exitEdges).toHaveLength(0);
+  });
+
+  it('multi-statement `If x Then DoA: DoB` (colon-separated) emits BOTH calls edges', () => {
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then DoA: DoB',
+      'End Sub',
+      'Public Sub DoA()',
+      'End Sub',
+      'Public Sub DoB()',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const doA = r.nodes.find((n) => n.kind === 'function' && n.name === 'DoA');
+    const doB = r.nodes.find((n) => n.kind === 'function' && n.name === 'DoB');
+    expect(caller).toBeDefined();
+    expect(doA).toBeDefined();
+    expect(doB).toBeDefined();
+    const edges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.source === caller?.id,
+    );
+    expect(edges.find((e) => e.target === doA?.id)).toBeDefined();
+    expect(edges.find((e) => e.target === doB?.id)).toBeDefined();
+  });
+
+  it('block-form `If x Then` on its own line with body on next line is unchanged', () => {
+    // Regression guard: the `If … Then` matcher ONLY fires when something
+    // comes after `Then` on the same line (the single-line If shape). When
+    // `Then` is the last token on the line, the body lives on subsequent
+    // lines and is picked up by the existing per-line call-site scan that
+    // already handles bare `Foo` on a line of its own.
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then',
+      '        Foo',
+      '    End If',
+      'End Sub',
+      'Public Sub Foo()',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const foo = r.nodes.find((n) => n.kind === 'function' && n.name === 'Foo');
+    expect(caller).toBeDefined();
+    expect(foo).toBeDefined();
+    // The existing per-line call-site scan emits the edge from `Caller` to
+    // `Foo` regardless of which line `Foo` is on, so this regression
+    // guard asserts the same behavior is preserved.
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.source === caller?.id && e.target === foo?.id,
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('`Call` keyword with statement-form arguments after `If … Then` also emits a calls edge', () => {
+    // The `Call Foo arg` form (Call keyword, no parens) is the same call
+    // shape after the `Call ` keyword is stripped — keep parity with the
+    // pre-existing H1 invariant for `Call Sub 1, 2` standalone.
+    const src = [
+      'Public Sub Caller()',
+      '    If x > 0 Then Call GestionarError',
+      'End Sub',
+      'Public Sub GestionarError()',
+      '    \' body',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Caller');
+    const gestionar = r.nodes.find((n) => n.kind === 'function' && n.name === 'GestionarError');
+    expect(caller).toBeDefined();
+    expect(gestionar).toBeDefined();
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.source === caller?.id && e.target === gestionar?.id,
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('a qualified statement-form call after `If … Then` follows the existing qualified-call gate', () => {
+    // `m_Srv.Registrar 1` inside an `If … Then` body — pre-#45 this dropped
+    // the call silently because the leading identifier was `If`. Post-fix,
+    // the qualified detector runs on the clause and emits an edge IF the
+    // receiver is in `localVarTypeMap` as a non-primitive (Fix 2 invariant
+    // preserved).
+    const src = [
+      'Sub Outer()',
+      '    Dim m_Srv As Srv',
+      '    If x > 0 Then m_Srv.Registrar 1',
+      'End Sub',
+    ].join('\n');
+
+    const r = extract('src/modules/modCaller.bas', src);
+    const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Outer');
+    expect(caller).toBeDefined();
+    // Stub for `Srv.Registrar` (resolved class type, Fix 2 / #12a).
+    const stubEdge = r.edges.find((e) => {
+      if (e.kind !== 'calls') return false;
+      if (e.source !== caller?.id) return false;
+      const tgt = r.nodes.find((n) => n.id === e.target);
+      return tgt?.name === 'Srv.Registrar';
+    });
+    expect(stubEdge).toBeDefined();
+  });
+});
+

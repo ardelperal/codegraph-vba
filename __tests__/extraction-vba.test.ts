@@ -156,23 +156,177 @@ End Sub`;
     expect(target?.name).toContain('modHelpers');
   });
 
-  it('unresolvable qualified call (no parens) emits NO edge when receiver is not a local declared variable (Fix 2)', () => {
-    // After Fix 2 (gated qualified stmt calls): a receiver that is not
-    // declared as a file-local Dim/Private/Public variable is SILENT —
-    // aligns with REQ-CODE-4 "Unresolvable call is silent".
-    // The previous Fix 7 behavior (always emit) is now restricted to
-    // receivers declared as file-local variables typed as project classes.
+  it('qualified paren-form call on primitive local variable is silent', () => {
     const src = `Sub RunIt()
-  UnknownExternal.Whatever
+  Dim nCount As Long
+  nCount.ToString()
 End Sub`;
     const r = extract('src/modules/Solo.bas', src);
-    // UnknownExternal is not declared in the file → no edge emitted.
-    const edgesToUnknown = r.edges.filter((e) => {
-      const tgt = r.nodes.find((n) => n.id === e.target);
-      return tgt?.name?.startsWith('UnknownExternal');
+    const edgesToPrimitive = r.edges.filter((e) => {
+      const target = r.nodes.find((n) => n.id === e.target);
+      return e.kind === 'calls' && target?.name === 'nCount.ToString';
     });
-    expect(edgesToUnknown).toHaveLength(0);
-    // No extraction errors.
+    expect(edgesToPrimitive).toHaveLength(0);
+    const primitiveStub = r.nodes.find((n) => n.kind === 'function' && n.name === 'nCount.ToString');
+    expect(primitiveStub).toBeUndefined();
+    expect(r.errors).toHaveLength(0);
+  });
+
+  it('qualified paren-form call on external local variable is silent', () => {
+    const src = `Sub RunIt()
+  Dim rcdDatos As DAO.Recordset
+  rcdDatos.AddNew()
+End Sub`;
+    const r = extract('src/modules/Solo.bas', src);
+    const edgesToExternal = r.edges.filter((e) => {
+      const target = r.nodes.find((n) => n.id === e.target);
+      return e.kind === 'calls' && target?.name === 'rcdDatos.AddNew';
+    });
+    expect(edgesToExternal).toHaveLength(0);
+    const externalStub = r.nodes.find((n) => n.kind === 'function' && n.name === 'rcdDatos.AddNew');
+    expect(externalStub).toBeUndefined();
+    expect(r.errors).toHaveLength(0);
+  });
+
+  it('qualified statement-form call on undeclared module receiver emits heuristic edge', () => {
+    const src = `Sub RunIt()
+  modUtils.Foo arg
+End Sub`;
+    const r = extract('src/modules/Solo.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    expect(edge).toBeDefined();
+    expect(edge?.metadata?.receiverType).toBe('modUtils');
+    expect(edge?.metadata?.member).toBe('Foo');
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('modUtils.Foo');
+    expect(r.errors).toHaveLength(0);
+  });
+
+  it('qualified statement-form call on primitive (Variant) local variable is silent', () => {
+    // Issue #40: the unified `shouldProcessQualifiedCall` gate must
+    // suppress the heuristic stub for declared primitive-typed locals in
+    // BOTH call shapes. The statement form is the shape that was silently
+    // dropping cross-module calls before #40; after the fix it must also
+    // suppress primitive stubs symmetrically with the paren form.
+    const src = `Sub RunIt()
+  Dim x As Variant
+  x.Foo arg
+End Sub`;
+    const r = extract('src/modules/Solo.bas', src);
+    const edgesToPrimitive = r.edges.filter((e) => {
+      const target = r.nodes.find((n) => n.id === e.target);
+      return e.kind === 'calls' && target?.name === 'x.Foo';
+    });
+    expect(edgesToPrimitive).toHaveLength(0);
+    const primitiveStub = r.nodes.find((n) => n.kind === 'function' && n.name === 'x.Foo');
+    expect(primitiveStub).toBeUndefined();
+    expect(r.errors).toHaveLength(0);
+  });
+
+  it('qualified statement-form call on external (DAO) local variable is silent', () => {
+    // Issue #40: the unified gate must suppress the heuristic stub for
+    // declared external-typed locals (e.g. `DAO.Database`) in the
+    // statement form, mirroring the paren-form behaviour pinned at
+    // line 175. Without this, `db.OpenRecordset sql` would emit a
+    // `db.OpenRecordset` function stub that does not exist anywhere in
+    // the project.
+    const src = `Sub RunIt()
+  Dim db As DAO.Database
+  db.OpenRecordset sql
+End Sub`;
+    const r = extract('src/modules/Solo.bas', src);
+    const edgesToExternal = r.edges.filter((e) => {
+      const target = r.nodes.find((n) => n.id === e.target);
+      return e.kind === 'calls' && target?.name === 'db.OpenRecordset';
+    });
+    expect(edgesToExternal).toHaveLength(0);
+    const externalStub = r.nodes.find((n) => n.kind === 'function' && n.name === 'db.OpenRecordset');
+    expect(externalStub).toBeUndefined();
+    expect(r.errors).toHaveLength(0);
+  });
+
+  // Issue #40 — deterministic acceptance criteria (a)–(c).
+  //
+  // The original "fix" by commit 9b1787a only wired the unified
+  // `shouldProcessQualifiedCall` gate into the PAREN-form call site,
+  // leaving the statement-form path gating on the old
+  // `isLocalProjectClassVar` (which returns `false` for undeclared
+  // receivers). The cherry-pick onto main has now applied the same gate
+  // to the statement form (see the unified-gate comment at line ~1940
+  // in `vba-extractor.ts`). These three tests pin the three acceptance
+  // criteria from the issue body so that any future regression is
+  // caught.
+
+  it('AC (a): statement-form `db.OpenRecordset sql` with `Dim db As DAO.Database` does NOT emit a `db.OpenRecordset` stub', () => {
+    const src = `Sub RunIt()
+  Dim db As DAO.Database
+  Set rs = db.OpenRecordset(sql)
+End Sub`;
+    const r = extract('src/modules/Solo.bas', src);
+    const stub = r.nodes.find((n) => n.kind === 'function' && n.name === 'db.OpenRecordset');
+    expect(stub).toBeUndefined();
+    const callsToStub = r.edges.filter((e) => {
+      const t = r.nodes.find((n) => n.id === e.target);
+      return e.kind === 'calls' && t?.name === 'db.OpenRecordset';
+    });
+    expect(callsToStub).toHaveLength(0);
+    expect(r.errors).toHaveLength(0);
+  });
+
+  it('AC (b): both paren-form and statement-form `modUtils.Foo` emit a heuristic calls edge when sibling module `modUtils` exists', () => {
+    // Index a sibling module so the resolver can repoint the heuristic
+    // stub. We test the extractor in isolation (no resolver), so the
+    // acceptance is "edge + stub emitted" — the resolver behaviour is
+    // covered by `resolution` tests separately.
+    //
+    // Two call shapes on different lines each emit one heuristic edge
+    // to a stub named `modUtils.Foo`. The shared `callDedupe` set keeps
+    // the same (caller, qualified, line) tuple from emitting twice;
+    // here the two calls live on DIFFERENT lines, so both edges land.
+    const src = `Sub RunIt()
+  modUtils.Foo arg
+  modUtils.Foo(arg)
+End Sub`;
+    const r = extract('src/modules/Caller.bas', src);
+    const hEdges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.provenance === 'heuristic' &&
+             e.metadata?.synthesizedBy === 'vba-name-resolution',
+    );
+    // Both call shapes should each produce one heuristic edge.
+    expect(hEdges.length).toBeGreaterThanOrEqual(2);
+    const modUtilsEdges = hEdges.filter((e) => {
+      const t = r.nodes.find((n) => n.id === e.target);
+      return e.metadata?.receiverType === 'modUtils' &&
+             e.metadata?.member === 'Foo' &&
+             t?.name === 'modUtils.Foo';
+    });
+    expect(modUtilsEdges.length).toBe(2);
+    expect(r.errors).toHaveLength(0);
+  });
+
+  it('AC (c): statement-form `m_NCOp.Registrar args` with `Dim m_NCOp As NCOperaciones` emits a resolved edge to `NCOperaciones.Registrar`', () => {
+    const src = `Sub RunIt()
+  Dim m_NCOp As NCOperaciones
+  m_NCOp.Registrar args
+End Sub`;
+    const r = extract('src/modules/Caller.bas', src);
+    const edges = r.edges.filter(
+      (e) => e.kind === 'calls' && e.metadata?.receiverType === 'NCOperaciones' &&
+             e.metadata?.member === 'Registrar',
+    );
+    expect(edges.length).toBeGreaterThanOrEqual(1);
+    const target = r.nodes.find((n) => n.id === edges[0]?.target);
+    // Resolved — the receiver type is the class name (NCOperaciones),
+    // not the local variable name (m_NCOp).
+    expect(target?.name).toBe('NCOperaciones.Registrar');
+    expect(target?.metadata?.stub).toBe(true);
+    // The un-resolved stub must NOT exist (that was the original P1
+    // pollution bug).
+    const wrongStub = r.nodes.find((n) => n.kind === 'function' && n.name === 'm_NCOp.Registrar');
+    expect(wrongStub).toBeUndefined();
     expect(r.errors).toHaveLength(0);
   });
 });
@@ -1741,8 +1895,8 @@ describe('VbaExtractor — one synthetic node per SQL table name (Fix 5)', () =>
  */
 describe('VbaExtractor — qualified statement-form calls emit heuristic edges (Fix 7)', () => {
   it('Receiver.Method arg (no parens) emits a heuristic calls edge when receiver is a local project-class var', () => {
-    // Fix 2 (Issue #2): receiver must be declared as a file-local variable
-    // typed as a simple (non-qualified, non-primitive) class.
+    // Declared project-class receivers stay eligible and resolve to the class
+    // name so the heuristic edge can match real `.cls` methods.
     const src = [
       'Sub Outer()',
       '  Dim m_NCOp As NCOperaciones',
@@ -1766,7 +1920,8 @@ describe('VbaExtractor — qualified statement-form calls emit heuristic edges (
   });
 
   it('Receiver.Method (no args, no parens) also emits a heuristic calls edge when receiver is declared', () => {
-    // Fix 2 (Issue #2): receiver must be in the local var type map.
+    // Declared project-class receivers remain eligible through the unified
+    // qualified-call gate.
     const src = [
       'Sub Outer()',
       '  Dim m_Obj As SomeClass',
@@ -2833,15 +2988,19 @@ describe('VbaExtractor — Variant / untyped vars do not emit qualified-call stu
   });
 
   it('regression: cross-module qualified call `modUtils.Foo(1)` still emits a calls edge to `modUtils.Foo`', () => {
-    // Critical regression guard: the refined gate MUST NOT regress
-    // cross-module qualified calls. `modUtils` is NOT in
-    // `localVarTypeMap` (it is not declared as a local variable) so the
-    // refined gate is skipped and the existing heuristic stub is
-    // emitted — the post-extraction resolver may repoint it to a real
-    // `modUtils.Foo` if one exists. (The statement form `modUtils.Foo 1`
-    // is silent today because `detectQualifiedStatementCall` already
-    // gates on `isLocalProjectClassVar` — the paren form is the path
-    // being fixed and the regression guard pins it.)
+    // Critical regression guard: the unified `shouldProcessQualifiedCall`
+    // gate MUST NOT regress cross-module qualified calls. `modUtils` is
+    // NOT in `localVarTypeMap` (it is not declared as a local variable)
+    // so the unified gate treats it as a module-name candidate and the
+    // heuristic stub is emitted — the post-extraction resolver may
+    // repoint it to a real `modUtils.Foo` if one exists.
+    //
+    // After Issue #40, the statement form `modUtils.Foo arg` follows
+    // the SAME unified gate (it now routes through
+    // `shouldProcessQualifiedCall` instead of the older
+    // `isLocalProjectClassVar`-only path) — so it also emits. This is
+    // pinned separately by the "qualified statement-form call on
+    // undeclared module receiver emits heuristic edge" test.
     const src = [
       'Sub F4()',
       '  modUtils.Foo(1)',
@@ -3044,11 +3203,18 @@ describe('VbaExtractor — bracketed receivers (Issue #54)', () => {
     // so the stub's qualifiedName matches `FUNCIONES UTILES.FormatearFecha`.
     //
     // Note: the literal prompt example `[FUNCIONES UTILES].FormatearFecha fecha`
-    // (with the bracketed module name as the call receiver, no Dim) is
-    // intentionally SILENT — same gate as the existing
-    // `UnknownExternal.Whatever` "unresolvable qualified call" atom. The
-    // regex must accept the bracketed form (proven by the paren-form test
-    // above) but the gate on `isLocalProjectClassVar` is unchanged.
+    // (with the bracketed module name as the call receiver, no Dim) goes
+    // through the unified `shouldProcessQualifiedCall` gate: the bracket
+    // strip inside `isLocalProjectClassVar` does not find
+    // `FUNCIONES UTILES` in `localVarTypeMap` (no Dim), so the gate
+    // classifies the receiver as an undeclared module-name candidate and
+    // EMITS the heuristic `FUNCIONES UTILES.FormatearFecha` stub —
+    // matching the paren-form behaviour and letting the post-extraction
+    // resolver repoint to the real sibling module if one exists.
+    //
+    // The `UnknownExternal.Whatever` shape (where the receiver IS a
+    // declared external primitive/qualified type) is what stays silent,
+    // via the `entry.qualified` branch inside the same unified gate.
     const src = [
       'Sub Outer()',
       '  Dim m_FU As [FUNCIONES UTILES]',

@@ -24,22 +24,22 @@ concurrency:
 
 jobs:
   test:
-    name: build + vitest (Node ${{ matrix.node-version }}, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: build + vitest (Node ${{ matrix.node-version }}, windows-latest)
+    runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
         # Match the engines field: >=22.5.0 <25.0.0. CodeGraph uses the
         # built-in node:sqlite API, which is only available from Node 22.5+.
         node-version: [22]
-        # Linux is the gating runner — every PR must pass it. Windows is
-        # advisory: certain tests have pre-existing Windows-only EPERM
-        # failures documented in CLAUDE.md, so we don't block PRs on it.
-        # continue-on-error handles the inverse: a Linux failure still
-        # fails the PR, but a Windows-only failure shows up as a yellow
-        # check rather than red.
-        os: [ubuntu-latest, windows-latest]
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+        # Windows-only: this project's primary target is Microsoft Access / VBA
+        # (Dysflow-corpus workflows, Access binary integration, Access-specific
+        # extraction paths in src/extraction/vba-*.ts). The remaining surface
+        # (TS / Python / Go / tree-sitter cross-language stuff) is Node.js
+        # and SQLite — both fully Windows-compatible — so an Ubuntu matrix leg
+        # adds CI minutes without exercising anything the Windows leg doesn't
+        # already cover. Drop it; revisit if/when a Linux-specific failure
+        # mode appears in production.
     steps:
       - name: Checkout
         uses: actions/checkout@v6

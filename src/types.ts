@@ -54,8 +54,14 @@ export const NODE_KINDS = [
   // CommandButton, etc.) and is the bridge target for `event-handler`
   // edges synthesized from `<Control>_<Event>` handler Subs in the
   // sibling `.cls`.
+  // 'report-layout' — Issue #48: the report-level stub node synthesized
+  // for `DoCmd.OpenReport "<Name>"`. Mirrors `form-layout` but is keyed
+  // to the report naming convention (`Report_<Name>` qualifiedName).
+  // Distinct kind so downstream tooling can filter form-vs-report stubs
+  // without inspecting qualifiedName.
   'form-layout',
   'form-instance-control',
+  'report-layout',
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -85,8 +91,14 @@ export type EdgeKind =
   // the calling function to a target form module. Carries
   // `metadata.targetFormName` until the target `.cls`/`.form.txt` is
   // indexed and resolved.
+  // 'opens-report' — Issue #48: `DoCmd.OpenReport "<ReportName>"`
+  // modeled as an edge from the calling function to a target report
+  // module. Carries `metadata.targetReportName`. Symmetric to
+  // `opens-form` (different edge kind, different stub kind, different
+  // qualifiedName prefix `Report_<Name>` vs `Form_<Name>`).
   | 'event-handler'
   | 'opens-form'
+  | 'opens-report'
   | 'raises-event'
   | 'subscribes-event'
   | 'type-member';

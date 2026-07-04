@@ -221,3 +221,246 @@ End`;
     expect(imgProps).toHaveLength(1);
   });
 });
+
+/**
+ * Issue #49 — RecordSource/RowSource bindings → `references` edges to
+ * placeholder class nodes (one per table/query). The form-level
+ * RecordSource attributes to the form-layout node with tag
+ * `'vba-record-source'`; per-control RowSources attribute to the
+ * enclosing `form-instance-control` node with tag `'vba-row-source'`.
+ * Value-list controls (`RowSourceType = "Value List"`) are skipped.
+ */
+describe('VbaFormExtractor — RecordSource / RowSource bindings emit references edges (Issue #49)', () => {
+  it('Issue #49: form-level RecordSource = "TbExpedientes" emits one references edge to a class placeholder', () => {
+    const src = `Attribute VB_Name = "Form_Expedientes"
+Begin Form
+    RecordSource = "TbExpedientes"
+    Begin TextBox
+        Name = "txtId"
+    End
+End`;
+    const r = extract('src/forms/Form_Expedientes.form.txt', src);
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    expect(formNode).toBeDefined();
+    // Exactly one references edge from form-layout with tag vba-record-source.
+    const recordEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-record-source',
+    );
+    expect(recordEdges).toHaveLength(1);
+    expect(recordEdges[0]?.source).toBe(formNode?.id);
+    // The edge target is a synthetic `class` placeholder named TbExpedientes.
+    const target = r.nodes.find((n) => n.id === recordEdges[0]?.target);
+    expect(target).toBeDefined();
+    expect(target?.kind).toBe('class');
+    expect(target?.name).toBe('TbExpedientes');
+    expect(target?.qualifiedName).toBe('TbExpedientes');
+  });
+
+  it('Issue #49: form-level RecordSource with SELECT/FROM SQL emits one references edge per table', () => {
+    const src = `Attribute VB_Name = "Form_Usuarios"
+Begin Form
+    RecordSource = "SELECT Id, Nombre FROM TbUsuarios ORDER BY Nombre"
+    Begin TextBox
+        Name = "txtNombre"
+    End
+End`;
+    const r = extract('src/forms/Form_Usuarios.form.txt', src);
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    expect(formNode).toBeDefined();
+    const recordEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-record-source',
+    );
+    // Exactly one edge to TbUsuarios (the SELECT/FROM/ORDER BY clauses
+    // do not produce additional references — only the FROM clause's
+    // table name does).
+    expect(recordEdges).toHaveLength(1);
+    expect(recordEdges[0]?.source).toBe(formNode?.id);
+    const target = r.nodes.find((n) => n.id === recordEdges[0]?.target);
+    expect(target?.name).toBe('TbUsuarios');
+  });
+
+  it('Issue #49: ComboBox RowSource SQL emits one references edge from the form-instance-control node', () => {
+    const src = `Attribute VB_Name = "Form_Pedidos"
+Begin Form
+    Begin ComboBox
+        Name = "cmbProvincias"
+        RowSource = "SELECT Id, Nombre FROM TbProvincias"
+    End
+End`;
+    const r = extract('src/forms/Form_Pedidos.form.txt', src);
+    const controlNode = r.nodes.find(
+      (n) => n.kind === 'form-instance-control' && n.name === 'cmbProvincias',
+    );
+    expect(controlNode).toBeDefined();
+    const rowEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-row-source',
+    );
+    expect(rowEdges).toHaveLength(1);
+    // Edge source is the form-instance-control node, NOT the form-layout.
+    expect(rowEdges[0]?.source).toBe(controlNode?.id);
+    const target = r.nodes.find((n) => n.id === rowEdges[0]?.target);
+    expect(target?.kind).toBe('class');
+    expect(target?.name).toBe('TbProvincias');
+  });
+
+  it('Issue #49: ComboBox with RowSourceType = "Value List" emits ZERO references edges', () => {
+    const src = `Attribute VB_Name = "Form_Pedidos"
+Begin Form
+    Begin ComboBox
+        Name = "cmbEstados"
+        RowSourceType = "Value List"
+        RowSource = "uno;dos;tres"
+    End
+End`;
+    const r = extract('src/forms/Form_Pedidos.form.txt', src);
+    // No references edges from this combo — value-list is skipped.
+    const valueListEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-row-source',
+    );
+    expect(valueListEdges).toHaveLength(0);
+    // And no class placeholder node for the literal list values.
+    const synthClasses = r.nodes.filter(
+      (n) => n.kind === 'class' && n.name === 'uno;dos;tres',
+    );
+    expect(synthClasses).toHaveLength(0);
+  });
+
+  it('Issue #49: mix of SQL RowSource and Value List RowSource — only SQL controls emit edges', () => {
+    const src = `Attribute VB_Name = "Form_Pedidos"
+Begin Form
+    Begin ComboBox
+        Name = "cmbProvincias"
+        RowSource = "SELECT Id FROM TbProvincias"
+    End
+    Begin ComboBox
+        Name = "cmbEstados"
+        RowSourceType = "Value List"
+        RowSource = "uno;dos;tres"
+    End
+    Begin ComboBox
+        Name = "cmbCiudades"
+        RowSource = "SELECT Id FROM TbCiudades ORDER BY Id"
+    End
+End`;
+    const r = extract('src/forms/Form_Pedidos.form.txt', src);
+    // Exactly 2 vba-row-source edges: TbProvincias + TbCiudades.
+    // The Value List combo (cmbEstados) is skipped.
+    const rowEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-row-source',
+    );
+    expect(rowEdges).toHaveLength(2);
+    const targets = rowEdges
+      .map((e) => r.nodes.find((n) => n.id === e.target))
+      .map((n) => n?.name)
+      .sort();
+    expect(targets).toEqual(['TbCiudades', 'TbProvincias']);
+    // Each edge sources from its own combo control, not from the form-layout.
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    for (const e of rowEdges) {
+      expect(e.source).not.toBe(formNode?.id);
+    }
+  });
+
+  it('Issue #49: REQ-FORM-4 invariant — no function/sub/module/event/declare/type nodes from form files with bindings', () => {
+    const src = `Attribute VB_Name = "Form_Expedientes"
+Begin Form
+    RecordSource = "TbExpedientes"
+    Begin ComboBox
+        Name = "cmbEstados"
+        RowSource = "SELECT Id FROM TbEstados"
+    End
+End`;
+    const r = extract('src/forms/Form_Expedientes.form.txt', src);
+    // The form's own node stays `form-layout` — never `class` (the
+    // form's class binding is an UnresolvedReference, NOT a class node).
+    const formFileClass = r.nodes.filter(
+      (n) =>
+        n.kind === 'class' &&
+        n.name === 'Form_Expedientes' &&
+        n.filePath.endsWith('.form.txt'),
+    );
+    expect(formFileClass).toHaveLength(0);
+    // No executable-code kinds.
+    const codeKinds = [
+      'function',
+      'module',
+      'event',
+      'declare',
+      'type',
+    ] as const;
+    for (const k of codeKinds) {
+      const codeNodes = r.nodes.filter((n) => n.kind === k);
+      expect(codeNodes, `no ${k} nodes from form files`).toHaveLength(0);
+    }
+    // The synthetic `class` placeholder nodes ARE emitted for the
+    // referenced tables — that's the new behavior, not a violation of
+    // REQ-FORM-4 (which forbids the form's OWN class binding as a node).
+    const tableClasses = r.nodes.filter(
+      (n) => n.kind === 'class' && n.filePath.endsWith('.form.txt'),
+    );
+    expect(tableClasses.length).toBeGreaterThanOrEqual(2);
+    const tableNames = tableClasses.map((n) => n.name).sort();
+    expect(tableNames).toEqual(['TbEstados', 'TbExpedientes']);
+  });
+
+  it('Issue #49: RowSource at form-level (outside any control Begin block) falls back to form-layout as source', () => {
+    const src = `Attribute VB_Name = "Form_Expedientes"
+Begin Form
+    RowSource = "SELECT Id FROM TbFoo"
+End`;
+    const r = extract('src/forms/Form_Expedientes.form.txt', src);
+    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    expect(formNode).toBeDefined();
+    const rowEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-row-source',
+    );
+    expect(rowEdges).toHaveLength(1);
+    // No form-instance-control scope → fall back to form-layout node.
+    expect(rowEdges[0]?.source).toBe(formNode?.id);
+    const target = r.nodes.find((n) => n.id === rowEdges[0]?.target);
+    expect(target?.name).toBe('TbFoo');
+  });
+
+  it('Issue #49: same table referenced from RecordSource and RowSource collapses to ONE class node but TWO edges', () => {
+    const src = `Attribute VB_Name = "Form_Expedientes"
+Begin Form
+    RecordSource = "TbExpedientes"
+    Begin ComboBox
+        Name = "cmbExpedientes"
+        RowSource = "SELECT Id FROM TbExpedientes"
+    End
+End`;
+    const r = extract('src/forms/Form_Expedientes.form.txt', src);
+    const classNodes = r.nodes.filter(
+      (n) =>
+        n.kind === 'class' &&
+        n.name === 'TbExpedientes' &&
+        n.filePath.endsWith('.form.txt'),
+    );
+    // One placeholder class node for TbExpedientes regardless of how
+    // many call sites reference it.
+    expect(classNodes).toHaveLength(1);
+    // But TWO edges: one vba-record-source from form-layout, one
+    // vba-row-source from cmbExpedientes.
+    const refs = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.target === classNodes[0]?.id,
+    );
+    expect(refs).toHaveLength(2);
+    const tags = refs.map((e) => e.metadata?.synthesizedBy).sort();
+    expect(tags).toEqual(['vba-record-source', 'vba-row-source']);
+  });
+});

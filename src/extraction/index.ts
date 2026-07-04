@@ -19,6 +19,7 @@ import {
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
+import { readVbaSource, isVbaFamilyFile } from './vba-source';
 import { ParseWorkerPool, resolveParsePoolSize } from './parse-pool';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns } from '../project-config';
@@ -107,6 +108,26 @@ export interface SyncResult {
  */
 export function hashContent(content: string): string {
   return crypto.createHash('sha256').update(content).digest('hex');
+}
+
+/**
+ * Issue #53: read extraction source with encoding-robust decode for VBA-family
+ * files (BOM strip + CP1252 fallback), byte-identical to the plain UTF-8 read
+ * for every other language. The same read must feed extraction, storage, and
+ * change-detection hashing so a BOM-carrying or CP1252 VBA file doesn't hash
+ * differently at detect-time than what was stored (perpetual "modified").
+ */
+async function readForExtraction(fullPath: string): Promise<string> {
+  return isVbaFamilyFile(fullPath)
+    ? readVbaSource(fullPath).text
+    : await fsp.readFile(fullPath, 'utf-8');
+}
+
+/** Synchronous counterpart of {@link readForExtraction} for the sync read sites. */
+function readForExtractionSync(fullPath: string): string {
+  return isVbaFamilyFile(fullPath)
+    ? readVbaSource(fullPath).text
+    : fs.readFileSync(fullPath, 'utf-8');
 }
 
 /**
@@ -1388,7 +1409,7 @@ export class ExtractionOrchestrator {
               logWarn('Path traversal blocked in batch reader', { filePath: fp });
               return { filePath: fp, content: null as string | null, stats: null as fs.Stats | null, error: new Error('Path traversal blocked') };
             }
-            const content = await fsp.readFile(fullPath, 'utf-8');
+            const content = await readForExtraction(fullPath);
             const stats = await fsp.stat(fullPath);
             return { filePath: fp, content, stats, error: null as Error | null };
           } catch (err) {
@@ -1500,7 +1521,7 @@ export class ExtractionOrchestrator {
         try {
           const fullPath = validatePathWithinRoot(this.rootDir, filePath);
           if (!fullPath) continue;
-          content = await fsp.readFile(fullPath, 'utf-8');
+          content = await readForExtraction(fullPath);
         } catch {
           continue;
         }
@@ -1544,7 +1565,7 @@ export class ExtractionOrchestrator {
           try {
             const fullPath = validatePathWithinRoot(this.rootDir, filePath);
             if (!fullPath) continue;
-            fullContent = await fsp.readFile(fullPath, 'utf-8');
+            fullContent = await readForExtraction(fullPath);
           } catch {
             continue;
           }
@@ -1664,7 +1685,7 @@ export class ExtractionOrchestrator {
     let stats: fs.Stats;
     try {
       stats = await fsp.stat(fullPath);
-      content = await fsp.readFile(fullPath, 'utf-8');
+      content = await readForExtraction(fullPath);
     } catch (error) {
       return {
         nodes: [],
@@ -1959,7 +1980,7 @@ export class ExtractionOrchestrator {
       // New, or size/mtime changed — read + hash to confirm a real content change.
       let content: string;
       try {
-        content = fs.readFileSync(fullPath, 'utf-8');
+        content = readForExtractionSync(fullPath);
       } catch (error) {
         logDebug('Skipping unreadable file during sync', { filePath, error: String(error) });
         continue;
@@ -2043,7 +2064,7 @@ export class ExtractionOrchestrator {
         const fullPath = path.join(this.rootDir, filePath);
         let content: string;
         try {
-          content = fs.readFileSync(fullPath, 'utf-8');
+          content = readForExtractionSync(fullPath);
         } catch (error) {
           logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
           continue;
@@ -2088,7 +2109,7 @@ export class ExtractionOrchestrator {
       const fullPath = path.join(this.rootDir, filePath);
       let content: string;
       try {
-        content = fs.readFileSync(fullPath, 'utf-8');
+        content = readForExtractionSync(fullPath);
       } catch (error) {
         logDebug('Skipping unreadable file while detecting changes', { filePath, error: String(error) });
         continue;

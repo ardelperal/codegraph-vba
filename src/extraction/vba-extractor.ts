@@ -966,6 +966,17 @@ export class VbaExtractor {
     /^\s*(?:(Public|Private|Friend|Global)\s+)?Const\s+(.+)$/i;
 
   /**
+   * Issue #52: shared `End Sub` / `End Function` / `End Property` marker.
+   * Promoted from a local regex in `sweepCallsAndSql` so `sweepEnumsAndConsts`
+   * can walk the same proc boundaries and decide Const scope per line.
+   * The `(?:^|:\s*)` prefix tolerates colon-separated single-line procs
+   * (`Public Sub X(): ... : End Sub`) so the proc stack pops on the same
+   * physical line.
+   */
+  private static readonly PROCEDURE_END_RE =
+    /(?:^|:\s*)End\s+(?:Sub|Function|Property)\b/i;
+
+  /**
    * Fold a VBA visibility keyword to the canonical lowercase enum, matching
    * the procedure convention: `Private` → 'private'; `Public`, `Global`,
    * `Friend`, or none → 'public' (VBA's default module-level `Const`/`Enum`
@@ -993,9 +1004,38 @@ export class VbaExtractor {
     let count = 0;
     let currentEnum: { id: string; name: string } | null = null;
 
+    // Issue #52: reset the shared scope stack + lookup key so leftover
+    // state from a previous extract() (impossible in production but
+    // possible in unit tests that construct a fresh extractor and run
+    // twice) never leaks across sweeps. The walk below updates both
+    // every iteration; `sweepCallsAndSql` resets again at its own
+    // start, before any OpenForm/OpenQuery reader consults them.
+    this.procStack.length = 0;
+    this.currentProcKey = 'module';
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
       const lineNum = i + 1;
+
+      // Issue #52: track proc scope so Const declarations on this line
+      // can decide whether they belong to the module (currentProcKey
+      // === 'module') or to the top-most procedure (write the per-proc
+      // bucket, skip the module-level `constant` node emission).
+      //
+      // PROC_RE cannot overlap with CONST_DECL_RE on the same physical
+      // line (different leading keywords), so it is safe to advance the
+      // stack here and then fall through to the rest of the body.
+      const procStart = VbaExtractor.PROC_RE.exec(line);
+      if (procStart) {
+        this.procStack.push(lineNum);
+        this.currentProcKey = String(lineNum);
+      } else if (VbaExtractor.PROCEDURE_END_RE.test(line) && this.procStack.length > 0) {
+        this.procStack.pop();
+        this.currentProcKey =
+          this.procStack.length > 0
+            ? String(this.procStack[this.procStack.length - 1])
+            : 'module';
+      }
 
       if (currentEnum) {
         if (VbaExtractor.ENUM_END_RE.test(line)) {
@@ -1070,9 +1110,19 @@ export class VbaExtractor {
         for (const declaration of declarations) {
           const constName = declaration.name;
           if (!constName) continue;
+          // Issue #52: every Const line (module-level or proc-local)
+          // writes into a per-scope resolution bucket so
+          // `DoCmd.OpenForm FORM_X` later resolves correctly; module-level
+          // Consts additionally emit a `constant` graph node + the
+          // module→constant `contains` edge. Proc-local Consts skip both
+          // (the const is not a module symbol, so the wrong-containment
+          // node + edge the pre-fix code emitted are gone), but the
+          // per-proc bucket keeps OpenForm/OpenQuery argument
+          // resolution working exactly as before.
           if (declaration.value !== null) {
-            this.localConstants.set(constName.toLowerCase(), declaration.value);
+            this.setLocalConstInScope(this.currentProcKey, constName, declaration.value);
           }
+          if (this.procStack.length > 0) continue;
           const constId = generateNodeId(
             this.filePath,
             'constant',
@@ -1659,13 +1709,16 @@ export class VbaExtractor {
   private sweepCallsAndSql(src: string): void {
     const lines = src.split('\n');
     const procedureStartLines = new Set<number>();
-    // S5 fix: also match `End Sub`/`End Function`/`End Property` after a
-    // colon (`:`), so single-line `Public Sub X(): End Sub` is recognized
-    // as ending the procedure. The previous `/^\s*End...` only matched at
-    // line start, so the proc stack never popped for colon-separated
-    // single-line declarations.
-    const procedureEndRe = /(?:^|:\s*)End\s+(?:Sub|Function|Property)\b/i;
     const sqlTargetsThisFile = new Set<string>();
+
+    // Issue #52: reset the shared scope state before the per-line walk
+    // begins. `sweepEnumsAndConsts` already populated `procStack` /
+    // `currentProcKey` during its own walk; clearing here guarantees the
+    // `scanDoCmdOpenCalls` / `scanDoCmdOpenQuery` reads (which consult
+    // `currentProcKey` per call-site) start in module scope and follow
+    // the same push/pop discipline as the existing `stack` array below.
+    this.procStack.length = 0;
+    this.currentProcKey = 'module';
 
     // Walk the source once, emitting call edges and SQL edges per line and
     // tracking the current procedure stack. The previous implementation
@@ -1687,6 +1740,15 @@ export class VbaExtractor {
 
       const procStart = VbaExtractor.PROC_RE.exec(line);
       if (procStart) {
+        // Issue #52: mirror the proc push into the shared
+        // `procStack` + `currentProcKey` so Const reads in this same
+        // sweep see the same scope as the const writes did (during
+        // `sweepEnumsAndConsts`). Uses the same `startLine` key used
+        // for the `localConstants` bucket.
+        const procStartLine = lineNum;
+        this.procStack.push(procStartLine);
+        this.currentProcKey = String(procStartLine);
+
         const name = procStart[3] ?? '';
         const bucket = this.localProcs.get(name);
         if (bucket) {
@@ -1699,8 +1761,14 @@ export class VbaExtractor {
           if (proc) stack.push(proc);
         }
         procedureStartLines.add(lineNum);
-      } else if (procedureEndRe.test(line) && stack.length > 0) {
+      } else if (VbaExtractor.PROCEDURE_END_RE.test(line) && stack.length > 0) {
         const ending = stack.pop()!;
+        // Issue #52: mirror the pop into the shared scope state.
+        this.procStack.pop();
+        this.currentProcKey =
+          this.procStack.length > 0
+            ? String(this.procStack[this.procStack.length - 1])
+            : 'module';
         procEndLines.set(ending.startLine, lineNum);
         continue;
       }
@@ -2486,9 +2554,13 @@ export class VbaExtractor {
       let m: RegExpExecArray | null;
       while ((m = localRe.exec(line)) !== null) {
         const rawArg = (m[1] ?? '').trim();
+        // Issue #52: const lookup is now per-proc-bucket with module
+        // fallback (see `resolveLocalConst`). Two procs declaring the
+        // same Const name with different values no longer collide —
+        // each call site uses the value visible at its own scope.
         const targetName = rawArg.startsWith('"')
           ? unwrapVbaStringLiteral(rawArg)
-          : (this.localConstants.get(rawArg.toLowerCase()) ?? rawArg);
+          : (this.resolveLocalConst(rawArg) ?? rawArg);
         if (!targetName) continue;
         this.emitOpensStubEdge(
           dispatch,
@@ -2628,9 +2700,15 @@ export class VbaExtractor {
     let m: RegExpExecArray | null;
     while ((m = localRe.exec(line)) !== null) {
       const rawArg = (m[1] ?? '').trim();
+      // Issue #52: same per-proc-with-module-fallback lookup as
+      // `scanDoCmdOpenCalls` — proc-local consts resolve to their own
+      // values, so a `DoCmd.OpenQuery LOCAL_QUERY` inside `Sub X()`
+      // points at the correct query even when another proc declares a
+      // different `LOCAL_QUERY` (pre-fix this was whichever wrote
+      // the file-wide map last).
       const targetName = rawArg.startsWith('"')
         ? unwrapVbaStringLiteral(rawArg)
-        : (this.localConstants.get(rawArg.toLowerCase()) ?? rawArg);
+        : (this.resolveLocalConst(rawArg) ?? rawArg);
       if (!targetName) continue;
       this.unresolvedReferences.push({
         fromNodeId: this.findOrCreateFunctionNodeId(caller),
@@ -2874,8 +2952,78 @@ export class VbaExtractor {
     assignedWithSet?: boolean;
   }>();
 
-  /** Local constant name (lowercase) → simple literal value for OpenForm resolution. */
-  private localConstants = new Map<string, string>();
+  /**
+   * Issue #52: Const resolution buckets, scoped per procedure. Key is
+   * `'module'` for module-level Consts, or the procedure's `startLine`
+   * (stringified) for proc-local Consts. Each bucket maps the lowercase
+   * constant name to its simple-literal value (used by `DoCmd.OpenForm` /
+   * `OpenReport` / `OpenQuery` argument resolution via `resolveLocalConst`).
+   *
+   * Two procs declaring the same Const name with different values stay
+   * isolated (each in its own bucket); reads look up the current proc's
+   * bucket first and fall back to the module bucket. The bucket-per-proc
+   * model was chosen over a single file-wide Map (the pre-fix shape) so
+   * `DoCmd.OpenForm FORM_DESTINO` resolves to the proc-local value, not
+   * whichever was written last.
+   */
+  private localConstants: Map<'module' | string, Map<string, string>> = new Map();
+
+  /**
+   * Issue #52: shared lookup helper for `scanDoCmdOpenCalls` and
+   * `scanDoCmdOpenQuery`. The current scope is the procedure whose
+   * `startLine` is on top of `procStack` (or `'module'` when the stack is
+   * empty). Per-proc bucket first; module bucket is the fallback.
+   */
+  private resolveLocalConst(name: string): string | undefined {
+    const lower = name.toLowerCase();
+    const procBucket = this.localConstants.get(this.currentProcKey);
+    if (procBucket) {
+      const v = procBucket.get(lower);
+      if (v !== undefined) return v;
+    }
+    const moduleBucket = this.localConstants.get('module');
+    return moduleBucket?.get(lower);
+  }
+
+  /**
+   * Issue #52: shared writer. `scopeKey` is `'module'` or the procedure's
+   * startLine-as-string. Creates the bucket lazily so callers do not have
+   * to pre-allocate per proc. Returns the bucket the value was written to
+   * (mostly useful for tests; production code ignores it).
+   */
+  private setLocalConstInScope(
+    scopeKey: 'module' | string,
+    name: string,
+    value: string,
+  ): Map<string, string> {
+    let bucket = this.localConstants.get(scopeKey);
+    if (!bucket) {
+      bucket = new Map<string, string>();
+      this.localConstants.set(scopeKey, bucket);
+    }
+    bucket.set(name.toLowerCase(), value);
+    return bucket;
+  }
+
+  /**
+   * Issue #52: the current Const-lookup scope. `'module'` when no procedure
+   * is open, otherwise the top-of-stack proc's `startLine` as a string.
+   * Both `sweepEnumsAndConsts` (to decide whether to emit a `constant`
+   * node) and `sweepCallsAndSql` (to drive OpenForm/OpenQuery resolution)
+   * keep this in sync with their per-line stack walk by pushing/popping
+   * `procStack` and writing the new top's key here.
+   */
+  private currentProcKey: 'module' | string = 'module';
+
+  /**
+   * Issue #52: per-extraction proc-stack shared between `sweepEnumsAndConsts`
+   * and `sweepCallsAndSql`. Each sweep clears it at the start so the file's
+   * mid-proc structural state never leaks across sweeps. Holds the
+   * `startLine` (1-based, matches `ProcInfo.startLine`) of every procedure
+   * whose body the sweep has not yet emitted `End Sub`/`End Function`/
+   * `End Property` for.
+   */
+  private procStack: number[] = [];
 
   /** Local event name (lowercase) → event node for `RaiseEvent` edge emission. */
   private localEvents = new Map<string, Node>();

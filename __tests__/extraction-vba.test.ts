@@ -29,6 +29,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { VbaExtractor } from '../src/extraction/vba-extractor';
+import { generateNodeId } from '../src/extraction/tree-sitter-helpers';
 
 function extract(filePath: string, source: string) {
   return new VbaExtractor(filePath, source).extract();
@@ -892,6 +893,241 @@ End Sub`;
       (n) => n.kind === 'function' && /Forms|FormX|txtY/.test(n.name),
     );
     expect(synthFns).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #48: DoCmd.OpenReport & DoCmd.OpenQuery built-in modeling — sibling
+// coverage to the OpenForm hueco-6 implementation. OpenReport mirrors the
+// OpenForm stub+edge pattern (Report_<Name> qualifiedName, report-layout
+// stub kind, opens-report edge kind, targetReportName metadata key,
+// vba-opens-report synthesizedBy). OpenQuery is structurally different: it
+// emits a single UnresolvedReference (not a stub + edge) so the resolver
+// binds to the REAL `query` node emitted by SqlQueryExtractor for
+// `queries/<Name>.sql` — same shape as vba-me-control / vba-forms-bang.
+//
+// Acceptance criteria covered (one test each):
+//   1.  Literal target emits opens-report edge + report-layout stub
+//   2.  Const-resolved target emits opens-report edge with resolved name
+//   3.  Unresolved Const falls back to bare identifier (no edge skipped)
+//   4.  Stub id is deterministic across re-index (id formula check)
+//   5.  DoCmd.OpenReport does NOT emit a synthetic `function` node (W4)
+//   6.  Two DoCmd.OpenReport "SameName" calls → exactly ONE stub (de-dup)
+//   7.  Literal target emits one UnresolvedReference with synthesizedBy
+//       `vba-opens-query`, no synthetic `function` / `query` node
+//   8.  Const-resolved query emits UnresolvedReference with resolved name
+//   9.  Unresolved Const falls back to bare identifier
+//   10. DoCmd.OpenQuery does NOT emit a synthetic `function` node (W4)
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — DoCmd.OpenReport built-in modeling (Issue #48)', () => {
+  it('DoCmd.OpenReport "InformeMensual" (literal) emits an opens-report edge to a report-layout stub', () => {
+    const src = `Public Sub PrintIt()
+    DoCmd.OpenReport "InformeMensual"
+End Sub`;
+    const r = extract('src/modules/modReports.bas', src);
+
+    const edge = r.edges.find((e) => e.kind === 'opens-report');
+    expect(edge).toBeDefined();
+    expect(edge?.provenance).toBe('heuristic');
+    expect(edge?.metadata?.synthesizedBy).toBe('vba-opens-report');
+    expect(edge?.metadata?.targetReportName).toBe('InformeMensual');
+    // OpenForm's key MUST NOT leak into OpenReport metadata.
+    expect(edge?.metadata?.targetFormName).toBeUndefined();
+
+    const stub = r.nodes.find((n) => n.id === edge?.target);
+    expect(stub).toBeDefined();
+    expect(stub?.kind).toBe('report-layout');
+    expect(stub?.name).toBe('InformeMensual');
+    expect(stub?.qualifiedName).toBe('Report_InformeMensual');
+    expect(stub?.metadata?.stub).toBe(true);
+  });
+
+  it('DoCmd.OpenReport REPORT_MENSUAL (Const-resolved) emits the resolved name "InformeMensual"', () => {
+    // Mirrors the OpenForm Const-fallback test shape — known Const is
+    // resolved to its literal value, unknown Const falls back to the bare
+    // identifier.
+    const src = [
+      'Const REPORT_MENSUAL As String = "InformeMensual"',
+      'Sub PrintKnown()',
+      '  DoCmd.OpenReport REPORT_MENSUAL',
+      '  DoCmd.OpenReport REPORT_UNKNOWN',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modReports.bas', src);
+
+    const reportEdges = r.edges.filter((e) => e.kind === 'opens-report');
+    expect(reportEdges.length).toBe(2);
+
+    const targets = reportEdges
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .sort();
+    expect(targets).toEqual(['InformeMensual', 'REPORT_UNKNOWN']);
+
+    // Both edges must carry the resolved targetReportName in metadata.
+    const toInformeMensual = reportEdges.find(
+      (e) => e.metadata?.targetReportName === 'InformeMensual',
+    );
+    expect(toInformeMensual).toBeDefined();
+    expect(toInformeMensual?.metadata?.synthesizedBy).toBe('vba-opens-report');
+
+    // Unknown Const: edge still emitted, falls back to bare identifier.
+    const toUnknown = reportEdges.find(
+      (e) => e.metadata?.targetReportName === 'REPORT_UNKNOWN',
+    );
+    expect(toUnknown).toBeDefined();
+    const unknownStub = r.nodes.find((n) => n.id === toUnknown?.target);
+    expect(unknownStub?.qualifiedName).toBe('Report_REPORT_UNKNOWN');
+  });
+
+  it('stub id for DoCmd.OpenReport "InformeMensual" is deterministic across re-index (matches generateNodeId formula)', () => {
+    // Deterministic-id invariant: the stub id is computed from a synthetic
+    // file path (`synthetic:opensReportStub/<Name>.form.txt`) and the
+    // kind/name/line tuple. Re-indexing the same source MUST produce the
+    // SAME id (so per-file INSERT OR REPLACE collapses to a no-op and the
+    // graph stays stable). The synthetic path uses `.form.txt` for both
+    // OpenForm and OpenReport (see `emitOpensStubEdge` comment); the
+    // dispatch table's `moduleNamePrefix` is what carries the
+    // `Report_<Name>` vs `Form_<Name>` qualifiedName convention.
+    const src = `Public Sub PrintIt()
+    DoCmd.OpenReport "InformeMensual"
+End Sub`;
+
+    const expectedStubId = generateNodeId(
+      'synthetic:opensReportStub/InformeMensual.report.txt',
+      'report-layout',
+      'InformeMensual',
+      0,
+    );
+
+    const r1 = extract('src/modules/modReports.bas', src);
+    const r2 = extract('src/modules/modReports.bas', src);
+    const edge1 = r1.edges.find((e) => e.kind === 'opens-report');
+    const edge2 = r2.edges.find((e) => e.kind === 'opens-report');
+    expect(edge1?.target).toBe(expectedStubId);
+    expect(edge2?.target).toBe(expectedStubId);
+    expect(edge1?.target).toBe(edge2?.target);
+  });
+
+  it('DoCmd.OpenReport does not emit a synthetic function node (W4 invariant)', () => {
+    // Mirrors the W4 guard for OpenForm (line ~647). `DoCmd` is in
+    // RUNTIME_RECEIVER_BLACKLIST, so the generic CALL_RE path skips it;
+    // the dedicated dispatch must NOT regress to emitting a synthetic
+    // `DoCmd.OpenReport` `function` node (would pollute the graph per W4).
+    const src = `Public Sub X()
+    DoCmd.OpenReport "InformeMensual"
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const synthFns = r.nodes.filter(
+      (n) => n.kind === 'function' && n.name.includes('DoCmd.OpenReport'),
+    );
+    expect(synthFns).toHaveLength(0);
+  });
+
+  it('two DoCmd.OpenReport "SameName" calls in one file produce exactly ONE report-layout stub (de-dup invariant)', () => {
+    // The opensStubIdsByKey cache (keyed by `${cacheKey}:${lowerName}`)
+    // must collapse N call sites to a single stub. Verifies the Issue #48
+    // refactor preserved the de-dup contract while moving from a name-keyed
+    // cache to a (method, name)-keyed cache.
+    const src = [
+      'Sub PrintTwice()',
+      '  DoCmd.OpenReport "SameName"',
+      '  DoCmd.OpenReport "SameName"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modReports.bas', src);
+
+    const stubs = r.nodes.filter(
+      (n) => n.kind === 'report-layout' && n.name === 'SameName',
+    );
+    expect(stubs).toHaveLength(1);
+
+    const edges = r.edges.filter((e) => e.kind === 'opens-report');
+    expect(edges.length).toBe(2);
+    // Both edges MUST point at the SAME stub id (the de-dup invariant).
+    const uniqueTargets = new Set(edges.map((e) => e.target));
+    expect(uniqueTargets.size).toBe(1);
+  });
+});
+
+describe('VbaExtractor — DoCmd.OpenQuery built-in modeling (Issue #48)', () => {
+  it('DoCmd.OpenQuery "Consulta1" (literal) emits ONE UnresolvedReference with synthesizedBy vba-opens-query', () => {
+    // OpenQuery is structurally different from OpenForm/OpenReport: it
+    // emits an UnresolvedReference (NOT a stub + edge) so the resolver
+    // binds to the REAL `query` node emitted by SqlQueryExtractor for
+    // `queries/<Name>.sql`. Same emission shape as vba-me-control /
+    // vba-forms-bang.
+    const src = `Public Sub OpenIt()
+    DoCmd.OpenQuery "Consulta1"
+End Sub`;
+    const r = extract('src/modules/modQueries.bas', src);
+
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-opens-query',
+    );
+    expect(refs.length).toBe(1);
+    expect(refs[0]?.referenceName).toBe('Consulta1');
+    expect(refs[0]?.referenceKind).toBe('references');
+
+    // No stub nodes (OpenQuery doesn't synthesize one).
+    const stubs = r.nodes.filter((n) => n.kind === 'report-layout' || n.kind === 'form-layout');
+    expect(stubs.some((s) => s.name === 'Consulta1')).toBe(false);
+    // No opens-form / opens-report edges either (the resolver binds the
+    // UnresolvedReference when the matching .sql is indexed).
+    const openEdges = r.edges.filter(
+      (e) => e.kind === 'opens-form' || e.kind === 'opens-report',
+    );
+    expect(openEdges).toHaveLength(0);
+  });
+
+  it('DoCmd.OpenQuery CONSULTA_DEPURACION (Const-resolved) emits UnresolvedReference with resolved name', () => {
+    const src = [
+      'Const CONSULTA_DEPURACION As String = "qDepuracion"',
+      'Sub OpenDepuration()',
+      '  DoCmd.OpenQuery CONSULTA_DEPURACION',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modQueries.bas', src);
+
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-opens-query',
+    );
+    expect(refs.length).toBe(1);
+    expect(refs[0]?.referenceName).toBe('qDepuracion');
+    expect(refs[0]?.referenceKind).toBe('references');
+  });
+
+  it('DoCmd.OpenQuery CONSULTA_UNKNOWN (Const not defined) falls back to bare identifier', () => {
+    const src = `Public Sub OpenIt()
+    DoCmd.OpenQuery CONSULTA_UNKNOWN
+End Sub`;
+    const r = extract('src/modules/modQueries.bas', src);
+
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-opens-query',
+    );
+    expect(refs.length).toBe(1);
+    expect(refs[0]?.referenceName).toBe('CONSULTA_UNKNOWN');
+  });
+
+  it('DoCmd.OpenQuery does not emit a synthetic function node (W4 invariant)', () => {
+    // Mirrors the W4 guard for OpenForm / OpenReport. The dedicated
+    // OpenQuery scanner emits UnresolvedReferences, NOT synthetic
+    // `function` / `query` nodes (the real `query` node already exists in
+    // the index once `queries/<Name>.sql` is processed, and creating
+    // stubs would compete with the binding).
+    const src = `Public Sub X()
+    DoCmd.OpenQuery "Consulta1"
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const synthFns = r.nodes.filter(
+      (n) => n.kind === 'function' && n.name.includes('DoCmd.OpenQuery'),
+    );
+    expect(synthFns).toHaveLength(0);
+    // VbaExtractor must not synthesize a `query` node either — that kind
+    // belongs to SqlQueryExtractor's output, not the VBA scanner.
+    const synthQueries = r.nodes.filter((n) => n.kind === 'query');
+    expect(synthQueries).toHaveLength(0);
   });
 });
 

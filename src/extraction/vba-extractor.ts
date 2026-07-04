@@ -1180,6 +1180,101 @@ export class VbaExtractor {
   private static readonly OPEN_FORM_ARG_RE =
     /\bDoCmd\.OpenForm\s+("(?:(?:[^"]|"")*)"|\p{L}[\p{L}\p{N}_]*)/gu;
 
+  /**
+   * Issue #48: `DoCmd.OpenReport "<ReportName>"` modelling regex — sibling
+   * of `OPEN_FORM_ARG_RE` (hueco 6 expanded). Same literal-or-bare-id argument
+   * capture (group 1) and same trailing positional-args drop. The dispatch
+   * table `DOCMD_OPEN_DISPATCH` (below) carries the per-method metadata so
+   * OpenForm and OpenReport share the same scan/emit pipeline while their
+   * edge kinds (`opens-form` vs `opens-report`), stub node kinds
+   * (`form-layout` vs `report-layout`), synthetic file-path prefixes, and
+   * qualifiedName prefixes (`Form_<Name>` vs `Report_<Name>`) stay
+   * distinct.
+   */
+  private static readonly OPEN_REPORT_ARG_RE =
+    /\bDoCmd\.OpenReport\s+("(?:(?:[^"]|"")*)"|\p{L}[\p{L}\p{N}_]*)/gu;
+
+  /**
+   * Issue #48 dispatch table — shared literal-or-Const argument resolution
+   * for `DoCmd.OpenForm` and `DoCmd.OpenReport`. Each entry is everything
+   * `scanDoCmdOpenCalls` + `emitOpensStubEdge` need to share the pipeline
+   * between methods while keeping the per-method names distinct.
+   *
+   * OpenQuery is intentionally NOT in this dispatch — it emits an
+   * `UnresolvedReference` (not a stub + edge), resolution to the REAL
+   * `query` node emitted by `SqlQueryExtractor`. See
+   * `OPEN_QUERY_ARG_RE` + `scanDoCmdOpenQuery`.
+   *
+   * Why a separate dispatch: `DoCmd` is in `RUNTIME_RECEIVER_BLACKLIST`
+   * (R4 invariant), so ALL of these methods are intentionally SKIPPED by
+   * the generic `CALL_RE` path that would otherwise emit a junk `calls`
+   * edge to a synthetic `function` node for `DoCmd.OpenX`. This dispatch
+   * matches BEFORE the call-site scan and uses its own emission path.
+   */
+  private static readonly DOCMD_OPEN_DISPATCH: ReadonlyArray<{
+    method: 'OpenForm' | 'OpenReport';
+    re: RegExp;
+    edgeKind: 'opens-form' | 'opens-report';
+    stubKind: 'form-layout' | 'report-layout';
+    syntheticPrefix: 'synthetic:opensFormStub' | 'synthetic:opensReportStub';
+    /** Synthetic file extension. OpenForm uses `.form.txt` to mirror the
+     * real `.form.txt` extension a `Form_<Name>` module exports; OpenReport
+     * uses `.report.txt` to mirror the real `.report.txt` extension a
+     * `Report_<Name>` module exports. Per Issue #48 spec: the synthetic
+     * path is `synthetic:opensReportStub/<Name>.report.txt`. */
+    syntheticExtension: '.form.txt' | '.report.txt';
+    moduleNamePrefix: 'Form_' | 'Report_';
+    /** Cache key prefix (e.g. `OpenForm`, `OpenReport`) — keeps the two
+     * stubs in disjoint de-dup buckets within a file. */
+    cacheKey: 'OpenForm' | 'OpenReport';
+    /** Edge metadata key (`targetFormName` for OpenForm, `targetReportName`
+     * for OpenReport). OpenForm's literal key value MUST stay `targetFormName`
+     * because the existing B4 test (hueco 6) and
+     * `DoCmd.OpenForm CONST-fallback` regression assert on it. */
+    metadataTargetKey: 'targetFormName' | 'targetReportName';
+    synthesizedBy: 'vba-opens-form' | 'vba-opens-report';
+  }> = [
+    {
+      method: 'OpenForm',
+      re: VbaExtractor.OPEN_FORM_ARG_RE,
+      edgeKind: 'opens-form',
+      stubKind: 'form-layout',
+      syntheticPrefix: 'synthetic:opensFormStub',
+      syntheticExtension: '.form.txt',
+      moduleNamePrefix: 'Form_',
+      cacheKey: 'OpenForm',
+      metadataTargetKey: 'targetFormName',
+      synthesizedBy: 'vba-opens-form',
+    },
+    {
+      method: 'OpenReport',
+      re: VbaExtractor.OPEN_REPORT_ARG_RE,
+      edgeKind: 'opens-report',
+      stubKind: 'report-layout',
+      syntheticPrefix: 'synthetic:opensReportStub',
+      syntheticExtension: '.report.txt',
+      moduleNamePrefix: 'Report_',
+      cacheKey: 'OpenReport',
+      metadataTargetKey: 'targetReportName',
+      synthesizedBy: 'vba-opens-report',
+    },
+  ];
+
+  /**
+   * Issue #48: `DoCmd.OpenQuery "<QueryName>"` modelling regex. Emits an
+   * `UnresolvedReference` (NOT a stub + edge) so the resolver binds to the
+   * REAL `query` node `SqlQueryExtractor` emits for `queries/<Name>.sql`
+   * — the same shape as `vba-me-control` and `vba-forms-bang`. The query
+   * may not yet exist in the index when the .bas is parsed; the resolver
+   * does the binding when the .sql is later indexed.
+   *
+   * Argument shape: identical to OpenForm/OpenReport — literal `"..."` or
+   * bare identifier resolved against local `Const` declarations, falling
+   * back to the bare identifier when unknown.
+   */
+  private static readonly OPEN_QUERY_ARG_RE =
+    /\bDoCmd\.OpenQuery\s+("(?:(?:[^"]|"")*)"|\p{L}[\p{L}\p{N}_]*)/gu;
+
   /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
   private static readonly SQL_VAR_ASSIGN_RE =
     /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*(.*)$/iu;
@@ -1758,9 +1853,16 @@ export class VbaExtractor {
         // node id (the same pattern the cross-file incoming-edges
         // snapshot already uses at `index.ts:getCrossFileIncomingEdges`).
         const caller2 = stack[stack.length - 1]!;
-        this.scanOpenFormCalls(line, caller2, lineNum);
+        // Issue #48: shared OpenForm/OpenReport dispatch via
+        // `scanDoCmdOpenCalls` (formerly `scanOpenFormCalls`, refactored to
+        // iterate the `DOCMD_OPEN_DISPATCH` table — OpenForm behavior is
+        // byte-identical to pre-#48). The OpenQuery scanner emits an
+        // `UnresolvedReference` and stays separate from the dispatch since
+        // its emission shape (no stub + edge) differs.
+        this.scanDoCmdOpenCalls(line, caller2, lineNum);
+        this.scanDoCmdOpenQuery(line, caller2, lineNum);
         // Issue #44: cross-form bang references (`Forms!X` / `Forms("X")!Y`).
-        // Same line context as `scanOpenFormCalls` — the form name lives in
+        // Same line context as `scanDoCmdOpenCalls` — the form name lives in
         // a string literal in the paren form, so we MUST scan the unmasked
         // line. The scanner is independent of `scanCallSites` because
         // `Forms` is in `RUNTIME_RECEIVER_BLACKLIST` and would otherwise be
@@ -1926,12 +2028,15 @@ export class VbaExtractor {
   private callDedupe = new Set<string>();
   private synthFunctionNodeIds = new Set<string>();
   /**
-   * B4 (hueco 6): cache of stub `form-layout` node ids we've already emitted
-   * for a given target form name in this file. Avoids emitting duplicate
-   * stubs when `DoCmd.OpenForm "FormTest"` shows up N times across N calls.
-   * Keyed by the lowercased form name so `FormTest` / `formtest` collapse.
+   * B4 (hueco 6) extended by Issue #48: cache of stub node ids we've already
+   * emitted for a given (method, target name) pair in this file. Avoids
+   * emitting duplicate stubs when `DoCmd.OpenForm "FormTest"` or
+   * `DoCmd.OpenReport "InformeMensual"` shows up N times across N calls.
+   * Keyed by `${cacheKey}:${lowerName}` so the OpenForm and OpenReport
+   * de-dup buckets stay disjoint — `OpenForm:Form1` ≠ `OpenReport:Form1`.
+   * The name part is lowercased so `FormTest` / `formtest` collapse.
    */
-  private opensFormStubIdsByName = new Map<string, string>();
+  private opensStubIdsByKey = new Map<string, string>();
 
   /**
    * Hueco 1: scan a line for `Me.<ControlName>` / `Me!<ControlName>`
@@ -2332,100 +2437,135 @@ export class VbaExtractor {
   }
 
   /**
-   * B4 (hueco 6): scan one line of VBA source for `DoCmd.OpenForm "X"`
-   * calls. For each match, emit:
-   *  - a stub `form-layout` node for the target form (cached by name so
-   *    the same form referenced from N sites emits exactly ONE stub),
-   *  - an `opens-form` heuristic edge from the calling Sub to that stub.
+   * B4 (hueco 6) extended by Issue #48: scan one line of VBA source for
+   * `DoCmd.OpenX "Target"` calls where X ∈ {Form, Report} (see the
+   * `DOCMD_OPEN_DISPATCH` table). For each match, emit:
+   *  - a stub node (form-layout / report-layout) for the target, cached
+   *    per-(method, name) so the same target referenced from N sites
+   *    emits exactly ONE stub,
+   *  - an `opens-form` / `opens-report` heuristic edge from the calling
+   *    Sub to that stub.
    *
    * Both endpoints are pushed into `this.nodes` / `this.edges`, so the
    * per-file edge filter at `index.ts:insertedIds.has(source) &&
    * insertedIds.has(target)` passes the edge naturally without any
    * exemption to the filter.
    *
-   * Why a stub and not a direct lookup: the target form lives in a
-   * DIFFERENT file (its own `.form.txt`), and the extractor doesn't have
-   * DB access at parse time. The stub's synthetic file path
-   * (`synthetic:opensFormStub/<FormName>.form.txt`) guarantees a
-   * deterministic node id so re-indexes collapse to the same stub.
-   * When the consumer's `.form.txt` is later indexed, the real
-   * `form-layout` node carries a different id (it uses the real file
-   * path); the stub and the real coexist harmlessly. The orchestrator
-   * flagged this as acceptable for B4 — only `OpenForm` is in scope.
-   * `OpenReport`, `OpenQuery`, `OpenTable`, … are follow-up work.
+   * Why a stub and not a direct lookup: the target form/report lives in a
+   * DIFFERENT file (its own `.form.txt` / `.report.txt`), and the extractor
+   * doesn't have DB access at parse time. The stub's synthetic file path
+   * (`synthetic:opensFormStub/<Name>.form.txt` /
+   * `synthetic:opensReportStub/<Name>.form.txt`) guarantees a deterministic
+   * node id so re-indexes collapse to the same stub. When the consumer's
+   * `.form.txt` / `.report.txt` is later indexed, the real
+   * `form-layout` / `report-layout` node carries a different id (it uses
+   * the real file path); the stub and the real coexist harmlessly.
    *
-   * Scope note: this regex matches literal-string and bare-identifier forms.
-   * Bare identifiers are resolved only through local `Const` declarations;
-   * arbitrary variable data-flow remains intentionally out of scope.
+   * Why a separate dispatch from CALL_RE: `DoCmd` is in
+   * `RUNTIME_RECEIVER_BLACKLIST` (R4 invariant), so `DoCmd.OpenForm` /
+   * `DoCmd.OpenReport` are intentionally SKIPPED by the generic CALL_RE
+   * path that would otherwise emit a junk `calls` edge to a synthetic
+   * `function` node for `DoCmd.OpenX`. The dispatch below matches BEFORE
+   * the call-site scan and uses its own emission path.
+   *
+   * Scope note: literal-string and bare-identifier argument forms are
+   * supported. Bare identifiers resolve only through local `Const`
+   * declarations; arbitrary variable data-flow remains intentionally
+   * out of scope.
    */
-  private scanOpenFormCalls(
+  private scanDoCmdOpenCalls(
     line: string,
     caller: ProcInfo,
     lineNum: number,
   ): void {
-    // Each regex has /g so we MUST reset `lastIndex` before use; cloning
-    // the regex is the simplest way to avoid leaking state across lines.
-    const localRe = new RegExp(
-      VbaExtractor.OPEN_FORM_ARG_RE.source,
-      VbaExtractor.OPEN_FORM_ARG_RE.flags,
-    );
-    let m: RegExpExecArray | null;
-    while ((m = localRe.exec(line)) !== null) {
-      const rawArg = (m[1] ?? '').trim();
-      const targetFormName = rawArg.startsWith('"')
-        ? unwrapVbaStringLiteral(rawArg)
-        : (this.localConstants.get(rawArg.toLowerCase()) ?? rawArg);
-      if (!targetFormName) continue;
-      this.emitOpensFormEdge(caller, targetFormName, lineNum, m.index);
+    for (const dispatch of VbaExtractor.DOCMD_OPEN_DISPATCH) {
+      // Each regex has /g so we MUST reset `lastIndex` before use; cloning
+      // the regex is the simplest way to avoid leaking state across lines
+      // AND across dispatch iterations.
+      const localRe = new RegExp(dispatch.re.source, dispatch.re.flags);
+      let m: RegExpExecArray | null;
+      while ((m = localRe.exec(line)) !== null) {
+        const rawArg = (m[1] ?? '').trim();
+        const targetName = rawArg.startsWith('"')
+          ? unwrapVbaStringLiteral(rawArg)
+          : (this.localConstants.get(rawArg.toLowerCase()) ?? rawArg);
+        if (!targetName) continue;
+        this.emitOpensStubEdge(
+          dispatch,
+          caller,
+          targetName,
+          lineNum,
+          m.index,
+        );
+      }
     }
   }
 
   /**
-   * B4 (hueco 6): emit a stub `form-layout` node for `targetFormName`
-   * (cached so duplicates collapse) and an `opens-form` heuristic edge
+   * B4 (hueco 6) extended by Issue #48: emit a stub `form-layout` /
+   * `report-layout` node for `targetName` (cached per dispatch entry so
+   * duplicates collapse and OpenForm/OpenReport de-dup buckets stay
+   * disjoint) and a single `opens-form` / `opens-report` heuristic edge
    * from `caller` to that stub.
    *
    * The edge carries:
-   *  - `kind: 'opens-form'`                — new cross-file edge kind
-   *  - `provenance: 'heuristic'`           — synthesized, not parsed
-   *  - `metadata.targetFormName`           — the captured literal
-   *  - `metadata.synthesizedBy: 'vba-opens-form'` — distinguishes this
-   *    synthesis from the dim/sql/event-handler families
+   *  - `kind` — dispatch-specific (`opens-form` / `opens-report`)
+   *  - `provenance: 'heuristic'` — synthesized, not parsed
+   *  - `metadata.<dispatchTargetKey>` (e.g. `targetFormName`) — the resolved name
+   *  - `metadata.synthesizedBy` — dispatch-specific (`vba-opens-form` /
+   *    `vba-opens-report`); distinguishes this synthesis from the
+   *    dim/sql/event-handler families
    *
    * The stub's `metadata.stub: true` flag lets downstream UI render
-   * unresolved references distinctly (e.g. with a dashed border) and
-   * gives later re-resolution pass a hook for collapse. The stub is
+   * stubs distinctly (e.g. with a dashed border) and gives later
+   * re-resolution pass a hook for collapse. The stub is
    * line-independent (`line = 0`) so re-indexes produce identical ids.
    */
-  private emitOpensFormEdge(
+  private emitOpensStubEdge(
+    dispatch: {
+      method: 'OpenForm' | 'OpenReport';
+      edgeKind: 'opens-form' | 'opens-report';
+      stubKind: 'form-layout' | 'report-layout';
+      syntheticPrefix: 'synthetic:opensFormStub' | 'synthetic:opensReportStub';
+      syntheticExtension: '.form.txt' | '.report.txt';
+      moduleNamePrefix: 'Form_' | 'Report_';
+      cacheKey: 'OpenForm' | 'OpenReport';
+      metadataTargetKey: 'targetFormName' | 'targetReportName';
+      synthesizedBy: 'vba-opens-form' | 'vba-opens-report';
+    },
     caller: ProcInfo,
-    targetFormName: string,
+    targetName: string,
     lineNum: number,
     column: number,
   ): void {
-    const key = targetFormName.toLowerCase();
-    let stubId = this.opensFormStubIdsByName.get(key);
+    const key = `${dispatch.cacheKey}:${targetName.toLowerCase()}`;
+    let stubId = this.opensStubIdsByKey.get(key);
     if (!stubId) {
       // Synthetic file path keeps the stub's id deterministic AND
-      // disambiguates it from any real `.form.txt` indexed later.
-      // The directory prefix (`synthetic:opensFormStub/`) is intentionally
-      // not a real filesystem path — it just namespaces the id space.
-      const syntheticFilePath = `synthetic:opensFormStub/${targetFormName}.form.txt`;
+      // disambiguates it from any real `.form.txt` / `.report.txt`
+      // indexed later. The directory prefix (`synthetic:opensFormStub/`
+      // or `synthetic:opensReportStub/`) is intentionally not a real
+      // filesystem path — it just namespaces the id space. The file
+      // extension (`syntheticExtension`) DOES mirror the real form/report
+      // file extension so a reader of the synthetic path can tell the
+      // stub's intent at a glance.
+      const syntheticFilePath = `${dispatch.syntheticPrefix}/${targetName}${dispatch.syntheticExtension}`;
       stubId = generateNodeId(
         syntheticFilePath,
-        'form-layout',
-        targetFormName,
+        dispatch.stubKind,
+        targetName,
         0,
       );
-      this.opensFormStubIdsByName.set(key, stubId);
+      this.opensStubIdsByKey.set(key, stubId);
       this.nodes.push({
         id: stubId,
-        kind: 'form-layout',
-        name: targetFormName,
-        // Convention: form module names in Access are `Form_<Name>`.
-        // We follow the same convention in the synthetic stub's
-        // qualifiedName so cross-file lookups can find it consistently.
-        qualifiedName: `Form_${targetFormName}`,
+        kind: dispatch.stubKind,
+        name: targetName,
+        // Convention: form module names in Access are `Form_<Name>` and
+        // report module names are `Report_<Name>`. We follow the same
+        // convention in the synthetic stub's qualifiedName so cross-file
+        // lookups can find it consistently.
+        qualifiedName: `${dispatch.moduleNamePrefix}${targetName}`,
         filePath: syntheticFilePath,
         language: 'vba',
         startLine: lineNum,
@@ -2439,15 +2579,70 @@ export class VbaExtractor {
     this.edges.push({
       source: this.findOrCreateFunctionNodeId(caller),
       target: stubId,
-      kind: 'opens-form',
+      kind: dispatch.edgeKind,
       provenance: 'heuristic',
       metadata: {
-        synthesizedBy: 'vba-opens-form',
-        targetFormName,
+        synthesizedBy: dispatch.synthesizedBy,
+        [dispatch.metadataTargetKey]: targetName,
       },
       line: lineNum,
       column,
     });
+  }
+
+  /**
+   * Issue #48: scan one line of VBA source for `DoCmd.OpenQuery "X"` calls.
+   * Each match emits ONE `UnresolvedReference` (NOT a stub + edge) so the
+   * resolver binds to the REAL `query` node that `SqlQueryExtractor`
+   * produces for `queries/<Name>.sql` (dysflow exports every saved QueryDef
+   * + `queries.json` manifest). Falls back to silent when the .sql is not
+   * yet in the index — the resolver does the binding when it's later
+   * indexed, exactly like `vba-me-control` and `vba-forms-bang`.
+   *
+   * Companion to `scanDoCmdOpenCalls` but intentionally NOT in the
+   * dispatch table — OpenQuery's emission shape (`UnresolvedReference`)
+   * is structurally different from OpenForm/OpenReport's (synthetic node
+   * + heuristic edge). The two pipelines share the literal-vs-Const
+   * argument resolution pattern via `localConstants.get(...)` but emit
+   * via two different branches of `unresolvedReferences` vs
+   * `nodes`/`edges`.
+   *
+   * UnresolvedReference shape (per Issue #48 spec — must match
+   * SqlQueryExtractor's query node name exactly):
+   *   - `referenceName`                 = resolved query name
+   *   - `referenceKind: 'references'`    = same kind the resolver binds
+   *   - `metadata.synthesizedBy: 'vba-opens-query'`
+   *   - NO synthetic `function` node (W4 graph-pollution invariant — the
+   *     real `query` node already exists in the index once `.sql` is
+   *     processed, and creating stubs would compete with the binding).
+   */
+  private scanDoCmdOpenQuery(
+    line: string,
+    caller: ProcInfo,
+    lineNum: number,
+  ): void {
+    const localRe = new RegExp(
+      VbaExtractor.OPEN_QUERY_ARG_RE.source,
+      VbaExtractor.OPEN_QUERY_ARG_RE.flags,
+    );
+    let m: RegExpExecArray | null;
+    while ((m = localRe.exec(line)) !== null) {
+      const rawArg = (m[1] ?? '').trim();
+      const targetName = rawArg.startsWith('"')
+        ? unwrapVbaStringLiteral(rawArg)
+        : (this.localConstants.get(rawArg.toLowerCase()) ?? rawArg);
+      if (!targetName) continue;
+      this.unresolvedReferences.push({
+        fromNodeId: this.findOrCreateFunctionNodeId(caller),
+        referenceName: targetName,
+        referenceKind: 'references',
+        line: lineNum,
+        column: m.index,
+        filePath: this.filePath,
+        language: 'vba',
+        metadata: { synthesizedBy: 'vba-opens-query' },
+      });
+    }
   }
 
   /**

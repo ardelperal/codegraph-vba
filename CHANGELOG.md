@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- VBA qualified calls now gate on the same rule in both shapes: the paren form (`modUtils.Foo(...)`) and the statement form (`modUtils.Foo arg`). The previous behavior was inconsistent — a `Dim db As DAO.Database` would emit a bogus `db.OpenRecordset` function stub in one form and stay silent in the other — so impact analysis on a Dysflow project produced phantom calls and missed real cross-module ones. Cross-module `.bas`-qualified calls now resolve in both shapes, and primitive / external-typed local receivers (DAO, ADO, `Variant`, etc.) stay silent in both shapes. (#40)
 
 ## [1.5.0] - 2026-07-04
 

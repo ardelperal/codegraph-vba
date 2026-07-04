@@ -1240,30 +1240,99 @@ export class VbaExtractor {
     /\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
 
   /**
-   * `Me.<ControlName>` reference capture — hole 1 of VBA control-modeling.
+   * `Me.<ControlName>` / `Me!<ControlName>` reference capture — hole 1
+   * of VBA control-modeling. Extended by Issue #44 to accept the bang
+   * form (the default-collection shortcut Access VBA inherits from VB).
    *
-   * Real VBA idiom:
-   *   `Me.lblTitulo.Caption = "Hello"`            ← property assignment
-   *   `Me.txtDescripcion.Value = "World"`          ← property assignment
-   *   `Me.ComandoGrabar.Enabled = True`           ← property assignment
+   * Real VBA idioms:
+   *   `Me.lblTitulo.Caption = "Hello"`            ← dot form, property assignment
+   *   `Me.txtDescripcion.Value = "World"`          ← dot form, property assignment
+   *   `Me.ComandoGrabar.Enabled = True`           ← dot form, property assignment
+   *   `Me!txtNombre = "Hello"`                    ← BANG form (default collection)
+   *   `Me!txtEstado.Value = 1`                    ← BANG form, then property
    *   `If Nz(Me.MotivoBorrado, "") = "" Then`      ← read in expression
    *
    * The existing call-site scanner (CALL_RE) only fires on `Name(`
    * (paren form) and `Me` is in its keyword blacklist anyway, so
    * `Me.<Control>` references are silently invisible. This regex matches
-   * the FIRST identifier after `Me.` regardless of what follows (a
-   * property, an index, an assignment, a call argument, etc.) so the
+   * the FIRST identifier after `Me.` or `Me!` regardless of what follows
+   * (a property, an index, an assignment, a call argument, etc.) so the
    * form → control binding is surfaced as an UnresolvedReference for the
    * resolver to pick up later. Subsequent segments (`.Caption`, `.Value`,
    * `.Enabled`) are intentionally NOT captured — they are properties of
-   * the control, not new symbols.
+   * the control, not new symbols. The bang (`!`) is the default-collection
+   * shortcut: `Me!txtFoo` is semantically identical to `Me.txtFoo` and
+   * produces a byte-identical UnresolvedReference (same `referenceName`,
+   * `referenceKind`, and `metadata.synthesizedBy`) — the regression test
+   * in `__tests__/extraction-vba.test.ts` pins this parity.
    *
    * Provenance: `metadata.synthesizedBy = 'vba-me-control'`. Mirrors the
    * `vba-form-binding` (form→sibling-`.cls`) and `vba-name-resolution`
    * (qualified Dim) patterns already documented on `UnresolvedReference.metadata`
    * in `src/types.ts`.
    */
-  private static readonly ME_CONTROL_RE = /\bMe\.(\p{L}[\p{L}\p{N}_]*)/gu;
+  private static readonly ME_CONTROL_RE = /\bMe[.!](\p{L}[\p{L}\p{N}_]*)/gu;
+
+  /**
+   * Issue #44: `Forms!<FormName>` / `Forms("<FormName>")!<Ctl>` cross-form
+   * reference capture — companion to `ME_CONTROL_RE` above. Access VBA's
+   * default-collection shortcut for cross-form control access, captured
+   * BEFORE the generic call-site scan and emitted as its own
+   * `UnresolvedReference` family.
+   *
+   * Real VBA idioms:
+   *   `Forms!FormX!txtY.Value = 1`         — bang form, with control segment
+   *   `Forms!FormX.Recordsource = "..."`   — bang form, trailing property access
+   *   `Set f = Forms!FormX`                — bang form, no control segment
+   *   `Forms("FormX")!txtY.Value = 1`      — paren form, with control
+   *   `Forms![Mi Formulario]!txtY`         — bracketed form name (#54 mirror)
+   *
+   * Why a dedicated scanner (mirroring `OPEN_FORM_ARG_RE` / B4 / DoCmd.OpenForm):
+   *   `Forms` is in `RUNTIME_RECEIVER_BLACKLIST`, so the generic CALL_RE
+   *   path silently skips both `Forms!X` and `Forms("X")!Y`. Without this
+   *   scanner, cross-form UI traffic from `Forms!FormX!txtY.Value` would
+   *   never surface the form → control binding that the resolver needs to
+   *   glue form `form-layout` nodes to control `form-instance-control`
+   *   nodes. The dedicated dispatch fires BEFORE the call-site scan and
+   *   uses its own emission path; the runtime-blacklist constraint is
+   *   preserved (we intentionally do not rewrite CALL_RE).
+   *
+   * What this scanner emits per match:
+   *   - ONE `UnresolvedReference` whose `referenceName` is the form's
+   *     identifier (stripped of any surrounding quote or bracket
+   *     decoration), tagged `metadata.synthesizedBy = 'vba-forms-bang'`
+   *     and `referenceKind = 'references'`. The control segment (if
+   *     present) is consumed by the regex so `Forms!FormX!txtY.Value` is
+   *     captured as a single match, but the control name is NOT emitted
+   *     as its own reference — control emission is the form's
+   *     responsibility downstream.
+   *   - NO synthetic `function` node (W4 graph-pollution invariant — the
+   *     form is a real `.cls` / `.form.txt` pair the resolver already
+   *     picks up via the `vba-form-binding` path). Without this guard the
+   *     bang form would synthesize one stub per cross-form reference
+   *     site, identical to what `bumpShapes` from #43 audited out.
+   *
+   * What this scanner does NOT match (intentional, pinned by tests):
+   *   - `Forms!FormX.Foo`           — the trailing `.Foo` IS a property
+   *     access on the form (e.g. `Recordsource`), NOT a control access.
+   *     The bang alternative carries a `(?![.\w])` negative-lookahead
+   *     after the form identifier to drop this shape. The "W4
+   *     no-synthetic-fn" test pins both halves of this contract.
+   *   - `rs!Campo`                  — recordset field access (DAO/ADO
+   *     default-member field read) is explicitly out of scope for the
+   *     current change. The runtime-receiver blacklist plus the absence
+   *     of any `Forms`/`Me` prefix means the existing scanners already
+   *     skip it cleanly; the "STRETCH SCOPE" test pins that behaviour
+   *     so a future change to bring recordset bangs in is reviewed
+   *     explicitly against the bang-form scope decision.
+   *
+   * Operates on the ORIGINAL (unmasked) line — the paren form
+   * `Forms("FormX")!txtY` has the form name INSIDE a string literal, so
+   * masking string content would destroy the form identifier. Same
+   * unmasked-line constraint as `scanOpenFormCalls`.
+   */
+  private static readonly FORMS_BANG_RE =
+    /\b(?:Forms!(\p{L}[\p{L}\p{N}_]*|\[[^\]]+\])(?![.\w])|Forms\(\s*(?:"((?:[^"]|"")*)"|(\p{L}[\p{L}\p{N}_]*|\[[^\]]+\]))\s*\)\s*!\s*(?:\p{L}[\p{L}\p{N}_]*|\[[^\]]+\]))/gu;
 
   /**
    * Issue #46: scan `Set <var> = New <Type>[.<Inner>]` lines — the dominant
@@ -1690,6 +1759,13 @@ export class VbaExtractor {
         // snapshot already uses at `index.ts:getCrossFileIncomingEdges`).
         const caller2 = stack[stack.length - 1]!;
         this.scanOpenFormCalls(line, caller2, lineNum);
+        // Issue #44: cross-form bang references (`Forms!X` / `Forms("X")!Y`).
+        // Same line context as `scanOpenFormCalls` — the form name lives in
+        // a string literal in the paren form, so we MUST scan the unmasked
+        // line. The scanner is independent of `scanCallSites` because
+        // `Forms` is in `RUNTIME_RECEIVER_BLACKLIST` and would otherwise be
+        // dropped by the generic path.
+        this.scanFormsBang(line, caller2, lineNum);
       }
 
     }
@@ -1858,9 +1934,11 @@ export class VbaExtractor {
   private opensFormStubIdsByName = new Map<string, string>();
 
   /**
-   * Hueco 1: scan a line for `Me.<ControlName>` patterns and emit one
-   * UnresolvedReference per occurrence, tagged
-   * `metadata.synthesizedBy: 'vba-me-control'`.
+   * Hueco 1: scan a line for `Me.<ControlName>` / `Me!<ControlName>`
+   * patterns and emit one UnresolvedReference per occurrence, tagged
+   * `metadata.synthesizedBy: 'vba-me-control'`. Issue #44 extended
+   * `ME_CONTROL_RE` from `Me\.` to `Me[.!]` so the bang form (default-
+   * collection shortcut) is captured byte-identically to the dot form.
    *
    * Operates on the masked `callScanLine` (string-literal content already
    * replaced with spaces) so `Me.X` inside a string literal is not falsely
@@ -1871,6 +1949,8 @@ export class VbaExtractor {
    *
    * `fromNodeId` is the current procedure's function node — that's the
    * "owner" of the reference (the Sub body that wrote `Me.lblTitulo = …`).
+   * The +3 column offset remains correct under Issue #44's regex change
+   * because both `Me.` and `Me!` are 3-character prefixes.
    */
   private scanMeControlReferences(line: string, from: ProcInfo, lineNum: number): void {
     VbaExtractor.ME_CONTROL_RE.lastIndex = 0;
@@ -1883,10 +1963,66 @@ export class VbaExtractor {
         referenceName: controlName,
         referenceKind: 'references',
         line: lineNum,
-        column: m.index + 3, // +3 to skip the `Me.` prefix
+        column: m.index + 3, // +3 to skip the `Me.` / `Me!` prefix
         filePath: this.filePath,
         language: 'vba',
         metadata: { synthesizedBy: 'vba-me-control' },
+      });
+    }
+  }
+
+  /**
+   * Issue #44: scan a line for cross-form bang references
+   * (`Forms!<FormName>[!<Ctl>]` and `Forms("<FormName>")!<Ctl>`) and
+   * emit ONE UnresolvedReference per match with `metadata.synthesizedBy
+   * = 'vba-forms-bang'`. Companion to `scanMeControlReferences` above;
+   * shares the emission shape (a single `UnresolvedReference` per match,
+   * `referenceKind: 'references'`), keeping the W4 invariant that we
+   * synthesize NO `function` node for forms.
+   *
+   * Operates on the ORIGINAL (unmasked) line — the paren form
+   * `Forms("FormX")!txtY` carries the form name INSIDE a string literal
+   * and would be destroyed by `maskStringContent`. Mirrors
+   * `scanOpenFormCalls`'s unmasked-line constraint.
+   *
+   * Regex alternatives (see `FORMS_BANG_RE`):
+   *   1. `Forms!<FormName>` (bare or `[bracketed]`, NOT followed by `.X`)
+   *      — bang form, may have a trailing `!<Ctl>[.<Prop>]` that is
+   *      consumed but NOT emitted.
+   *   2. `Forms("<FormName>")!<Ctl>` (quoted or bare/bracketed form arg)
+   *      — paren form, ALWAYS with a control segment.
+   *
+   * Stripping: the form's identifier is unwrapped of `"` quotes (string
+   * literals) and `[…]` brackets (Issue #54 reserved-identifier shape) so
+   * the public `referenceName` is the bare form name. Bracketed forms
+   * (`Forms![Mi Formulario]`) follow the same strip rules as the paren
+   * form so the resolver sees `Mi Formulario` either way.
+   */
+  private scanFormsBang(line: string, from: ProcInfo, lineNum: number): void {
+    VbaExtractor.FORMS_BANG_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = VbaExtractor.FORMS_BANG_RE.exec(line)) !== null) {
+      // Group 1: bang form name (bare or `[bracketed]`); group 2: paren
+      // form name in `"quotes"`; group 3: paren form name bare or
+      // `[bracketed]`. Take whichever the regex alternative produced and
+      // strip the surrounding decoration so the public referenceName is
+      // the bare form identifier the resolver will compare against the
+      // form's `form-layout` node name.
+      const raw = m[1] ?? m[2] ?? m[3] ?? '';
+      if (!raw) continue;
+      const formName = raw
+        .replace(/^"|"$/g, '')   // strip surrounding string-literal quotes
+        .replace(/^\[|\]$/g, ''); // strip surrounding bracket decoration (#54)
+      if (!formName) continue;
+      this.unresolvedReferences.push({
+        fromNodeId: this.findOrCreateFunctionNodeId(from),
+        referenceName: formName,
+        referenceKind: 'references',
+        line: lineNum,
+        column: m.index, // start of the `Forms` keyword; the form name's column can be reconstructed by the UI if it cares
+        filePath: this.filePath,
+        language: 'vba',
+        metadata: { synthesizedBy: 'vba-forms-bang' },
       });
     }
   }

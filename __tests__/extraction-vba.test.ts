@@ -732,6 +732,169 @@ End Property`;
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #44: VBA bang (`!`) operator — `Me!Ctl`, `Forms!Form!Ctl`.
+//
+// Access VBA uses the bang operator as an alias for default-collection
+// (Me controls) and default-member (Forms collection, Recordsets) access:
+//
+//   Me!txtNombre                   — control on the own form (= Me.txtNombre)
+//   Forms!FormPrincipal!txtEstado  — cross-form control access
+//   Forms("FormPrincipal")!txtEstado — same, paren form
+//   Forms!FormX                    — form alone (no control segment)
+//   rs!Campo                       — recordset field (STRETCH SCOPE: pinned
+//                                    out of scope here — see regression test)
+//
+// Before this fix only `Me.<Control>` was scanned by `ME_CONTROL_RE`; the
+// bang form was silently invisible. `Forms!…` is doubly invisible because
+// `Forms` is in `RUNTIME_RECEIVER_BLACKLIST`, so the generic `CALL_RE`
+// path also skips it. The fix extends `ME_CONTROL_RE` to accept the bang
+// (`Me[.!]`) and adds a dedicated `FORMS_BANG_RE` scanner that emits an
+// `UnresolvedReference` to the form tagged `metadata.synthesizedBy ===
+// 'vba-forms-bang'`. The bang-form scanner runs independently of `CALL_RE`
+// (mirroring the `DoCmd.OpenForm` precedent) so the runtime-receiver
+// blacklist does not drop the reference.
+//
+// Reference forms covered:
+//   `Forms!FormX!txtY.Value`     — bang form, control segment present
+//   `Forms("FormX")!txtY`        — paren form, control segment present
+//   `Forms!FormX`                — bang form, no control segment
+//   `Forms![Mi Formulario]`      — bracketed form name (mirrors #54)
+//
+// NOT covered (stretch scope, pinned by test):
+//   `rs!Campo`                   — recordset field access
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — bang operator (Issue #44)', () => {
+  it('Me!txtFoo emits a vba-me-control UnresolvedReference to txtFoo', () => {
+    // Regression: Me!txtFoo must produce the EXACT same emission shape as
+    // Me.txtFoo — one UnresolvedReference with referenceName 'txtFoo' and
+    // metadata.synthesizedBy === 'vba-me-control'.
+    const src = `Public Sub X()
+    Me!txtFoo = "Hello"
+End Sub`;
+    const r = extract('src/forms/Form_X.cls', src);
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-me-control',
+    );
+    expect(refs.length).toBe(1);
+    expect(refs[0]?.referenceName).toBe('txtFoo');
+    expect(refs[0]?.referenceKind).toBe('references');
+  });
+
+  it('Me!txtFoo and Me.txtFoo produce byte-identical UnresolvedReferences (regression parity)', () => {
+    const srcDot = `Public Sub X()
+    Me.txtFoo = "Hello"
+End Sub`;
+    const srcBang = `Public Sub X()
+    Me!txtFoo = "Hello"
+End Sub`;
+    const rDot = extract('src/forms/Form_X.cls', srcDot);
+    const rBang = extract('src/forms/Form_X.cls', srcBang);
+    const dotRef = rDot.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-me-control',
+    );
+    const bangRef = rBang.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-me-control',
+    );
+    expect(bangRef.length).toBe(dotRef.length);
+    expect(bangRef.length).toBe(1);
+    expect(bangRef[0]?.referenceName).toBe(dotRef[0]?.referenceName);
+    expect(bangRef[0]?.referenceKind).toBe(dotRef[0]?.referenceKind);
+  });
+
+  it('Forms!FormX!txtY.Value = 1 emits a vba-forms-bang UnresolvedReference to FormX', () => {
+    const src = `Public Sub X()
+    Forms!FormX!txtY.Value = 1
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-forms-bang',
+    );
+    expect(refs.length).toBeGreaterThanOrEqual(1);
+    const toFormX = refs.find((u) => u.referenceName === 'FormX');
+    expect(toFormX).toBeDefined();
+    expect(toFormX?.referenceKind).toBe('references');
+  });
+
+  it('Forms!FormX (no control segment) emits a vba-forms-bang UnresolvedReference to FormX', () => {
+    const src = `Public Sub X()
+    Set f = Forms!FormX
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-forms-bang',
+    );
+    expect(refs.length).toBe(1);
+    expect(refs[0]?.referenceName).toBe('FormX');
+  });
+
+  it('Forms("FormX")!txtY emits the same vba-forms-bang UnresolvedReference to FormX as Forms!FormX!txtY', () => {
+    const src = `Public Sub X()
+    Forms("FormX")!txtY.Value = 1
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-forms-bang',
+    );
+    expect(refs.length).toBeGreaterThanOrEqual(1);
+    const toFormX = refs.find((u) => u.referenceName === 'FormX');
+    expect(toFormX).toBeDefined();
+    expect(toFormX?.referenceKind).toBe('references');
+  });
+
+  it('Forms!FormX.Foo (post-form property access, not a control) does NOT emit a vba-forms-bang reference', () => {
+    // The form's `.Foo` is a property access on the form object (e.g.
+    // `Forms!FormX.Recordsource`), not a bang control access. The
+    // FORMS_BANG_RE must only match the bang shape; trailing `.Property`
+    // must not be misinterpreted as another bang segment.
+    const src = `Public Sub X()
+    Forms!FormX.Foo = 1
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-forms-bang',
+    );
+    expect(refs).toHaveLength(0);
+  });
+
+  it('rs!Campo (recordset field access) is STRETCH SCOPE — emits zero vba-me-control / vba-forms-bang references', () => {
+    // Out of scope for Issue #44: `rs!Campo` on a DAO/ADO recordset is
+    // treated as a default-member field read. The current extractor emits
+    // nothing for it (the generic call-site path is suppressed by the
+    // runtime-receiver blacklist when `rs` is a recordset field ref), and
+    // this test pins that behavior so a future change can be reviewed
+    // explicitly against the bang-form scope decision.
+    const src = `Public Sub X()
+    rs!Campo = "x"
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const meCtrlRefs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-me-control',
+    );
+    const formsBangRefs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-forms-bang',
+    );
+    expect(meCtrlRefs).toHaveLength(0);
+    expect(formsBangRefs).toHaveLength(0);
+  });
+
+  it('Forms!FormX!txtY does NOT emit a synthetic function node (W4 invariant preserved)', () => {
+    // Defense-in-depth guard: even though the dedicated FORMS_BANG_RE
+    // scanner emits UnresolvedReferences, no synthetic `function` node
+    // should be synthesized for the form/control receiver (would pollute
+    // the graph per the W4 invariant — see Forms!MyForm.Open test above).
+    const src = `Public Sub X()
+    Forms!FormX!txtY.Value = 1
+End Sub`;
+    const r = extract('src/modules/X.bas', src);
+    const synthFns = r.nodes.filter(
+      (n) => n.kind === 'function' && /Forms|FormX|txtY/.test(n.name),
+    );
+    expect(synthFns).toHaveLength(0);
+  });
+});
+
 /**
  * S3 invariant — `Dim x As SomeType` (unqualified, no dot) MUST emit a
  * `references` edge to `SomeType` when `SomeType` is not a primitive.

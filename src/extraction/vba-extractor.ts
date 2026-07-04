@@ -1385,6 +1385,55 @@ export class VbaExtractor {
     /\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
 
   /**
+   * Issue #50: TempVars — Access's global key-value store for cross-form
+   * state. We model each STATIC-LITERAL key as a synthetic `class` placeholder
+   * (same NodeKind as SQL table refs, see `emitReference`) and emit one
+   * `references` edge per reading/writing procedure with
+   * `metadata.synthesizedBy: 'vba-tempvar'` and `metadata.access` ∈
+   * `{'read','write'}` (the user-facing enum; lowercase single-tokens).
+   *
+   * Three scanner surfaces cover the four real idioms:
+   *   - `TEMP_VAR_BANG_RE`  — `TempVars!clave`         (no parens; write or read)
+   *   - `TEMP_VAR_PAREN_RE` — `TempVars("clave")`      (parens; write or read)
+   *   - `TEMP_VAR_ADD_RE`   — `TempVars.Add "clave", v` (always a write)
+   *
+   * Bang vs paren split by line-source: the bang form has no string literals
+   * in scope, so we scan the MASKED line (`maskStringContent` replaces
+   * `"…"` content with spaces — same line source the call-site / With
+   * event scanners consume). The paren and Add forms have their key INSIDE
+   * a `"…"` literal that gets blanked by the masker, so those regexes scan
+   * the ORIGINAL (unmasked) line — same split the SQL_TABLE_RE/OpenForm
+   * literal scanners already use.
+   *
+   * Dynamic-key forms — `TempVars(strNombre)`,
+   * `TempVars("clave" & suffix)` — are silently unmatched by all three
+   * regexes (none of them tolerate a function-call or `&` arg). REQ-CODE-4
+   * "unresolvable is silent" applies: these stay silent by design to
+   * prevent placeholder-node explosion.
+   */
+  private static readonly TEMP_VAR_BANG_RE =
+    /\bTempVars!\s*(\p{L}[\p{L}\p{N}_]*)/gu;
+
+  /**
+   * Issue #50 (cont.):
+   * `TempVars("clave")` / `TempVars(  "clave"  )` capture. Scanned
+   * over the original (unmasked) line — the literal lives INSIDE a
+   * string and would be stripped by `maskStringContent`.
+   */
+  private static readonly TEMP_VAR_PAREN_RE =
+    /\bTempVars\s*\(\s*"([^"]+)"\s*\)/gu;
+
+  /**
+   * Issue #50 (cont.):
+   * `TempVars.Add "clave", value` capture. Always a write (the
+   * `.Add` method inserts/updates the entry). Scanned over the
+   * original (unmasked) line for the same string-literal reason as
+   * `TEMP_VAR_PAREN_RE`.
+   */
+  private static readonly TEMP_VAR_ADD_RE =
+    /\bTempVars\.Add\s+"([^"]+)"\s*,/gi;
+
+  /**
    * `Me.<ControlName>` / `Me!<ControlName>` reference capture — hole 1
    * of VBA control-modeling. Extended by Issue #44 to accept the bang
    * form (the default-collection shortcut Access VBA inherits from VB).
@@ -1936,6 +1985,16 @@ export class VbaExtractor {
         // `Forms` is in `RUNTIME_RECEIVER_BLACKLIST` and would otherwise be
         // dropped by the generic path.
         this.scanFormsBang(line, caller2, lineNum);
+
+        // Issue #50: cross-form TempVars key accesses.
+        // Sibling of `scanFormsBang` — TempVars is Access's second global
+        // cross-form state surface (alongside Forms/DoCmd.OpenForm). Each
+        // static-literal key reference emits one `references` edge to a
+        // synthetic `class` placeholder, tagged `synthesizedBy: 'vba-tempvar'`
+        // and `access: 'read' | 'write'`. We need BOTH line sources: bang
+        // form scans the masked line, paren + Add forms scan the original
+        // (literal lives inside `"…"`).
+        this.sweepTempVars(callScanLine, line, lineNum, caller2);
       }
 
     }
@@ -2939,6 +2998,159 @@ export class VbaExtractor {
   private synthClassNodeIds = new Set<string>();
 
   /**
+   * Issue #50: TempVars placeholder-node de-dup cache. Keys are the
+   * deterministic node ids produced by `emitTempVarReference` — those
+   * ids intentionally ignore `this.filePath` (use a synthetic
+   * `synthetic:tempvar/<key>` path instead) so the SAME key referenced
+   * from Form_A.cls AND Form_B.cls collapses to ONE placeholder node.
+   * Cross-file id stability is the cross-form state premise that makes
+   * `codegraph_explore` connect producer ⇄ consumer in one hop.
+   */
+  private synthTempVarNodeIds = new Set<string>();
+
+  /**
+   * Issue #50: emit one TempVar reading/writing site. Per call:
+   *   - placeholder `class` node keyed on the synthetic
+   *     `synthetic:tempvar/<key>` file path so cross-file extraction
+   *     calls collapse to one node per key,
+   *   - `references` edge from the calling `function` node
+   *     (via `findOrCreateFunctionNodeId` — same access pattern as
+   *     `scanDoCmdOpenCalls` / `scanDoCmdOpenQuery`) carrying
+   *     `metadata.synthesizedBy: 'vba-tempvar'` AND
+   *     `metadata.access: 'read' | 'write'`.
+   *
+   * Reuses the synthetic-`class`-placeholder shape established by
+   * `emitReference` for SQL tables, events, Dim types, etc. — so every
+   * synthesized `references` edge in the file already carries the same
+   * `kind: 'class'` target, and downstream consumers (UI, resolvers,
+   * search queries) filter on `metadata.synthesizedBy` rather than
+   * NodeKind anyway. The `metadata.synthesizedBy` tag cleanly distinguishes
+   * TempVars refs from SQL-table refs inside the same NodeKind bucket.
+   *
+   * Skips when stack is empty (the writer/reader is module-level code
+   * — REQ-CODE-4 "unresolvable/runtime reference is silent"). The
+   * spec wires this per-proc only; the module-level shape would need
+   * a different emission (no procedure source) and is out of scope.
+   */
+  private emitTempVarReference(
+    caller: ProcInfo | undefined,
+    key: string,
+    lineNum: number,
+    column: number,
+    access: 'read' | 'write',
+  ): void {
+    if (!caller) return;
+    if (!key) return;
+    const syntheticFilePath = `synthetic:tempvar/${key}`;
+    const targetId = generateNodeId(
+      syntheticFilePath,
+      'class', // placeholder kind — see SQL_TABLE_RE emitReference for precedent
+      key,
+      0, // stable; line-independent per Fix 5 / cross-form id stability
+    );
+    if (!this.synthTempVarNodeIds.has(targetId)) {
+      this.synthTempVarNodeIds.add(targetId);
+      this.nodes.push({
+        id: targetId,
+        kind: 'class',
+        name: key,
+        qualifiedName: key,
+        filePath: syntheticFilePath,
+        language: 'vba',
+        startLine: lineNum,
+        endLine: lineNum,
+        startColumn: column,
+        endColumn: column + key.length,
+        updatedAt: Date.now(),
+      });
+    }
+    this.edges.push({
+      source: this.findOrCreateFunctionNodeId(caller),
+      target: targetId,
+      kind: 'references',
+      provenance: 'heuristic',
+      metadata: {
+        synthesizedBy: 'vba-tempvar',
+        // User-facing enum: lowercase single-token string values.
+        access,
+      },
+      line: lineNum,
+      column,
+    });
+  }
+
+  /**
+   * Issue #50: scan one line of VBA source for TempVars access sites and
+   * emit one `references` edge per site. Three regex runs:
+   *   - bang form `TempVars!x` over the MASKED line (`!` itself never
+   *     lives inside a string literal, so masked == unmasked here — using
+   *     the masked line is conservative against false positives in
+   *     concatenated string content),
+   *   - paren form `TempVars("x")` over the ORIGINAL line (the literal is
+   *     inside a string — masked would strip the key),
+   *   - Add form `TempVars.Add "x", v` over the ORIGINAL line (same reason),
+   *     always classified as a write.
+   *
+   * Each match classifies access by looking at the LINE SUFFIX (after the
+   * closing paren / bang-key) on the SAME line: if `=` (and not the
+   * nonexistent `==`) is the next non-whitespace character, it's a write.
+   * VBA has no `==` so a bare `=` suffix check is safe.
+   *
+   * The caller parameter comes from `stack[stack.length - 1]` in
+   * `sweepCallsAndSql`. Pass `undefined` for module-level access — we
+   * drop the edge (per REQ-CODE-4 spirit, runtime references have no
+   * static source to anchor against).
+   */
+  private sweepTempVars(
+    maskedLine: string,
+    originalLine: string,
+    lineNum: number,
+    caller: ProcInfo | undefined,
+  ): void {
+    // 1) Bang form — masked line. No string-literal interaction.
+    const bangRe = new RegExp(
+      VbaExtractor.TEMP_VAR_BANG_RE.source,
+      VbaExtractor.TEMP_VAR_BANG_RE.flags,
+    );
+    let bm: RegExpExecArray | null;
+    while ((bm = bangRe.exec(maskedLine)) !== null) {
+      const key = bm[1] ?? '';
+      if (!key) continue;
+      const access = detectAssignmentSuffix(maskedLine, bm.index + bm[0].length)
+        ? 'write'
+        : 'read';
+      this.emitTempVarReference(caller, key, lineNum, bm.index, access);
+    }
+
+    // 2) Paren form — original line. The literal survives only here.
+    const parenRe = new RegExp(
+      VbaExtractor.TEMP_VAR_PAREN_RE.source,
+      VbaExtractor.TEMP_VAR_PAREN_RE.flags,
+    );
+    let pm: RegExpExecArray | null;
+    while ((pm = parenRe.exec(originalLine)) !== null) {
+      const key = pm[1] ?? '';
+      if (!key) continue;
+      const access = detectAssignmentSuffix(originalLine, pm.index + pm[0].length)
+        ? 'write'
+        : 'read';
+      this.emitTempVarReference(caller, key, lineNum, pm.index, access);
+    }
+
+    // 3) Add form — original line. Always a write.
+    const addRe = new RegExp(
+      VbaExtractor.TEMP_VAR_ADD_RE.source,
+      VbaExtractor.TEMP_VAR_ADD_RE.flags,
+    );
+    let am: RegExpExecArray | null;
+    while ((am = addRe.exec(originalLine)) !== null) {
+      const key = am[1] ?? '';
+      if (!key) continue;
+      this.emitTempVarReference(caller, key, lineNum, am.index, 'write');
+    }
+  }
+
+  /**
    * Fix 2 (Issue #2): maps `variableName.toLowerCase()` → declared type info.
    * Built by `sweepDimsAndWithEvents`; consulted by `sweepCallsAndSql` to gate
    * qualified statement-form calls — only receivers that are file-local variables
@@ -3084,6 +3296,38 @@ function splitOutsideVbaStrings(value: string, separator: string): string[] {
   }
   parts.push(current);
   return parts;
+}
+
+/**
+ * Issue #50 helper: return true iff `line.charAt(fromIndex..)` (after the
+ * matched TempVars site, including any trailing whitespace) holds an `=`
+ * (write-assignment) and not a `==` (VBA has no `==` operator, so a bare
+ * check for `=` is safe). Used by `sweepTempVars` to classify a `TempVars`
+ * access as read vs write from the local line context.
+ *
+ * We skip over trailing whitespace only — `.`, `(`, `<`, `>`, `*`, `+`
+ * etc. all mean "this isn't an assignment target", and bare `=`
+ * is the only access-suffix shape VBA syntax allows here. A line like
+ * `TempVars!x = 1` (write) or `Debug.Print TempVars!x` (read) land in
+ * the right bucket without further analysis.
+ *
+ * Strings should already be masked out of `line` (`maskStringContent`)
+ * when this is called for the bang form (no string in scope anyway);
+ * the paren form passes the ORIGINAL line — but for THAT form the
+ * captured match ends at the closing `"` of the literal, so any `=`
+ * that follows is unambiguously outside the string.
+ */
+function detectAssignmentSuffix(line: string, fromIndex: number): boolean {
+  let i = fromIndex;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === ' ' || ch === '\t') {
+      i++;
+      continue;
+    }
+    return ch === '=';
+  }
+  return false;
 }
 
 function unwrapVbaStringLiteral(raw: string): string {

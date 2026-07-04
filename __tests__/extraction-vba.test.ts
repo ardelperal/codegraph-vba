@@ -3643,3 +3643,298 @@ describe('VbaExtractor — Issue #52: procedure-local Const scoping', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #50 — TempVars keys as cross-form state nodes.
+//
+// Access's `TempVars` is a global key-value store that procedures across
+// forms read/write to pass state (the canonical Access idiom for
+// caller→callee state passing without globals). Each STATIC-LITERAL key
+// reference (bang `TempVars!k`, paren `TempVars("k")`, Add `TempVars.Add "k"`)
+// gets a `references` edge to a synthetic `class` placeholder node. The
+// placeholder id is keyed on `synthetic:tempvar/<key>` (NOT on the
+// extraction's `filePath`), so the same key referenced from many files
+// collapses to ONE node — the cross-form state premise that lets
+// `codegraph_explore` connect producer ⇄ consumer in one hop.
+//
+// Atoms verified below correspond 1:1 to the issue's acceptance criteria:
+//   1. bang write     — `TempVars!MiClave = "valor"`
+//   2. paren read     — `Dim x = TempVars("MiClave")` (same MiClave
+//                       placeholder as test 1, cross-proc shared id)
+//   3. paren write    — `TempVars("MiClave") = 42`
+//   4. Add form       — `TempVars.Add "MiClave", "x"` (always write)
+//   5. cross-file dedup — write in Form_A.cls + read in Form_B.cls == ONE
+//                         placeholder id (deterministic, line-independent)
+//   6. dynamic keys  — `TempVars(strNombre)` and `TempVars("a" & s)` emit
+//                       ZERO edges and ZERO placeholders (REQ-CODE-4
+//                       spirit; unresolvable stays silent)
+//   7. cross-cutting  — one proc with two write sites (a, b) and a read of
+//                       a → 2 placeholders, 3 edges from the same proc.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — Issue #50: TempVars keys modeled as cross-form state nodes', () => {
+  it('bang-write form: TempVars!MiClave = "valor" emits one references edge with access=write', () => {
+    const src = [
+      'Public Sub Escribir()',
+      '    TempVars!MiClave = "valor"',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/forms/FormA.cls', src);
+
+    const escribir = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Escribir',
+    );
+    expect(escribir).toBeDefined();
+
+    const placeholder = r.nodes.find((n) => n.name === 'MiClave' && n.kind === 'class');
+    expect(placeholder).toBeDefined();
+    // Synthetic file path keeps the id deterministic AND file-independent.
+    expect(placeholder?.filePath).toBe('synthetic:tempvar/MiClave');
+
+    const edges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.target === placeholder?.id &&
+        e.source === escribir?.id,
+    );
+    expect(edges).toHaveLength(1);
+    expect(edges[0]?.metadata?.access).toBe('write');
+  });
+
+  it('paren-read form: Dim x = TempVars("MiClave") emits one references edge with access=read', () => {
+    // Same key `MiClave` as test 1 — same placeholder node (cross-proc
+    // shared id is the cross-form case).
+    const src = [
+      'Public Sub Leer()',
+      '    Dim x As Variant',
+      '    x = TempVars("MiClave")',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/forms/FormB.cls', src);
+
+    const leer = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Leer',
+    );
+    expect(leer).toBeDefined();
+
+    const placeholder = r.nodes.find((n) => n.name === 'MiClave' && n.kind === 'class');
+    expect(placeholder).toBeDefined();
+    expect(placeholder?.filePath).toBe('synthetic:tempvar/MiClave');
+
+    const edges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.target === placeholder?.id &&
+        e.source === leer?.id,
+    );
+    expect(edges).toHaveLength(1);
+    expect(edges[0]?.metadata?.access).toBe('read');
+  });
+
+  it('paren-write form: TempVars("MiClave") = 42 emits one references edge with access=write', () => {
+    const src = [
+      'Public Sub Escribir2()',
+      '    TempVars("MiClave") = 42',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+
+    const escribir2 = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Escribir2',
+    );
+    expect(escribir2).toBeDefined();
+
+    const placeholder = r.nodes.find((n) => n.name === 'MiClave' && n.kind === 'class');
+    expect(placeholder).toBeDefined();
+
+    const edges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.target === placeholder?.id &&
+        e.source === escribir2?.id,
+    );
+    expect(edges).toHaveLength(1);
+    expect(edges[0]?.metadata?.access).toBe('write');
+  });
+
+  it('Add form: TempVars.Add "MiClave", "x" emits one edge with access=write and adds a second placeholder for a distinct key', () => {
+    const src = [
+      'Public Sub Init()',
+      '    TempVars.Add "MiClave", "x"',
+      '    TempVars.Add "OtraClave", 7',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+
+    const init = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Init',
+    );
+    expect(init).toBeDefined();
+
+    const miClave = r.nodes.find((n) => n.name === 'MiClave' && n.kind === 'class');
+    const otraClave = r.nodes.find((n) => n.name === 'OtraClave' && n.kind === 'class');
+    expect(miClave).toBeDefined();
+    expect(otraClave).toBeDefined();
+    // Distinct placeholders for distinct keys.
+    expect(miClave?.id).not.toBe(otraClave?.id);
+
+    const miClaveEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.target === miClave?.id &&
+        e.source === init?.id,
+    );
+    expect(miClaveEdges).toHaveLength(1);
+    expect(miClaveEdges[0]?.metadata?.access).toBe('write');
+
+    const otraClaveEdges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.target === otraClave?.id &&
+        e.source === init?.id,
+    );
+    expect(otraClaveEdges).toHaveLength(1);
+    expect(otraClaveEdges[0]?.metadata?.access).toBe('write');
+  });
+
+  it('cross-file dedup: write in Form_A.cls + read in Form_B.cls collapses to ONE placeholder id and TWO references edges', () => {
+    // Two separate extraction calls — the placeholder id must be
+    // deterministic across `extract()` invocations so the cross-form
+    // case (write in producer, read in consumer) collapses to ONE node
+    // when both files reach the same index.
+    const fileASrc = [
+      'Public Sub SetID()',
+      '    TempVars!IDExpediente = 42',
+      'End Sub',
+    ].join('\n');
+    const fileBSrc = [
+      'Public Sub Form_Load()',
+      '    Me.txtId = TempVars("IDExpediente")',
+      'End Sub',
+    ].join('\n');
+
+    const aResult = extract('src/forms/FormA.cls', fileASrc);
+    const bResult = extract('src/forms/FormB.cls', fileBSrc);
+
+    // The placeholder id should be byte-identical for the same key,
+    // regardless of which file emits it.
+    const idExpected =
+      generateNodeId('synthetic:tempvar/IDExpediente', 'class', 'IDExpediente', 0);
+
+    const placeholderInA = aResult.nodes.find(
+      (n) => n.name === 'IDExpediente' && n.kind === 'class',
+    );
+    const placeholderInB = bResult.nodes.find(
+      (n) => n.name === 'IDExpediente' && n.kind === 'class',
+    );
+    expect(placeholderInA).toBeDefined();
+    expect(placeholderInB).toBeDefined();
+    expect(placeholderInA?.id).toBe(idExpected);
+    expect(placeholderInB?.id).toBe(idExpected);
+    expect(placeholderInA?.id).toBe(placeholderInB?.id);
+
+    // Two edges: one write (from `SetID`) + one read (from `Form_Load`).
+    const aEdge = aResult.edges.find(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.target === idExpected,
+    );
+    const bEdge = bResult.edges.find(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.target === idExpected,
+    );
+    expect(aEdge).toBeDefined();
+    expect(bEdge).toBeDefined();
+    expect(aEdge?.metadata?.access).toBe('write');
+    expect(bEdge?.metadata?.access).toBe('read');
+    expect(aEdge?.source).not.toBe(bEdge?.source);
+  });
+
+  it('dynamic key (variable arg) stays silent — no edges, no placeholder', () => {
+    // REQ-CODE-4 spirit: unresolvable is silent. `TempVars(strNombre)` is
+    // unresolvable at static-analysis time (string is a runtime value),
+    // so we emit nothing. Different from the regexes deliberately
+    // matching ONLY literal `"..."` arg forms.
+    const src = [
+      'Public Sub DynamicCaller(strNombre As String)',
+      '    TempVars(strNombre) = 1',
+      '    Dim v As Variant',
+      '    v = TempVars(strNombre)',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+
+    const tempVarEdges = r.edges.filter(
+      (e) => e.metadata?.synthesizedBy === 'vba-tempvar',
+    );
+    expect(tempVarEdges).toHaveLength(0);
+    const placeholders = r.nodes.filter(
+      (n) => n.kind === 'class' && n.filePath.startsWith('synthetic:tempvar/'),
+    );
+    expect(placeholders).toHaveLength(0);
+  });
+
+  it('dynamic key (string concatenation) stays silent — no edges, no placeholder', () => {
+    // Same as the variable-arg case but for `TempVars("clave" & suffix)`.
+    // `TEMP_VAR_PAREN_RE` tolerates only the literal-arg shape
+    // (no `&` mid-arg), so the concatenation form stays silent.
+    const src = [
+      'Public Sub ConcatCaller()',
+      '    TempVars("prefijo" & "_x") = 1',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+    const tempVarEdges = r.edges.filter(
+      (e) => e.metadata?.synthesizedBy === 'vba-tempvar',
+    );
+    expect(tempVarEdges).toHaveLength(0);
+  });
+
+  it('cross-cutting smoke: one proc with two writes + one read produces 2 placeholders + 3 edges from the same proc', () => {
+    const src = [
+      'Public Sub Multi()',
+      '    TempVars("a") = 1',
+      '    TempVars("b") = 2',
+      '    Dim x As Variant',
+      '    x = TempVars("a")',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/Mod.bas', src);
+
+    const multi = r.nodes.find(
+      (n) => n.kind === 'function' && n.name === 'Multi',
+    );
+    expect(multi).toBeDefined();
+
+    const a = r.nodes.find((n) => n.name === 'a' && n.kind === 'class');
+    const b = r.nodes.find((n) => n.name === 'b' && n.kind === 'class');
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+
+    const edges = r.edges.filter(
+      (e) =>
+        e.kind === 'references' &&
+        e.metadata?.synthesizedBy === 'vba-tempvar' &&
+        e.source === multi?.id,
+    );
+    expect(edges).toHaveLength(3);
+
+    const aWriteEdges = edges.filter((e) => e.target === a?.id && e.metadata?.access === 'write');
+    const aReadEdges = edges.filter((e) => e.target === a?.id && e.metadata?.access === 'read');
+    const bWriteEdges = edges.filter((e) => e.target === b?.id && e.metadata?.access === 'write');
+    const bReadEdges = edges.filter((e) => e.target === b?.id && e.metadata?.access === 'read');
+
+    expect(aWriteEdges).toHaveLength(1);
+    expect(aReadEdges).toHaveLength(1);
+    expect(bWriteEdges).toHaveLength(1);
+    expect(bReadEdges).toHaveLength(0);
+  });
+});
+

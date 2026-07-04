@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.5.0] - 2026-07-04
+
 ### New Features
 
 - VBA's bang (`!`) references now resolve in the graph: `Me!Control`, `Forms!FormName!Control`, and the same pattern against reports and subforms link to the actual control declared in the `.form.txt` / `.report.txt`, so `codegraph callers` and `codegraph_explore` show every reference to a control by name and renaming a control is safe to do against the graph. (#68)
@@ -576,3 +579,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.3.2]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.2
 [1.3.4]: https://github.com/colbymchenry/codegraph/releases/tag/v1.3.4
 [1.4.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.4.0
+[1.5.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.5.0

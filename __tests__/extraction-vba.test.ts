@@ -3496,3 +3496,150 @@ describe('VbaExtractor — With block implicit receiver calls (Issue #43)', () =
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #52 — procedure-local Const must NOT leak to module scope (was:
+// one module-level `constant` node per name with module→constant contains
+// edge and `visibility: 'public'`, plus a single file-wide `localConstants`
+// Map that caused two procs declaring the same Const name to collide on the
+// last write for `DoCmd.OpenForm`/`OpenReport`/`OpenQuery` argument
+// resolution). Fix: per-proc resolution bucket + a proc-stack-aware
+// `currentProcKey` field. Module-level Const behavior is preserved bit-for-
+// bit (regression-pinned below) — only the proc-local shape changes.
+//
+// Reference: the dedicated Enum/Const tests live in
+// `__tests__/extraction-vba-enums-consts.test.ts` (REQ-CODE-12 / REQ-CODE-13
+// atoms). The atoms in this block pin the Issue #52 fix specifically.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — Issue #52: procedure-local Const scoping', () => {
+  it('module-level Const still emits a constant node + module contains edge (regression)', () => {
+    const src = [
+      'Option Explicit',
+      'Public Const FORM_EMPLOYEES As String = "frmEmployees"',
+      'Public Sub DoSomething()',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modForms.bas', src);
+
+    const c = r.nodes.find(
+      (n) => n.kind === 'constant' && n.name === 'FORM_EMPLOYEES',
+    );
+    // Pre-fix this was the buggy behavior and post-fix must still hold
+    // because the Const lives at module scope (no enclosing proc).
+    expect(c).toBeDefined();
+    expect(c?.visibility).toBe('public');
+    const mod = r.nodes.find((n) => n.kind === 'module');
+    expect(mod).toBeDefined();
+    const containsEdge = r.edges.find(
+      (e) =>
+        e.kind === 'contains' && e.source === mod?.id && e.target === c?.id,
+    );
+    expect(containsEdge).toBeDefined();
+  });
+
+  it('procedure-local Const emits NO constant node anywhere (the bug)', () => {
+    const src = [
+      'Sub Abrir()',
+      '    Const FORM_DESTINO As String = "FormDetalle"',
+      '    DoCmd.OpenForm FORM_DESTINO',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modForms.bas', src);
+
+    // The pre-fix extractor emitted a `constant` node named FORM_DESTINO
+    // with `visibility: 'public'` and a module→constant contains edge —
+    // wrong containment for a local. Post-fix: zero `constant` nodes.
+    const consts = r.nodes.filter((n) => n.kind === 'constant');
+    expect(consts).toEqual([]);
+  });
+
+  it('procedure-local Const still resolves in DoCmd.OpenForm (resolution preserved)', () => {
+    const src = [
+      'Sub Abrir()',
+      '    Const FORM_DESTINO As String = "FormDetalle"',
+      '    DoCmd.OpenForm FORM_DESTINO',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modForms.bas', src);
+
+    const edges = r.edges.filter((e) => e.kind === 'opens-form');
+    expect(edges).toHaveLength(1);
+    const target = r.nodes.find((n) => n.id === edges[0]?.target);
+    expect(target?.name).toBe('FormDetalle');
+    expect(edges[0]?.metadata?.targetFormName).toBe('FormDetalle');
+  });
+
+  it('two procs with same-named local consts resolve their own OpenForm targets', () => {
+    const src = [
+      'Sub A()',
+      '  Const TARGET As String = "FormA"',
+      '  DoCmd.OpenForm TARGET',
+      'End Sub',
+      'Sub B()',
+      '  Const TARGET As String = "FormB"',
+      '  DoCmd.OpenForm TARGET',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modForms.bas', src);
+
+    // Pre-fix the file-wide `localConstants` Map made the second write
+    // (`FormB`) overwrite the first, so both OpenForm call sites
+    // resolved to `FormB`. Post-fix: each proc keeps its own bucket.
+    const edges = r.edges.filter((e) => e.kind === 'opens-form');
+    expect(edges).toHaveLength(2);
+    const targets = edges
+      .map((e) => e.metadata?.targetFormName)
+      .sort();
+    expect(targets).toEqual(['FormA', 'FormB']);
+
+    // No `constant` nodes for TARGET at all — proc-local consts don't
+    // emit module-level symbol nodes anymore.
+    const consts = r.nodes.filter(
+      (n) => n.kind === 'constant' && n.name === 'TARGET',
+    );
+    expect(consts).toEqual([]);
+  });
+
+  it('mixed-scope consts: module-level emits one node; proc-local shadows it for the inner call', () => {
+    const src = [
+      'Public Const SHARED_NAME As String = "ModuleShared"',
+      'Sub Outer()',
+      '    Const SHARED_NAME As String = "ProcShared"',
+      '    DoCmd.OpenForm SHARED_NAME',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modForms.bas', src);
+
+    // Module-level Const still emits one node with the visibility fold.
+    const moduleConst = r.nodes.find(
+      (n) => n.kind === 'constant' && n.name === 'SHARED_NAME',
+    );
+    expect(moduleConst).toBeDefined();
+    expect(moduleConst?.visibility).toBe('public');
+
+    // The OpenForm call inside Outer() sees the proc-local binding
+    // (shadowing the module-level one) — exactly one opens-form edge,
+    // resolved to the proc-local value.
+    const edges = r.edges.filter((e) => e.kind === 'opens-form');
+    expect(edges).toHaveLength(1);
+    expect(edges[0]?.metadata?.targetFormName).toBe('ProcShared');
+
+    // Proc-local name does NOT get a second `constant` node.
+    expect(
+      r.nodes.filter((n) => n.kind === 'constant' && n.name === 'SHARED_NAME'),
+    ).toHaveLength(1);
+  });
+
+  it('multi-decl Const line at module scope still emits one constant node per name (regression)', () => {
+    const r = extract(
+      'src/modules/c.bas',
+      'Const FORM_EMPLOYEES = "frmEmployees", FORM_ORDERS As String = "frmOrders"',
+    );
+    const names = r.nodes
+      .filter((n) => n.kind === 'constant')
+      .map((n) => n.name)
+      .sort();
+    expect(names).toEqual(['FORM_EMPLOYEES', 'FORM_ORDERS']);
+  });
+});
+

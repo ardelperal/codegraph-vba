@@ -183,13 +183,37 @@ const IF_DIRECTIVE = /^\s*#If\s+(.+?)\s+Then\s*$/i;
 const ELSEIF_DIRECTIVE = /^\s*#ElseIf\s+(.+?)\s+Then\s*$/i;
 const ELSE_DIRECTIVE = /^\s*#Else\s*$/i;
 const ENDIF_DIRECTIVE = /^\s*#(?:End\s*If|EndIf)\s*$/i;
+// #Const NAME = <value> — captured name (identifier) and value (anything
+// to EOL). The directive line is always blanked; the value is fed through
+// the same normalize+evaluate pipeline as a #If expression so it inherits
+// the substitution table for free.
+const CONST_DIRECTIVE = /^\s*#Const\s+([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(.+?)\s*$/i;
 
 /**
  * Evaluate VBA conditional-compilation directives for the modern Windows
  * Access/VBA target this extractor is designed around:
- *   - VBA7 = true
- *   - Win64 = true
- *   - Mac = false
+ *   - VBA7   = true  (VBA7 runtime available)
+ *   - Win64  = true  (64-bit VBA host — Access/VBA on x64 Windows)
+ *   - Win32  = true  (legacy guard; always true on modern Windows, incl. Win64)
+ *   - Win16  = false (legacy 16-bit Windows — not a current target)
+ *   - Mac    = false (Mac host)
+ *
+ * In addition, the file-scoped `#Const NAME = <value>` table is consulted
+ * before the hardcoded constants above — `#Const MODO_DEBUG = True` then
+ * `#If MODO_DEBUG Then` keeps the branch. The #Const line itself is
+ * blanked to preserve line-count parity.
+ *
+ * Truthiness follows VBA semantics: True = -1, False = 0. We achieve this
+ * by substituting the JS boolean literals `true`/`false` with their VBA
+ * numeric equivalents `-1`/`0` after the identifier+operator rewrites and
+ * before the whitelist check. This is a deliberate simplification — full
+ * VBA CC is bitwise on -1/0 (so `True And True = -1`), but the supported
+ * expression surface here is truthy comparison / `=` / `<>` / `And` /
+ * `Or` / `Not`, for which JS `&&`/`||`/`!` truthy evaluation is
+ * equivalent: any non-zero operand is truthy, matching VBA's "non-zero is
+ * true" convention. If a future task needs bitwise-precise `-1` semantics
+ * (e.g. distinguishing `#If X = 1` from `#If X = -1` on a `True` const),
+ * promote this evaluator to full integer arithmetic.
  *
  * Directives and inactive branch lines are replaced with empty strings so
  * downstream extraction keeps source-line parity. Unsupported/unsafe
@@ -200,12 +224,34 @@ export function preprocessConditionalCompilation(src: string): string {
   const lines = src.split('\n');
   const out: string[] = [];
   const stack: ConditionalFrame[] = [];
+  // Per-call #Const table. Name → post-evaluation numeric string (e.g.
+  // "-1" for True, "0" for False, "1" for an integer literal). Stored as a
+  // string so it can be substituted verbatim into the normalized
+  // expression. A name that fails to evaluate is NOT stored — the lookup
+  // simply misses and the conservative fallback (unknown identifier →
+  // false) applies, exactly as for an unrecognised hardcoded constant.
+  const constTable = new Map<string, string>();
 
   for (const line of lines) {
+    // Parse #Const BEFORE the other directives so the table is up-to-date
+    // when a subsequent #If expression references it. The line itself is
+    // always blanked (line-count parity invariant).
+    const constMatch = CONST_DIRECTIVE.exec(line);
+    if (constMatch) {
+      const name = (constMatch[1] ?? '').trim();
+      const rhs = (constMatch[2] ?? '').trim();
+      const value = evaluateConstRhs(rhs, constTable);
+      if (value !== null) {
+        constTable.set(name, value);
+      }
+      out.push('');
+      continue;
+    }
+
     const ifMatch = IF_DIRECTIVE.exec(line);
     if (ifMatch) {
       const parentActive = stack.every((frame) => frame.active);
-      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '');
+      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '', constTable);
       stack.push({ parentActive, active, branchTaken: active });
       out.push('');
       continue;
@@ -218,7 +264,7 @@ export function preprocessConditionalCompilation(src: string): string {
         const active =
           frame.parentActive &&
           !frame.branchTaken &&
-          evaluateConditionalExpression(elseIfMatch[1] ?? '');
+          evaluateConditionalExpression(elseIfMatch[1] ?? '', constTable);
         frame.active = active;
         if (active) frame.branchTaken = true;
       }
@@ -249,28 +295,119 @@ export function preprocessConditionalCompilation(src: string): string {
   return out.join('\n');
 }
 
-function evaluateConditionalExpression(expr: string): boolean {
+/**
+ * Apply the full substitution pipeline to a conditional-compilation
+ * expression: identifier substitutions (#Const table first, then the
+ * hardcoded constants), operator rewrites, and the True→-1 / False→0
+ * conversion that gives the evaluator correct VBA equality semantics.
+ *
+ * Returns the normalized string if it passes the whitelist (signed
+ * integer literal + operators + parens + whitespace only), or `null` if
+ * any substitution left a token that does not match the whitelist. A
+ * `null` return signals "do not evaluate" — the caller falls back to
+ * false (the conservative behaviour preserved from the original
+ * implementation).
+ */
+function normalizeConditionalExpression(
+  expr: string,
+  constTable: ReadonlyMap<string, string>,
+): string | null {
   let normalized = expr.trim();
   normalized = normalized.replace(/\bThen\s*$/i, '');
   normalized = normalized.replace(/<>/g, '!==');
   normalized = normalized.replace(/(?<![<>=])=(?![=])/g, '===');
-  normalized = normalized.replace(/\bVBA7\b/gi, 'true');
-  normalized = normalized.replace(/\bWin64\b/gi, 'true');
-  normalized = normalized.replace(/\bMac\b/gi, 'false');
-  normalized = normalized.replace(/\bAnd\b/gi, '&&');
-  normalized = normalized.replace(/\bOr\b/gi, '||');
-  normalized = normalized.replace(/\bNot\b/gi, '!');
-  normalized = normalized.trim();
 
-  if (!/^(?:true|false|\d+|&&|\|\||!|===|!==|\(|\)|\s)+$/.test(normalized)) {
-    return false;
+  // #Const table first — user-defined constants shadow the hardcoded ones
+  // below. The replacement value is a numeric literal string (e.g. "-1"),
+  // so it cannot re-introduce identifiers or operators. Use a replacement
+  // function so the value is inserted verbatim — `String.replace(regex,
+  // string)` would otherwise interpret `$`/`\\` in the replacement.
+  for (const [name, value] of constTable) {
+    normalized = normalized.replace(
+      new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi'),
+      () => value,
+    );
   }
 
+  normalized = normalized
+    .replace(/\bVBA7\b/gi, 'true')
+    .replace(/\bWin64\b/gi, 'true')
+    .replace(/\bWin32\b/gi, 'true')
+    .replace(/\bWin16\b/gi, 'false')
+    .replace(/\bMac\b/gi, 'false')
+    .replace(/\bAnd\b/gi, '&&')
+    .replace(/\bOr\b/gi, '||')
+    .replace(/\bNot\b/gi, '!')
+    // VBA CC truthiness: True = -1, False = 0. Substitute the JS boolean
+    // literals with their VBA numeric equivalents so a downstream
+    // `Win64 = -1` comparison (after the `=`→`===` rewrite) evaluates
+    // true. See the doc comment on `preprocessConditionalCompilation`
+    // for the chosen simplification.
+    .replace(/\btrue\b/gi, '-1')
+    .replace(/\bfalse\b/gi, '0')
+    .trim();
+
+  // Whitelist — after every substitution the expression should consist
+  // only of signed integer literals, operators, parens, and whitespace.
+  // The original whitelist accepted `true`/`false` literals; we have
+  // converted those to `-1`/`0` above, so the alternation is no longer
+  // needed. The signed-integer alternation accepts unary minus.
+  if (!/^(?:-?\d+|\s|&&|\|\||!|===|!==|\(|\))+?$/.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function evaluateConditionalExpression(
+  expr: string,
+  constTable: ReadonlyMap<string, string> = new Map(),
+): boolean {
+  const normalized = normalizeConditionalExpression(expr, constTable);
+  if (normalized === null) return false;
   try {
     return Boolean(Function(`"use strict"; return (${normalized});`)());
   } catch {
     return false;
   }
+}
+
+/**
+ * Evaluate the RHS of a `#Const NAME = <value>` directive. Returns the
+ * value as a JS-substitutable numeric string (e.g. `"-1"`, `"0"`,
+ * `"1"`) so it can be substituted verbatim into subsequent #If
+ * expressions, OR `null` if the RHS is unsupported (whitelist failure,
+ * non-numeric/non-boolean evaluation result).
+ *
+ * Re-uses the same normalize pipeline as #If so recursive `#Const X = Y`
+ * references resolve against the existing table (but a self-reference is
+ * impossible: the new entry is added AFTER the RHS is evaluated, so it
+ * is invisible to its own evaluation).
+ */
+function evaluateConstRhs(
+  rhs: string,
+  constTable: ReadonlyMap<string, string>,
+): string | null {
+  const normalized = normalizeConditionalExpression(rhs, constTable);
+  if (normalized === null) return null;
+  let result: unknown;
+  try {
+    result = Function(`"use strict"; return (${normalized});`)();
+  } catch {
+    return null;
+  }
+  if (typeof result === 'number' && Number.isFinite(result)) {
+    return String(Math.trunc(result));
+  }
+  if (typeof result === 'boolean') {
+    return result ? '-1' : '0';
+  }
+  return null;
+}
+
+/** Escape regex metacharacters so a name can be interpolated safely. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

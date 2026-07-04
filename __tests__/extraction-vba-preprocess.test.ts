@@ -444,3 +444,221 @@ describe('preprocessConditionalCompilation', () => {
     expect(out).toContain('SafeFallback');
   });
 });
+
+/**
+ * Issue #51 — `fix(vba): conditional-compilation evaluator — Win32/Win16,
+ * True=-1 semantics, #Const support`. Three concrete gaps the previous
+ * evaluator had:
+ *
+ *   1. `Win32` / `Win16` were not in the identifier substitution table —
+ *      the legacy `#If Win32 Then` guard (always True on modern Windows)
+ *      blanked its ACTIVE branch.
+ *   2. The whitelist rejected `-` outright, so `#If Win64 = -1 Then`
+ *      blanked its branch even though VBA's True = -1 makes the
+ *      comparison True.
+ *   3. `#Const NAME = <value>` was not parsed — a user-defined
+ *      `#Const MODO_DEBUG = True` was ignored, so `#If MODO_DEBUG Then`
+ *      fell through to the unknown-identifier fallback (false) and the
+ *      user's TRUE branch was blanked.
+ *
+ * The fix maps `Win32` → true and `Win16` → false alongside the existing
+ * VBA7/Win64/Mac table; substitutes `true`/`false` with `-1`/`0` so
+ * numeric equality comparisons match VBA's True = -1 semantics; accepts
+ * unary minus in the whitelist; and parses `#Const` into a per-call map
+ * consulted before the hardcoded constants.
+ *
+ * Each atom asserts both the kept-or-blanked behavior of the active
+ * branch AND line-count parity (the core invariant — downstream
+ * extraction's `startLine` values depend on it).
+ */
+describe('Issue #51: Win32/Win16 + True=-1 + #Const support', () => {
+  // ---- atom 1: Win32 is True on modern Windows -------------------------
+  it('atom 1: #If Win32 Then keeps the branch on modern Windows', () => {
+    const src = [
+      '#If Win32 Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toContain('Debug.Print "x"');
+    expect(lines[2]).toBe('');
+  });
+
+  // ---- atom 2: Win16 is False (not a current target) --------------------
+  it('atom 2: #If Win16 Then blanks the branch on modern Windows', () => {
+    const src = [
+      '#If Win16 Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toBe('');
+  });
+
+  // ---- atom 3: #Const True keeps the branch ----------------------------
+  it('atom 3: #Const MODO_DEBUG = True then #If MODO_DEBUG Then keeps the branch', () => {
+    const src = [
+      '#Const MODO_DEBUG = True',
+      '#If MODO_DEBUG Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toContain('Debug.Print "x"');
+    expect(lines[3]).toBe('');
+  });
+
+  // ---- atom 4: #Const False → #Else branch kept ------------------------
+  it('atom 4: #Const MODO_DEBUG = False then #If / #Else selects the else branch', () => {
+    const src = [
+      '#Const MODO_DEBUG = False',
+      '#If MODO_DEBUG Then',
+      'Debug.Print "x"',
+      '#Else',
+      'Debug.Print "y"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(6);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe('');
+    expect(lines[4]).toContain('Debug.Print "y"');
+    expect(lines[5]).toBe('');
+  });
+
+  // ---- atom 5: #Const integer literal preserved through comparison ----
+  it('atom 5: #Const X = 1 then #If X = 1 Then keeps the branch', () => {
+    const src = [
+      '#Const X = 1',
+      '#If X = 1 Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toContain('Debug.Print "x"');
+    expect(lines[3]).toBe('');
+  });
+
+  // ---- atom 6: VBA True = -1 semantics for #If Win64 = -1 --------------
+  it('atom 6: #If Win64 = -1 Then keeps the branch (VBA True = -1 semantics)', () => {
+    const src = [
+      '#If Win64 = -1 Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toContain('Debug.Print "x"');
+    expect(lines[2]).toBe('');
+  });
+
+  // ---- atom 7: #Const True cannot satisfy `= False` --------------------
+  it('atom 7: #Const X = True then #If X = False Then blanks the branch', () => {
+    const src = [
+      '#Const X = True',
+      '#If X = False Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe('');
+  });
+
+  // ---- atom 8: unknown identifier still evaluates false (regression) ---
+  it('atom 8 (negative regression): unknown identifier still evaluates false', () => {
+    const src = [
+      '#If NonExistent Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toBe('');
+  });
+
+  // ---- defensive: line-count parity across every atom -------------------
+  it('Issue #51 atoms preserve line-count parity across the suite', () => {
+    // Re-runs the same six positive atoms and checks line-count parity on
+    // each — the core invariant the preprocessor guarantees (downstream
+    // extraction's `startLine` values depend on it).
+    const sources = [
+      // atom 1
+      '#If Win32 Then\nDebug.Print "x"\n#End If',
+      // atom 3
+      '#Const MODO_DEBUG = True\n#If MODO_DEBUG Then\nDebug.Print "x"\n#End If',
+      // atom 4
+      '#Const MODO_DEBUG = False\n#If MODO_DEBUG Then\nDebug.Print "x"\n#Else\nDebug.Print "y"\n#End If',
+      // atom 5
+      '#Const X = 1\n#If X = 1 Then\nDebug.Print "x"\n#End If',
+      // atom 6
+      '#If Win64 = -1 Then\nDebug.Print "x"\n#End If',
+      // atom 7
+      '#Const X = True\n#If X = False Then\nDebug.Print "x"\n#End If',
+    ];
+    for (const src of sources) {
+      const out = preprocessConditionalCompilation(src);
+      expect(out.split('\n').length).toBe(src.split('\n').length);
+    }
+  });
+
+  // ---- defensive: #Const line itself is blanked (parity) ----------------
+  it('Issue #51: #Const directive line is blanked (line-count parity)', () => {
+    const src = '#Const MODO_DEBUG = True\nSub X()\nEnd Sub';
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('Sub X()');
+    expect(lines[2]).toBe('End Sub');
+    expect(out).not.toContain('#Const');
+  });
+
+  // ---- defensive: #Const RHS as a quoted string is unsupported ----------
+  it('Issue #51: #Const NAME = "literal" is unsupported (no entry, line blanked)', () => {
+    // VBA forbids string-literal #Const values (CC evaluates only at
+    // compile time, no runtime string comparison); the implementation
+    // must NOT store the entry, and the line must be blanked.
+    const src = [
+      '#Const X = "hello"',
+      '#If X Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(4);
+    expect(lines[0]).toBe(''); // #Const line blanked regardless
+    // X is unknown — falls through to the unknown-identifier fallback
+    // (the conservative behavior preserved from the original
+    // implementation), which blanks the branch.
+    expect(lines[2]).toBe('');
+  });
+});

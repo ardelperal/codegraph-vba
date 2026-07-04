@@ -2,7 +2,7 @@
 
 # CodeGraph (VBA & Access Fork)
 
-## 🎉 1.2 Released — Access forms are first-class
+## 🎉 1.5 Released — VBA conditional-compilation is now correct + TempVars/RecordSource/RowSource indexed
 
 Already installed? Run `codegraph-vba upgrade` to update in place.
 

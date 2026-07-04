@@ -66,8 +66,8 @@ The public API surface is `src/index.ts` — the `CodeGraph` class wires all the
 
 Defined in `src/types.ts`. Both extractors and resolvers must use these exact strings.
 
-- **NodeKind**: `file`, `module`, `class`, `struct`, `interface`, `trait`, `protocol`, `function`, `method`, `property`, `field`, `variable`, `constant`, `enum`, `enum_member`, `type_alias`, `namespace`, `parameter`, `import`, `export`, `route`, `component`.
-- **EdgeKind**: `contains`, `calls`, `imports`, `exports`, `extends`, `implements`, `references`, `type_of`, `returns`, `instantiates`, `overrides`, `decorates`.
+- **NodeKind**: `file`, `module`, `class`, `struct`, `interface`, `trait`, `protocol`, `function`, `method`, `property`, `field`, `variable`, `constant`, `enum`, `enum_member`, `type_alias`, `namespace`, `parameter`, `import`, `export`, `route`, `component`, `query`, `form-layout`, `form-instance-control`, `report-layout`.
+- **EdgeKind**: `contains`, `calls`, `imports`, `exports`, `extends`, `implements`, `references`, `type_of`, `returns`, `instantiates`, `overrides`, `decorates`, `event-handler`, `opens-form`, `opens-report`, `raises-event`, `subscribes-event`, `type-member`.
 
 ### Multi-agent installer
 

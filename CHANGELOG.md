@@ -9,6 +9,23 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- VBA's bang (`!`) references now resolve in the graph: `Me!Control`, `Forms!FormName!Control`, and the same pattern against reports and subforms link to the actual control declared in the `.form.txt` / `.report.txt`, so `codegraph callers` and `codegraph_explore` show every reference to a control by name and renaming a control is safe to do against the graph. (#68)
+
+- `DoCmd.OpenReport "ReportName"` and `DoCmd.OpenQuery "QueryName"` are now modeled as edges from the calling line to a stub node for the target — the same treatment `DoCmd.OpenForm` already had since 1.2.0 — so impact analysis and `codegraph callers` follow report and query opens without grepping each `.cls` by hand. (#69)
+
+- Access form and control data-source bindings are now first-class graph edges: a form's `RecordSource` (the table or saved query it loads) and a listbox/combobox's `RowSource` (the rows it displays) are linked to the target query or table, so `codegraph_explore` follows a form's data layer and impact analysis surfaces every form and control a query or table feeds. (#74)
+
+- Access `TempVars` — the cross-form session-state mechanism (`TempVars!UserID = "x"` / `TempVars("UserID")`) used to share values between forms without a global module — are now graph nodes keyed by name, so `codegraph_explore` finds every reader and writer of a TempVar and impact analysis shows what a rename touches. (#75)
+
+- VBA source files now ingest cleanly regardless of encoding: a leading UTF-8 BOM is stripped automatically, and Windows-1252 (the legacy default for many Access exports) falls back transparently when UTF-8 decoding fails — so indexing an Access project no longer crashes or produces mojibake node names for files saved with non-UTF-8 encodings. (#71)
+
+### Fixes
+
+- VBA conditional-compilation blocks (`#If Win32 Then …`, `#If Win64 Then …`, `#Const MY_FLAG = 1`) are now evaluated correctly: `Win32` / `Win64` / `Win16` / `Mac` resolve against the current platform, `True` is recognized as `-1` (the VBA convention), and module-level `#Const` declarations are honored — so the graph only indexes the branches that actually compile, instead of silently dropping or double-counting code in `#If` / `#Else` blocks. (#76)
+
+- A `Const` declared inside a VBA procedure no longer leaks to module scope — the previous behavior made a `Const X = 1` inside a `Sub` look like a module-level constant that any other procedure could read, producing phantom references in the graph. Procedure-local constants are now correctly scoped to their `Sub` / `Function`, so the graph only links real module-level constants. (#73)
 
 ## [1.4.0] - 2026-07-02
 

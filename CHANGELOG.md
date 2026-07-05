@@ -9,6 +9,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-07-05
+
 ### Fixes
 
 - VBA blast-radius now correctly reports test-file callers (`Test_*.bas` / `Test_*.cls`) when the only reference to a symbol is via a type declaration (`Dim x As MyEnum`). The VBA extractor creates synthetic class stubs for type references in the referencing file; a new resolution pass (`resolveVbaReferenceStubs`) now repoints these edges to the real type node in the defining file, so `getCallers` finds test files that reference the symbol. (#78)

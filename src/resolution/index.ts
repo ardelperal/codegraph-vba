@@ -1443,6 +1443,75 @@ export class ReferenceResolver {
   }
 
   /**
+   * VBA #78 — post-extraction resolver pass for `references` edges that
+   * target synthetic `class` nodes created by the extractor for cross-file
+   * type references (`Dim x As MyEnum`, `Set x = New Foo`).
+   *
+   * The extractor creates a synthetic `class` node keyed on
+   * `(filePath, 'class', name, 0)` in the REFERENCING file. When the real
+   * type lives in a different file (e.g. `enum MyEnum` in `Module1.bas`),
+   * the `references` edge points to the synthetic stub instead of the real
+   * type node. This method repoints those edges to the real type node when
+   * uniquely resolvable by name + kind, then deletes the synthetic stub.
+   *
+   * Resolution strategy: for each VBA `class` stub, find all real project
+   * nodes with the same `name` whose `kind` is one of the type-like kinds
+   * (enum, class, interface, struct, type_alias). Exactly one match →
+   * repoint; zero or 2+ → decline (leave the stub as-is).
+   *
+   * Duplicate `(source, target, 'references')` rows after repointing are
+   * collapsed the same way `resolveVbaCallStubs` handles F1 duplicates.
+   */
+  resolveVbaReferenceStubs(): number {
+    const stubs = this.queries.getVbaReferenceStubs();
+    if (stubs.length === 0) return 0;
+
+    const TYPE_KINDS = new Set(['enum', 'class', 'interface', 'struct', 'type_alias']);
+    const stubIds = new Set(stubs.map((s) => s.id));
+    const seenTuples = new Set<string>();
+    let repointedCount = 0;
+
+    for (const stub of stubs) {
+      // Find real type nodes with the same name, excluding other stubs
+      const candidates = this.queries
+        .getNodesByName(stub.name)
+        .filter(
+          (n) =>
+            n.id !== stub.id &&
+            !stubIds.has(n.id) &&
+            TYPE_KINDS.has(n.kind) &&
+            n.language === 'vba',
+        );
+
+      if (candidates.length !== 1) continue; // 0 or 2+ → decline
+
+      const real = candidates[0]!;
+      const incoming = this.queries.getIncomingEdges(stub.id, ['references']);
+
+      for (const edge of incoming) {
+        if (edge.id === undefined) continue;
+        const tupleKey = `${edge.source}\0${real.id}`;
+        if (
+          seenTuples.has(tupleKey) ||
+          this.queries.edgeExists(edge.source, real.id, 'references')
+        ) {
+          this.queries.deleteEdgeById(edge.id);
+          continue;
+        }
+        seenTuples.add(tupleKey);
+        const meta = { ...(edge.metadata ?? {}), resolvedBy: 'vba-reference-stub' };
+        this.queries.repointEdgeTarget(edge.id, real.id, JSON.stringify(meta));
+        repointedCount++;
+      }
+
+      // Stub is no longer referenced — safe to delete
+      this.queries.deleteNode(stub.id);
+    }
+
+    return repointedCount;
+  }
+
+  /**
    * Resolve a single VBA call-stub node to its real target, or `null` when
    * unresolvable/ambiguous. See `resolveVbaCallStubs` for the two-step
    * strategy (exact qualifiedName match, then `.bas` module-scoped

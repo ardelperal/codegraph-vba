@@ -1419,6 +1419,32 @@ export class QueryBuilder {
   }
 
   /**
+   * Find VBA reference-stub candidate nodes for `resolveVbaReferenceStubs`
+   * (issue #78).
+   *
+   * A VBA reference-stub is a `class` node whose `metadata.synthesizedBy`
+   * starts with `vba-` and is targeted by a `references` edge from a VBA
+   * module. These synthetic nodes are created by the extractor for
+   * cross-file type references (`Dim x As MyEnum`) but may not have been
+   * resolved to the real type node during the main resolution pass.
+   */
+  getVbaReferenceStubs(): Node[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT n.* FROM nodes n
+         JOIN edges e ON e.target = n.id
+         WHERE n.kind = 'class' AND n.language = 'vba'
+           AND e.kind = 'references'
+           AND EXISTS (
+             SELECT 1 FROM nodes src
+             WHERE src.id = e.source AND src.language = 'vba'
+           )`
+      )
+      .all() as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
    * Repoint an edge's `target` + `metadata` in place, leaving all other
    * columns (source, kind, line, col, provenance) untouched. Used by
    * `resolveVbaCallStubs` to redirect a stub `calls` edge to its resolved

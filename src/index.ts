@@ -433,6 +433,10 @@ export class CodeGraph {
           // cross-file target now that the whole project has been indexed
           // (needs every file's nodes/edges to be resolvable candidates).
           this.resolver.resolveVbaCallStubs();
+          // VBA #78: repoint `references` edges from synthetic class stubs
+          // (created by the extractor for `Dim x As Type`) to the real type
+          // node, so blast-radius can find test-file callers of enums/classes.
+          this.resolver.resolveVbaReferenceStubs();
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
@@ -560,6 +564,9 @@ export class CodeGraph {
           // VBA #12b: same lifecycle — repoint any newly-emitted qualified
           // call-stub edges to their real cross-file target (#12).
           this.resolver.resolveVbaCallStubs();
+          // VBA #78: same lifecycle — repoint `references` edges from
+          // synthetic class stubs to real type nodes (#78).
+          this.resolver.resolveVbaReferenceStubs();
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.

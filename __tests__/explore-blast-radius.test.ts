@@ -70,4 +70,39 @@ describe('codegraph_explore — blast radius', () => {
     // lonelyLeaf has zero callers — it must never appear under a blast-radius bullet.
     expect(text).not.toMatch(/Blast radius[\s\S]*`lonelyLeaf`/);
   });
+
+  it('resolves VBA reference stubs so test-file callers appear in blast radius', async () => {
+    // VBA fixture: Module1 defines an enum, Test_Module1 references it via Dim.
+    const vbaDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-blast-vba-'));
+    const vbaSrc = path.join(vbaDir, 'src');
+    fs.mkdirSync(vbaSrc, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(vbaSrc, 'Module1.bas'),
+      `Option Explicit\n\nPublic Enum MyEnum\n    Foo = 1\n    Bar = 2\nEnd Enum\n\nPublic Sub DoStuff()\n    Dim x As Long\n    x = 5\nEnd Sub\n`,
+    );
+    fs.writeFileSync(
+      path.join(vbaSrc, 'Test_Module1.bas'),
+      `Option Explicit\n\nPublic Sub Test_DoStuff()\n    Dim result As MyEnum\n    result = Foo\n    DoStuff\nEnd Sub\n`,
+    );
+
+    const vbaCg = CodeGraph.initSync(vbaDir, { config: { include: ['**/*.bas', '**/*.cls'], exclude: [] } });
+    await vbaCg.indexAll();
+    const vbaHandler = new ToolHandler(vbaCg);
+
+    try {
+      const res = await vbaHandler.execute('codegraph_explore', { query: 'MyEnum' });
+      const text = res.content[0].text;
+
+      // The blast radius must show the test file as a covering test.
+      expect(text).toContain('**Blast radius');
+      expect(text).toContain('`MyEnum`');
+      expect(text).toMatch(/tests:.*Test_Module1\.bas/);
+      // Must NOT show the false "no covering tests" warning.
+      expect(text).not.toMatch(/no covering tests/);
+    } finally {
+      vbaCg.destroy();
+      fs.rmSync(vbaDir, { recursive: true, force: true });
+    }
+  });
 });

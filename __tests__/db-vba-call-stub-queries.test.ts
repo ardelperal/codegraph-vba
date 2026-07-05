@@ -123,6 +123,42 @@ describe('VBA call-stub DB primitives', () => {
     });
   });
 
+  describe('getVbaReferenceStubs()', () => {
+    it('returns a class node targeted by a references edge from a VBA module', () => {
+      const caller: Node = { ...makeVbaFunctionNode('caller'), language: 'vba' };
+      const stub: Node = { ...makeVbaFunctionNode('stub', 'MyEnum'), kind: 'class', language: 'vba' };
+      q.insertNodes([caller, stub]);
+      q.insertEdges([
+        {
+          source: 'caller',
+          target: 'stub',
+          kind: 'references',
+          provenance: 'heuristic',
+        },
+      ]);
+
+      const stubs = q.getVbaReferenceStubs();
+      expect(stubs.map((n) => n.id)).toContain('stub');
+    });
+
+    it('does NOT return a node targeted by a non-references edge', () => {
+      const caller: Node = { ...makeVbaFunctionNode('caller'), language: 'vba' };
+      const stub: Node = { ...makeVbaFunctionNode('stub', 'MyEnum'), kind: 'class', language: 'vba' };
+      q.insertNodes([caller, stub]);
+      q.insertEdges([
+        {
+          source: 'caller',
+          target: 'stub',
+          kind: 'calls',
+          provenance: 'heuristic',
+        },
+      ]);
+
+      const stubs = q.getVbaReferenceStubs();
+      expect(stubs.map((n) => n.id)).not.toContain('stub');
+    });
+  });
+
   describe('node metadata persistence', () => {
     it('round-trips node metadata through the nodes table', () => {
       q.insertNode({

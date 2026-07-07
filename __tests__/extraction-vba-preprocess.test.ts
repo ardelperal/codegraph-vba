@@ -662,3 +662,224 @@ describe('Issue #51: Win32/Win16 + True=-1 + #Const support', () => {
     expect(lines[2]).toBe('');
   });
 });
+
+describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero truthiness', () => {
+  it('performs bitwise And, Or, Not, Xor correctly on integers', () => {
+    // 1 And 2 = 0
+    const srcAnd = [
+      '#If 1 And 2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcAnd)).toContain('inactive');
+
+    // 3 And 6 = 2 (non-zero is truthy)
+    const srcAndTrue = [
+      '#If 3 And 6 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcAndTrue)).toContain('active');
+
+    // 1 Or 2 = 3
+    const srcOr = [
+      '#If 1 Or 2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcOr)).toContain('active');
+
+    // 3 Xor 6 = 5
+    const srcXor = [
+      '#If 3 Xor 6 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcXor)).toContain('active');
+
+    // Not 0 = -1 (truthy)
+    const srcNotZero = [
+      '#If Not 0 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcNotZero)).toContain('active');
+
+    // Not -1 = 0 (falsy)
+    const srcNotMinusOne = [
+      '#If Not -1 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcNotMinusOne)).toContain('inactive');
+
+    // Not 2 = -3 (truthy)
+    const srcNotTwo = [
+      '#If Not 2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcNotTwo)).toContain('active');
+  });
+
+  it('respects VBA operator precedence', () => {
+    // 1 Or 2 And 4:
+    // If And > Or: 1 Or (2 And 4) -> 1 Or 0 -> 1 (truthy)
+    // If Or > And: (1 Or 2) And 4 -> 3 And 4 -> 0 (falsy)
+    const srcPrecedenceOrAnd = [
+      '#If 1 Or 2 And 4 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcPrecedenceOrAnd)).toContain('active');
+
+    // 1 Xor 2 And 2:
+    // If And > Xor: 1 Xor (2 And 2) -> 1 Xor 2 -> 3 (truthy)
+    // If Xor > And: (1 Xor 2) And 2 -> 3 And 2 -> 2 (truthy)
+    // Let's test: 3 Xor 2 And 2:
+    // If And > Xor: 3 Xor (2 And 2) -> 3 Xor 2 -> 1 (truthy)
+    // If Xor > And: (3 Xor 2) And 2 -> 1 And 2 -> 0 (falsy)
+    const srcPrecedenceXorAnd = [
+      '#If 3 Xor 2 And 2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcPrecedenceXorAnd)).toContain('active');
+
+    // 1 And 2 = 2:
+    // If comparison > bitwise: 1 And (2 = 2) -> 1 And -1 -> 1 (truthy)
+    // If bitwise > comparison: (1 And 2) = 2 -> 0 = 2 -> 0 (falsy)
+    const srcPrecedenceCompAnd = [
+      '#If 1 And 2 = 2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcPrecedenceCompAnd)).toContain('active');
+  });
+
+  it('evaluates comparisons to -1 (True) or 0 (False)', () => {
+    // (2 > 1) evaluates to -1
+    const srcCompTrue = [
+      '#If (2 > 1) = -1 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcCompTrue)).toContain('active');
+
+    // (1 > 2) evaluates to 0
+    const srcCompFalse = [
+      '#If (1 > 2) = 0 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcCompFalse)).toContain('active');
+  });
+
+  it('implements non-zero truthiness', () => {
+    const srcTwo = [
+      '#If 2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcTwo)).toContain('active');
+
+    const srcMinusFive = [
+      '#If -5 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcMinusFive)).toContain('active');
+
+    const srcZero = [
+      '#If 0 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcZero)).toContain('inactive');
+  });
+
+  it('handles invalid syntax gracefully', () => {
+    const srcMismatchedParen = [
+      '#If (1 And 2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcMismatchedParen)).toContain('inactive');
+
+    const srcInvalidTokens = [
+      '#If 1 And 2 @@@ Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcInvalidTokens)).toContain('inactive');
+  });
+
+  it('triangulates overflow, nested negation, and case insensitivity', () => {
+    // 32-bit signed integer overflow: 2147483647 + 1 = -2147483648
+    const srcOverflow = [
+      '#If 2147483647 + 1 = -2147483648 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcOverflow)).toContain('active');
+
+    // Case insensitivity of #Const variables
+    const srcCaseConst = [
+      '#Const MyVar = 42',
+      '#If MYVAR = 42 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcCaseConst)).toContain('active');
+
+    // Nested negation: -(5 + -(3)) = -2
+    const srcNestedNeg = [
+      '#If -(5 + -(3)) = -2 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(srcNestedNeg)).toContain('active');
+  });
+});
+
+

@@ -308,106 +308,364 @@ export function preprocessConditionalCompilation(src: string): string {
  * false (the conservative behaviour preserved from the original
  * implementation).
  */
-function normalizeConditionalExpression(
-  expr: string,
-  constTable: ReadonlyMap<string, string>,
-): string | null {
-  let normalized = expr.trim();
-  normalized = normalized.replace(/\bThen\s*$/i, '');
-  normalized = normalized.replace(/<>/g, '!==');
-  normalized = normalized.replace(/(?<![<>=])=(?![=])/g, '===');
+interface Token {
+  type:
+    | 'NUMBER'
+    | 'PAREN_OPEN'
+    | 'PAREN_CLOSE'
+    | 'OP_NOT'
+    | 'OP_AND'
+    | 'OP_OR'
+    | 'OP_XOR'
+    | 'COMP_LE'
+    | 'COMP_GE'
+    | 'COMP_NE'
+    | 'COMP_LT'
+    | 'COMP_GT'
+    | 'COMP_EQ'
+    | 'OP_MINUS'
+    | 'OP_PLUS'
+    | 'EOF';
+  numberValue?: number;
+}
 
-  // #Const table first — user-defined constants shadow the hardcoded ones
-  // below. The replacement value is a numeric literal string (e.g. "-1"),
-  // so it cannot re-introduce identifiers or operators. Use a replacement
-  // function so the value is inserted verbatim — `String.replace(regex,
-  // string)` would otherwise interpret `$`/`\\` in the replacement.
-  for (const [name, value] of constTable) {
-    normalized = normalized.replace(
-      new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi'),
-      () => value,
-    );
+function tokenize(expr: string, constTable: ReadonlyMap<string, string>): Token[] {
+  const tokens: Token[] = [];
+  let i = 0;
+
+  while (i < expr.length) {
+    const ch = expr[i];
+
+    if (ch === undefined) {
+      break;
+    }
+
+    // Skip whitespace
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+
+    // Parentheses
+    if (ch === '(') {
+      tokens.push({ type: 'PAREN_OPEN' });
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      tokens.push({ type: 'PAREN_CLOSE' });
+      i++;
+      continue;
+    }
+
+    // Comparison operators (multi-character first)
+    if (ch === '<' && expr[i + 1] === '=') {
+      tokens.push({ type: 'COMP_LE' });
+      i += 2;
+      continue;
+    }
+    if (ch === '>' && expr[i + 1] === '=') {
+      tokens.push({ type: 'COMP_GE' });
+      i += 2;
+      continue;
+    }
+    if (ch === '<' && expr[i + 1] === '>') {
+      tokens.push({ type: 'COMP_NE' });
+      i += 2;
+      continue;
+    }
+    if (ch === '<') {
+      tokens.push({ type: 'COMP_LT' });
+      i++;
+      continue;
+    }
+    if (ch === '>') {
+      tokens.push({ type: 'COMP_GT' });
+      i++;
+      continue;
+    }
+    if (ch === '=') {
+      tokens.push({ type: 'COMP_EQ' });
+      i++;
+      continue;
+    }
+
+    // Unary/Binary signs
+    if (ch === '-') {
+      tokens.push({ type: 'OP_MINUS' });
+      i++;
+      continue;
+    }
+    if (ch === '+') {
+      tokens.push({ type: 'OP_PLUS' });
+      i++;
+      continue;
+    }
+
+    // Number literals (decimal integers)
+    if (/\d/.test(ch)) {
+      const start = i;
+      while (i < expr.length && /\d/.test(expr[i] ?? '')) {
+        i++;
+      }
+      const numStr = expr.substring(start, i);
+      tokens.push({ type: 'NUMBER', numberValue: parseInt(numStr, 10) | 0 });
+      continue;
+    }
+
+    // Identifiers and Keywords
+    if (/[A-Za-z_]/.test(ch)) {
+      const start = i;
+      while (i < expr.length && /[A-Za-z0-9_]/.test(expr[i] ?? '')) {
+        i++;
+      }
+      const id = expr.substring(start, i);
+      const idUpper = id.toUpperCase();
+
+      // Keywords
+      if (idUpper === 'NOT') {
+        tokens.push({ type: 'OP_NOT' });
+        continue;
+      }
+      if (idUpper === 'AND') {
+        tokens.push({ type: 'OP_AND' });
+        continue;
+      }
+      if (idUpper === 'OR') {
+        tokens.push({ type: 'OP_OR' });
+        continue;
+      }
+      if (idUpper === 'XOR') {
+        tokens.push({ type: 'OP_XOR' });
+        continue;
+      }
+
+      // Resolve Identifier case-insensitively
+      let resolvedValue: number | null = null;
+      for (const [key, val] of constTable.entries()) {
+        if (key.toUpperCase() === idUpper) {
+          resolvedValue = parseInt(val, 10) | 0;
+          break;
+        }
+      }
+
+      // Hardcoded environment constants
+      if (resolvedValue === null) {
+        switch (idUpper) {
+          case 'VBA7':
+          case 'WIN64':
+          case 'WIN32':
+          case 'TRUE':
+            resolvedValue = -1;
+            break;
+          case 'WIN16':
+          case 'MAC':
+          case 'FALSE':
+            resolvedValue = 0;
+            break;
+        }
+      }
+
+      // Fallback
+      if (resolvedValue === null) {
+        resolvedValue = 0;
+      }
+
+      tokens.push({ type: 'NUMBER', numberValue: resolvedValue });
+      continue;
+    }
+
+    // Any other character is a lexing error
+    throw new Error(`Unexpected character in expression: ${ch}`);
   }
 
-  normalized = normalized
-    .replace(/\bVBA7\b/gi, 'true')
-    .replace(/\bWin64\b/gi, 'true')
-    .replace(/\bWin32\b/gi, 'true')
-    .replace(/\bWin16\b/gi, 'false')
-    .replace(/\bMac\b/gi, 'false')
-    .replace(/\bAnd\b/gi, '&&')
-    .replace(/\bOr\b/gi, '||')
-    .replace(/\bNot\b/gi, '!')
-    // VBA CC truthiness: True = -1, False = 0. Substitute the JS boolean
-    // literals with their VBA numeric equivalents so a downstream
-    // `Win64 = -1` comparison (after the `=`→`===` rewrite) evaluates
-    // true. See the doc comment on `preprocessConditionalCompilation`
-    // for the chosen simplification.
-    .replace(/\btrue\b/gi, '-1')
-    .replace(/\bfalse\b/gi, '0')
-    .trim();
+  tokens.push({ type: 'EOF' });
+  return tokens;
+}
 
-  // Whitelist — after every substitution the expression should consist
-  // only of signed integer literals, operators, parens, and whitespace.
-  // The original whitelist accepted `true`/`false` literals; we have
-  // converted those to `-1`/`0` above, so the alternation is no longer
-  // needed. The signed-integer alternation accepts unary minus.
-  if (!/^(?:-?\d+|\s|&&|\|\||!|===|!==|\(|\))+?$/.test(normalized)) {
-    return null;
+class Parser {
+  private tokens: Token[];
+  private current = 0;
+
+  constructor(tokens: Token[]) {
+    this.tokens = tokens;
   }
 
-  return normalized;
+  private peek(): Token {
+    return this.tokens[this.current] || { type: 'EOF' };
+  }
+
+  private advance(): Token {
+    const t = this.peek();
+    if (t.type !== 'EOF') {
+      this.current++;
+    }
+    return t;
+  }
+
+  private match(type: Token['type']): boolean {
+    if (this.peek().type === type) {
+      this.advance();
+      return true;
+    }
+    return false;
+  }
+
+  public parseExpression(): number {
+    return this.parseOr();
+  }
+
+  public ensureEOF(): void {
+    if (this.peek().type !== 'EOF') {
+      throw new Error(`Unexpected trailing token: ${this.peek().type}`);
+    }
+  }
+
+  // Level 7: Or (lowest precedence)
+  private parseOr(): number {
+    let expr = this.parseXor();
+    while (this.match('OP_OR')) {
+      const right = this.parseXor();
+      expr = (expr | right) | 0;
+    }
+    return expr;
+  }
+
+  // Level 6: Xor
+  private parseXor(): number {
+    let expr = this.parseAnd();
+    while (this.match('OP_XOR')) {
+      const right = this.parseAnd();
+      expr = (expr ^ right) | 0;
+    }
+    return expr;
+  }
+
+  // Level 5: And
+  private parseAnd(): number {
+    let expr = this.parseComparison();
+    while (this.match('OP_AND')) {
+      const right = this.parseComparison();
+      expr = (expr & right) | 0;
+    }
+    return expr;
+  }
+
+  // Level 4: Comparisons (=, <>, <, <=, >, >=)
+  private parseComparison(): number {
+    let expr = this.parseNot();
+    while (true) {
+      const op = this.peek().type;
+      if (
+        op === 'COMP_EQ' ||
+        op === 'COMP_NE' ||
+        op === 'COMP_LT' ||
+        op === 'COMP_LE' ||
+        op === 'COMP_GT' ||
+        op === 'COMP_GE'
+      ) {
+        this.advance();
+        const right = this.parseNot();
+        let cmpResult = false;
+        switch (op) {
+          case 'COMP_EQ':
+            cmpResult = expr === right;
+            break;
+          case 'COMP_NE':
+            cmpResult = expr !== right;
+            break;
+          case 'COMP_LT':
+            cmpResult = expr < right;
+            break;
+          case 'COMP_LE':
+            cmpResult = expr <= right;
+            break;
+          case 'COMP_GT':
+            cmpResult = expr > right;
+            break;
+          case 'COMP_GE':
+            cmpResult = expr >= right;
+            break;
+        }
+        expr = (cmpResult ? -1 : 0) | 0;
+      } else {
+        break;
+      }
+    }
+    return expr;
+  }
+
+  // Level 3: Not
+  private parseNot(): number {
+    if (this.match('OP_NOT')) {
+      const expr = this.parseNot();
+      return (~expr) | 0;
+    }
+    return this.parseUnary();
+  }
+
+  // Level 2: Unary -, +
+  private parseUnary(): number {
+    if (this.match('OP_MINUS')) {
+      const expr = this.parseUnary();
+      return (-expr) | 0;
+    }
+    if (this.match('OP_PLUS')) {
+      const expr = this.parseUnary();
+      return expr | 0;
+    }
+    return this.parsePrimary();
+  }
+
+  // Level 1: Primary (Paren, Number)
+  private parsePrimary(): number {
+    const t = this.peek();
+    if (this.match('NUMBER')) {
+      return (t.numberValue ?? 0) | 0;
+    }
+    if (this.match('PAREN_OPEN')) {
+      const expr = this.parseExpression();
+      if (!this.match('PAREN_CLOSE')) {
+        throw new Error('Mismatched parenthesis: expected )');
+      }
+      return expr;
+    }
+    throw new Error(`Unexpected token: ${t.type}`);
+  }
 }
 
 function evaluateConditionalExpression(
   expr: string,
   constTable: ReadonlyMap<string, string> = new Map(),
 ): boolean {
-  const normalized = normalizeConditionalExpression(expr, constTable);
-  if (normalized === null) return false;
   try {
-    return Boolean(Function(`"use strict"; return (${normalized});`)());
+    let exprClean = expr.trim();
+    if (exprClean.toLowerCase().endsWith('then')) {
+      exprClean = exprClean.slice(0, -4).trim();
+    }
+    const tokens = tokenize(exprClean, constTable);
+    const parser = new Parser(tokens);
+    const result = parser.parseExpression();
+    parser.ensureEOF();
+    return result !== 0;
   } catch {
     return false;
   }
 }
 
-/**
- * Evaluate the RHS of a `#Const NAME = <value>` directive. Returns the
- * value as a JS-substitutable numeric string (e.g. `"-1"`, `"0"`,
- * `"1"`) so it can be substituted verbatim into subsequent #If
- * expressions, OR `null` if the RHS is unsupported (whitelist failure,
- * non-numeric/non-boolean evaluation result).
- *
- * Re-uses the same normalize pipeline as #If so recursive `#Const X = Y`
- * references resolve against the existing table (but a self-reference is
- * impossible: the new entry is added AFTER the RHS is evaluated, so it
- * is invisible to its own evaluation).
- */
 function evaluateConstRhs(
   rhs: string,
   constTable: ReadonlyMap<string, string>,
 ): string | null {
-  const normalized = normalizeConditionalExpression(rhs, constTable);
-  if (normalized === null) return null;
-  let result: unknown;
   try {
-    result = Function(`"use strict"; return (${normalized});`)();
+    const tokens = tokenize(rhs.trim(), constTable);
+    const parser = new Parser(tokens);
+    const result = parser.parseExpression();
+    parser.ensureEOF();
+    return String(result);
   } catch {
     return null;
   }
-  if (typeof result === 'number' && Number.isFinite(result)) {
-    return String(Math.trunc(result));
-  }
-  if (typeof result === 'boolean') {
-    return result ? '-1' : '0';
-  }
-  return null;
-}
-
-/** Escape regex metacharacters so a name can be interpolated safely. */
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

@@ -672,6 +672,40 @@ describe('VbaExtractor — startLine aligns with original source (C1 invariant)'
     // even though the body uses line continuations on lines 7-9.
     expect(func?.startLine).toBe(6);
   });
+
+  it('does not break extraction when a comment ends with a line continuation _', () => {
+    const src = [
+      'Attribute VB_Name = "modHelpers"',
+      '',
+      'Public Function Helper() As Long',
+      '    \' This is a comment ending in _',
+      '    Call OtherFunc',
+      'End Function',
+      '',
+      'Public Sub OtherFunc()',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modHelpers.bas', src);
+    const edge = r.edges.find((e) => e.kind === 'calls');
+    expect(edge).toBeDefined();
+  });
+
+  it('extracts calls spanning multiple lines with a comment after the continuation character', () => {
+    const src = [
+      'Attribute VB_Name = "modHelpers"',
+      '',
+      'Public Function Helper() As Long',
+      '    Call OtherFunc(1, _ \' comment here',
+      '                   2)',
+      'End Function',
+      '',
+      'Public Sub OtherFunc()',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/modHelpers.bas', src);
+    const edge = r.edges.find((e) => e.kind === 'calls');
+    expect(edge).toBeDefined();
+  });
 });
 
 /**

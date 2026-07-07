@@ -70,13 +70,13 @@ export class VbaExtractor {
         return this.result(startTime);
       }
 
-      // Pre-process pipeline (per design): join continuations, blank inactive
-      // conditional-compilation branches, strip comments, then sweep the
-      // joined-but-uncommented source. The conditional preprocessor preserves
-      // line count by replacing directives/inactive lines with empty strings.
-      const joined = joinLineContinuations(this.source);
-      const preprocessed = preprocessConditionalCompilation(joined);
-      const uncommented = stripVbaComments(preprocessed);
+      // Pre-process pipeline (per design): strip comments first to prevent
+      // comments from blocking or causing false line continuations, then join
+      // continuations, and blank inactive conditional-compilation branches.
+      // Line count is preserved by all stages.
+      const cleanComments = stripVbaComments(this.source);
+      const joined = joinLineContinuations(cleanComments);
+      const uncommented = preprocessConditionalCompilation(joined);
 
       // Create the file node.
       this.ctx.nodes.push(this.createFileNode());

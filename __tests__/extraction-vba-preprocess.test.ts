@@ -882,4 +882,53 @@ describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero 
   });
 });
 
+describe('custom targets and precedence', () => {
+  it('respects precedence: local #Const > custom targets > built-in defaults', () => {
+    // 1. Custom target overrides built-in: Win64 defaults to true, but if we configure Win64=false, it should be false.
+    const src1 = [
+      '#If Win64 Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(src1, { Win64: false })).toContain('inactive');
+
+    // 2. Local #Const overrides custom target:
+    // Custom target sets MYVAR = false, but local #Const sets MYVAR = true.
+    const src2 = [
+      '#Const MYVAR = True',
+      '#If MYVAR Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(src2, { MYVAR: false })).toContain('active');
+  });
+
+  it('checks custom target keys case-insensitively', () => {
+    const src = [
+      '#If my_custom_platform Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(src, { MY_CUSTOM_PLATFORM: true })).toContain('active');
+  });
+
+  it('falls back undefined custom targets to 0', () => {
+    const src = [
+      '#If UNDEFINED_TARGET Then',
+      'Debug.Print "active"',
+      '#Else',
+      'Debug.Print "inactive"',
+      '#End If',
+    ].join('\n');
+    expect(preprocessConditionalCompilation(src, { OTHER_TARGET: true })).toContain('inactive');
+  });
+});
+
+
 

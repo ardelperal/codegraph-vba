@@ -54,6 +54,9 @@ export interface ProjectConfig {
    * and your `.gitignore`.
    */
   exclude?: string[];
+  vba?: {
+    targets?: Record<string, boolean>;
+  };
 }
 
 /** Parsed, validated view of a project's `codegraph.json`. */
@@ -61,6 +64,9 @@ interface ParsedConfig {
   extensions: Record<string, Language>;
   includeIgnored: string[];
   exclude: string[];
+  vba?: {
+    targets?: Record<string, boolean>;
+  };
 }
 
 interface CacheEntry {
@@ -83,6 +89,7 @@ const EMPTY_CONFIG: ParsedConfig = Object.freeze({
   extensions: EMPTY_EXTENSIONS,
   includeIgnored: Object.freeze([]) as unknown as string[],
   exclude: Object.freeze([]) as unknown as string[],
+  vba: undefined,
 });
 
 /**
@@ -134,10 +141,16 @@ function parseConfig(file: string): ParsedConfig {
   const extensions = extractExtensions(parsed, file);
   const includeIgnored = extractIncludeIgnored(parsed, file);
   const exclude = extractExclude(parsed, file);
-  if (extensions === EMPTY_EXTENSIONS && includeIgnored.length === 0 && exclude.length === 0) {
+  const vbaTargets = extractVbaTargets(parsed, file);
+  if (extensions === EMPTY_EXTENSIONS && includeIgnored.length === 0 && exclude.length === 0 && vbaTargets === undefined) {
     return EMPTY_CONFIG;
   }
-  return { extensions, includeIgnored, exclude };
+  return {
+    extensions,
+    includeIgnored,
+    exclude,
+    ...(vbaTargets !== undefined ? { vba: { targets: vbaTargets } } : {}),
+  };
 }
 
 /**
@@ -216,6 +229,32 @@ function extractExclude(parsed: object, file: string): string[] {
   return out;
 }
 
+function extractVbaTargets(parsed: object, file: string): Record<string, boolean> | undefined {
+  const vba = (parsed as any).vba;
+  if (vba === undefined) return undefined;
+  if (!vba || typeof vba !== 'object' || Array.isArray(vba)) {
+    logWarn(`Ignoring "vba" in ${PROJECT_CONFIG_FILENAME}: must be an object`, { file });
+    return undefined;
+  }
+
+  const targets = vba.targets;
+  if (targets === undefined) return undefined;
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
+    logWarn(`Ignoring "vba.targets" in ${PROJECT_CONFIG_FILENAME}: must be an object`, { file });
+    return undefined;
+  }
+
+  const out: Record<string, boolean> = {};
+  for (const [rawKey, rawVal] of Object.entries(targets)) {
+    if (typeof rawVal !== 'boolean') {
+      logWarn(`Ignoring invalid target "${rawKey}" in ${PROJECT_CONFIG_FILENAME}: value must be a boolean`, { file });
+      continue;
+    }
+    out[rawKey] = rawVal;
+  }
+  return out;
+}
+
 /**
  * Load the parsed `codegraph.json` for a project, mtime-cached. A missing or
  * malformed file yields the zero-config default. One `stat` (and at most one
@@ -256,14 +295,29 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   const includeIgnored = [...new Set([...localConfig.includeIgnored, ...fileConfig.includeIgnored])];
   const exclude = [...new Set([...localConfig.exclude, ...fileConfig.exclude])];
 
+  let vba: { targets?: Record<string, boolean> } | undefined;
+  if (localConfig.vba?.targets || fileConfig.vba?.targets) {
+    vba = {
+      targets: {
+        ...localConfig.vba?.targets,
+        ...fileConfig.vba?.targets,
+      }
+    };
+  }
+
   const config: ParsedConfig = {
     extensions,
     includeIgnored,
     exclude,
+    vba,
   };
 
   cache.set(rootDir, { mtimeMs: fileMtimeMs, localMtimeMs, config });
   return config;
+}
+
+export function loadVbaConfig(rootDir: string): { targets?: Record<string, boolean> } {
+  return loadParsedConfig(rootDir).vba || {};
 }
 
 /**

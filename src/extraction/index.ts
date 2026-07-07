@@ -22,7 +22,7 @@ import { extractFromSource } from './tree-sitter';
 import { readVbaSource, isVbaFamilyFile } from './vba-source';
 import { ParseWorkerPool, resolveParsePoolSize } from './parse-pool';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages } from './grammars';
-import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns } from '../project-config';
+import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadVbaConfig } from '../project-config';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
@@ -1182,6 +1182,7 @@ export class ExtractionOrchestrator {
     // Threaded into language detection so custom-extension files load the right
     // grammar and store under the mapped language.
     const overrides = loadExtensionOverrides(this.rootDir);
+    const vbaTargets = loadVbaConfig(this.rootDir).targets;
 
     const log = verbose
       ? (msg: string) => { console.log(`[worker] ${msg}`); }
@@ -1278,8 +1279,8 @@ export class ExtractionOrchestrator {
      */
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
       const language = detectLanguage(filePath, content, overrides);
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames));
-      return pool.requestParse({ filePath, content, language, frameworkNames });
+      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames, vbaTargets));
+      return pool.requestParse({ filePath, content, language, frameworkNames, vbaTargets });
     };
 
     // --- Bounded rolling-window dispatch, ordered commit ---

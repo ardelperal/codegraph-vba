@@ -55,18 +55,18 @@ import type { Language, ExtractionResult } from '../types';
 const PARSER_RESET_INTERVAL = 5000;
 const parseCounts = new Map<Language, number>();
 
-parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language }) => {
+parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language; vbaTargets?: Record<string, boolean> }) => {
   if (msg.type === 'load-grammars') {
     await loadGrammarsForLanguages(msg.languages!);
     parentPort!.postMessage({ type: 'grammars-loaded' });
   } else if (msg.type === 'parse') {
-    const { id, filePath, content, frameworkNames } = msg;
+    const { id, filePath, content, frameworkNames, vbaTargets } = msg;
     try {
       // The main thread resolves the language (it holds the project's
       // codegraph.json extension overrides) and sends it; fall back to detection
       // for older callers / safety.
       const language = msg.language ?? detectLanguage(filePath!, content);
-      const result: ExtractionResult = extractFromSource(filePath!, content!, language, frameworkNames);
+      const result: ExtractionResult = extractFromSource(filePath!, content!, language, frameworkNames, vbaTargets);
 
       // Periodic parser reset to reclaim WASM heap memory
       const count = (parseCounts.get(language) ?? 0) + 1;

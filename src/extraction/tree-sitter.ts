@@ -5644,7 +5644,8 @@ export function extractFromSource(
   filePath: string,
   source: string,
   language?: Language,
-  frameworkNames?: string[]
+  frameworkNames?: string[],
+  vbaTargets?: Record<string, boolean>
 ): ExtractionResult {
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();
@@ -5701,7 +5702,7 @@ export function extractFromSource(
   } else if (detectedLanguage === 'vba') {
     // VBA standard/class/legacy modules — `.bas`, `.cls`, `.frm`, `.dsr`.
     // See `vba-code-extraction` spec (REQ-CODE-1..11).
-    const extractor = new VbaExtractor(filePath, source);
+    const extractor = new VbaExtractor(filePath, source, vbaTargets);
     result = extractor.extract();
   } else if (detectedLanguage === 'sql') {
     // Dysflow-exported saved Access queries — `queries/<Name>.sql`. Only

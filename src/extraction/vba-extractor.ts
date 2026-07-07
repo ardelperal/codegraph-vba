@@ -52,10 +52,12 @@ export class VbaExtractor {
   private filePath: string;
   private source: string;
   private ctx: VbaExtractorContext;
+  private vbaTargets?: Record<string, boolean>;
 
-  constructor(filePath: string, source: string) {
+  constructor(filePath: string, source: string, vbaTargets?: Record<string, boolean>) {
     this.filePath = filePath;
     this.source = source;
+    this.vbaTargets = vbaTargets;
     this.ctx = new VbaExtractorContext(filePath);
   }
 
@@ -76,7 +78,7 @@ export class VbaExtractor {
       // Line count is preserved by all stages.
       const cleanComments = stripVbaComments(this.source);
       const joined = joinLineContinuations(cleanComments);
-      const uncommented = preprocessConditionalCompilation(joined);
+      const uncommented = preprocessConditionalCompilation(joined, this.vbaTargets);
 
       // Create the file node.
       this.ctx.nodes.push(this.createFileNode());

@@ -219,7 +219,7 @@ const CONST_DIRECTIVE = /^\s*#Const\s+([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(.+?)\s*$/i
  * downstream extraction keeps source-line parity. Unsupported/unsafe
  * expressions evaluate to false rather than throwing.
  */
-export function preprocessConditionalCompilation(src: string): string {
+export function preprocessConditionalCompilation(src: string, customTargets?: Record<string, boolean>): string {
   if (!src) return src;
   const lines = src.split('\n');
   const out: string[] = [];
@@ -240,7 +240,7 @@ export function preprocessConditionalCompilation(src: string): string {
     if (constMatch) {
       const name = (constMatch[1] ?? '').trim();
       const rhs = (constMatch[2] ?? '').trim();
-      const value = evaluateConstRhs(rhs, constTable);
+      const value = evaluateConstRhs(rhs, constTable, customTargets);
       if (value !== null) {
         constTable.set(name, value);
       }
@@ -251,7 +251,7 @@ export function preprocessConditionalCompilation(src: string): string {
     const ifMatch = IF_DIRECTIVE.exec(line);
     if (ifMatch) {
       const parentActive = stack.every((frame) => frame.active);
-      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '', constTable);
+      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '', constTable, customTargets);
       stack.push({ parentActive, active, branchTaken: active });
       out.push('');
       continue;
@@ -264,7 +264,7 @@ export function preprocessConditionalCompilation(src: string): string {
         const active =
           frame.parentActive &&
           !frame.branchTaken &&
-          evaluateConditionalExpression(elseIfMatch[1] ?? '', constTable);
+          evaluateConditionalExpression(elseIfMatch[1] ?? '', constTable, customTargets);
         frame.active = active;
         if (active) frame.branchTaken = true;
       }
@@ -329,7 +329,11 @@ interface Token {
   numberValue?: number;
 }
 
-function tokenize(expr: string, constTable: ReadonlyMap<string, string>): Token[] {
+function tokenize(
+  expr: string,
+  constTable: ReadonlyMap<string, string>,
+  customTargets?: Record<string, boolean>
+): Token[] {
   const tokens: Token[] = [];
   let i = 0;
 
@@ -446,6 +450,16 @@ function tokenize(expr: string, constTable: ReadonlyMap<string, string>): Token[
         if (key.toUpperCase() === idUpper) {
           resolvedValue = parseInt(val, 10) | 0;
           break;
+        }
+      }
+
+      // Configured Preprocessor Targets (case-insensitively)
+      if (resolvedValue === null && customTargets) {
+        for (const [key, val] of Object.entries(customTargets)) {
+          if (key.toUpperCase() === idUpper) {
+            resolvedValue = val ? -1 : 0;
+            break;
+          }
         }
       }
 
@@ -637,13 +651,14 @@ class Parser {
 function evaluateConditionalExpression(
   expr: string,
   constTable: ReadonlyMap<string, string> = new Map(),
+  customTargets?: Record<string, boolean>,
 ): boolean {
   try {
     let exprClean = expr.trim();
     if (exprClean.toLowerCase().endsWith('then')) {
       exprClean = exprClean.slice(0, -4).trim();
     }
-    const tokens = tokenize(exprClean, constTable);
+    const tokens = tokenize(exprClean, constTable, customTargets);
     const parser = new Parser(tokens);
     const result = parser.parseExpression();
     parser.ensureEOF();
@@ -656,9 +671,10 @@ function evaluateConditionalExpression(
 function evaluateConstRhs(
   rhs: string,
   constTable: ReadonlyMap<string, string>,
+  customTargets?: Record<string, boolean>,
 ): string | null {
   try {
-    const tokens = tokenize(rhs.trim(), constTable);
+    const tokens = tokenize(rhs.trim(), constTable, customTargets);
     const parser = new Parser(tokens);
     const result = parser.parseExpression();
     parser.ensureEOF();

@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- VBA SQL table references now record whether the code reads or writes each table — derived from the SQL verb (`SELECT`/`FROM` and `JOIN` are reads; `INSERT`, `UPDATE`, and `DELETE` targets are writes; a form's `RecordSource`/`RowSource` binding is a read) — so you can ask which procedures *write* a table versus only read it. (#87)
+
 ## [1.6.0] - 2026-07-11
 
 ### Changed

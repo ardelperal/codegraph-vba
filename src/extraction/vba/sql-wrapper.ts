@@ -78,7 +78,22 @@ const SQL_VAR_DOCMD_RUNSQL_RE =
  * are captured whole.
  */
 const SQL_TABLE_RE =
-  /\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
+  /\b(FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
+
+/**
+ * Classify a table reference as a data `read` or `write` from the SQL verb,
+ * so `metadata.access` lets consumers answer "who WRITES table X" vs "who
+ * READS table X". The mutating targets are writes: `INSERT INTO <t>`,
+ * `UPDATE <t>`, and the `FROM <t>` of a `DELETE` (Access's `DELETE FROM x`
+ * makes that FROM the delete target). Every other `FROM`/`JOIN` source table
+ * — including the source of an `INSERT ... SELECT` — is a read.
+ */
+function classifySqlAccess(sqlString: string, clause: string): 'read' | 'write' {
+  const kw = clause.toUpperCase();
+  if (kw === 'INTO' || kw === 'UPDATE') return 'write';
+  if (kw === 'FROM' && /^\s*DELETE\b/i.test(sqlString)) return 'write';
+  return 'read';
+}
 
 /**
  * Regex matching the chained `& "..."` literals that may follow a
@@ -226,11 +241,12 @@ function emitSqlTableReferences(
   const tableRe = new RegExp(SQL_TABLE_RE.source, SQL_TABLE_RE.flags);
   let tm: RegExpExecArray | null;
   while ((tm = tableRe.exec(sqlString)) !== null) {
-    const table = (tm[1] ?? '').replace(/[\[\]]/g, '');
+    const clause = tm[1] ?? '';
+    const table = (tm[2] ?? '').replace(/[\[\]]/g, '');
     if (!table) continue;
     const key = `${lineNum}:${table}`;
     if (dedupe.has(key)) continue;
     dedupe.add(key);
-    ctx.emitReference(table, lineNum, 0, 'vba-sql-table');
+    ctx.emitReference(table, lineNum, 0, 'vba-sql-table', classifySqlAccess(sqlString, clause));
   }
 }

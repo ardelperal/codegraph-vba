@@ -506,7 +506,12 @@ export class VbaFormExtractor {
       target: targetId,
       kind: 'references',
       provenance: 'heuristic',
-      metadata: { synthesizedBy },
+      // RecordSource/RowSource are data-display bindings — a form/report or a
+      // list/combo control READS its source. Tagging `access: 'read'` keeps
+      // the metadata.access field uniformly present across every SQL-derived
+      // table reference (the in-code SQL sweep classifies read vs write from
+      // the statement verb; a binding is always a read).
+      metadata: { synthesizedBy, access: 'read' },
       line: lineNum,
       column: 0,
     });

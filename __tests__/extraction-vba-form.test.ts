@@ -258,6 +258,33 @@ End`;
     expect(target?.qualifiedName).toBe('TbExpedientes');
   });
 
+  it('form-level RecordSource binding carries access=read', () => {
+    const src = `Attribute VB_Name = "Form_Expedientes"
+Begin Form
+    RecordSource = "TbExpedientes"
+End`;
+    const r = extract('src/forms/Form_Expedientes.form.txt', src);
+    const recordEdge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-record-source',
+    );
+    expect(recordEdge?.metadata?.access).toBe('read');
+  });
+
+  it('control-level RowSource binding carries access=read', () => {
+    const src = `Attribute VB_Name = "Form_Pedidos"
+Begin Form
+    Begin ComboBox
+        Name = "cmbProvincias"
+        RowSource = "SELECT Id, Nombre FROM TbProvincias"
+    End
+End`;
+    const r = extract('src/forms/Form_Pedidos.form.txt', src);
+    const rowEdge = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-row-source',
+    );
+    expect(rowEdge?.metadata?.access).toBe('read');
+  });
+
   it('Issue #49: form-level RecordSource with SELECT/FROM SQL emits one references edge per table', () => {
     const src = `Attribute VB_Name = "Form_Usuarios"
 Begin Form

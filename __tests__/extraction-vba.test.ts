@@ -2230,6 +2230,107 @@ describe('VbaExtractor — Dim As New references the actual class (Issue #1)', (
 });
 
 // ---------------------------------------------------------------------------
+// Factory return-type inference: `Set x = Factory()` types x from the
+// same-file function's declared return type so `x.Method` resolves to the
+// factory's class instead of a dead-end `x.Method` stub.
+// ---------------------------------------------------------------------------
+
+describe('VbaExtractor — Set x = Factory() types x from the function return type', () => {
+  it('undeclared x: Set x = CrearFoo() makes x.Method resolve to the factory class Foo', () => {
+    const src = `Public Function CrearFoo() As Foo
+End Function
+Public Sub Usar()
+  Set x = CrearFoo()
+  x.Hacer 1
+End Sub`;
+    const r = extract('src/modules/Fabrica.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.metadata?.member === 'Hacer',
+    );
+    expect(edge).toBeDefined();
+    // Without the factory inference, receiverType would be the raw var `x`.
+    expect(edge?.metadata?.receiverType).toBe('Foo');
+    const target = r.nodes.find((n) => n.id === edge?.target);
+    expect(target?.name).toBe('Foo.Hacer');
+  });
+
+  it('emits a vba-factory-return reference edge to the factory class', () => {
+    const src = `Public Function CrearFoo() As Foo
+End Function
+Public Sub Usar()
+  Set x = CrearFoo()
+End Sub`;
+    const r = extract('src/modules/Fabrica.bas', src);
+    const ref = r.edges.find(
+      (e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-factory-return',
+    );
+    expect(ref).toBeDefined();
+    const target = r.nodes.find((n) => n.id === ref?.target);
+    expect(target?.name).toBe('Foo');
+  });
+
+  it('factory return type overrides a generic Dim x As Object', () => {
+    const src = `Public Function CrearFoo() As Foo
+End Function
+Public Sub Usar()
+  Dim x As Object
+  Set x = CrearFoo()
+  x.Hacer 1
+End Sub`;
+    const r = extract('src/modules/Fabrica.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.metadata?.member === 'Hacer',
+    );
+    expect(edge?.metadata?.receiverType).toBe('Foo');
+  });
+
+  it('an explicit Dim x As Bar (project class) wins over the factory return type', () => {
+    const src = `Public Function CrearFoo() As Foo
+End Function
+Public Sub Usar()
+  Dim x As Bar
+  Set x = CrearFoo()
+  x.Hacer 1
+End Sub`;
+    const r = extract('src/modules/Fabrica.bas', src);
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.metadata?.member === 'Hacer',
+    );
+    expect(edge?.metadata?.receiverType).toBe('Bar');
+  });
+
+  it('a primitive-returning function does not type x (Set is invalid there anyway) — no over-reach', () => {
+    // CrearId returns Long; a bare `y.Method` with y assigned from CrearId
+    // must NOT resolve to `Long.Method`.
+    const src = `Public Function CrearId() As Long
+End Function
+Public Sub Usar()
+  Set y = CrearId()
+  y.Hacer 1
+End Sub`;
+    const r = extract('src/modules/Fabrica.bas', src);
+    const foundLong = r.edges.some(
+      (e) => e.kind === 'calls' && e.metadata?.receiverType === 'Long',
+    );
+    expect(foundLong).toBe(false);
+  });
+
+  it('cross-file factory (function not in this file) leaves x untyped — no false resolution', () => {
+    const src = `Public Sub Usar()
+  Set x = CrearExterno()
+  x.Hacer 1
+End Sub`;
+    const r = extract('src/modules/Consumidor.bas', src);
+    // No same-file return type is known, so the receiver stays the raw `x`
+    // (existing undeclared-receiver behavior) — never a bogus class.
+    const edge = r.edges.find(
+      (e) => e.kind === 'calls' && e.metadata?.member === 'Hacer',
+    );
+    expect(edge?.metadata?.receiverType).toBe('x');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Issue #3: Multi-variable Dim — all types must be referenced
 // ---------------------------------------------------------------------------
 

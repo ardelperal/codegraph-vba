@@ -33,6 +33,18 @@ import { scanSqlInLine, trackSqlVariableAssignment } from './sql-wrapper';
 const SET_NEW_RE =
   /\bSet\s+(\p{L}[\p{L}\p{N}_]*)\s*=\s*New\s+(\p{L}[\p{L}\p{N}_]*)(?:\.(\p{L}[\p{L}\p{N}_]*))?/iu;
 
+/**
+ * Factory-return inference: `Set <var> = <Factory>(...)` or `Set <var> =
+ * <Factory>` where <Factory> is a bare same-file function. Groups: (1)
+ * variable, (2) factory name. The trailing `(?:\(|$)` requires the factory
+ * name to be followed by `(` or end-of-expression, so a qualified
+ * `Set x = obj.Member` (the `.` breaks the match) and the `New` form
+ * (`New Foo` — `New` is followed by a space + type, not `(`/end) never match.
+ * Runs on the MASKED line so a string literal never triggers it.
+ */
+const SET_CALL_RE =
+  /\bSet\s+(\p{L}[\p{L}\p{N}_]*)\s*=\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:\(|$)/iu;
+
 /** Issue #43: track the receiver for `With <expr>` / `End With` blocks. */
 const WITH_START_RE = /^\s*With\b\s+(.+?)\s*$/iu;
 const WITH_END_RE = /^\s*End\s+With\b/iu;
@@ -166,6 +178,35 @@ export function sweepCallsAndSql(ctx: VbaExtractorContext, src: string): void {
               variableName: varName,
             });
             ctx.emitReference(outerType, lineNum, 0, 'vba-set-new');
+          }
+        }
+      } else {
+        // Factory-return inference: `Set x = <Factory>(...)`. Type x from a
+        // same-file function's project-class return type so a later
+        // `x.Method` resolves to the factory's class. Overrides a generic
+        // `Dim x As Object/Variant` (or an untyped x), but yields to an
+        // explicit `Dim x As <ProjectClass>` — the declaration is the
+        // authoritative type. Runs after SET_NEW (which owns the `New` form).
+        const setCall = SET_CALL_RE.exec(callScanLine);
+        if (setCall) {
+          const varName = setCall[1] ?? '';
+          const factory = (setCall[2] ?? '').toLowerCase();
+          const retType = factory ? ctx.functionReturnTypes.get(factory) : undefined;
+          if (varName && retType) {
+            const existing = ctx.localVarTypeMap.get(varName.toLowerCase());
+            const existingIsProjectClass =
+              !!existing &&
+              !existing.qualified &&
+              !PRIMITIVE_TYPES.has(existing.outer.toLowerCase());
+            if (!existingIsProjectClass) {
+              ctx.localVarTypeMap.set(varName.toLowerCase(), {
+                outer: retType,
+                qualified: false,
+                assignedWithSet: true,
+                variableName: varName,
+              });
+              ctx.emitReference(retType, lineNum, 0, 'vba-factory-return');
+            }
           }
         }
       }

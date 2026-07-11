@@ -7,9 +7,26 @@
 import * as path from 'path';
 import { Node, Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
-import { PROC_RE } from './constants';
+import { PROC_RE, PRIMITIVE_TYPES } from './constants';
 import { parseEventHandlerName } from './text-utils';
 import { VbaExtractorContext, ProcInfo } from './context';
+
+/**
+ * Parse a `Function`/`Property Get` declaration's return type — the `As
+ * <Type>` that follows the parameter list (or the name, for a paren-less
+ * declaration). Parameters can carry their own `As <Type>`, so we anchor on
+ * the text AFTER the last `)` when parens are present; the bracketed form
+ * `As [Type With Spaces]` is unwrapped. Returns null when there is no return
+ * type (a `Sub`, or a function with an implicit `Variant` return).
+ */
+function parseReturnType(line: string): string | null {
+  const afterParams = line.includes(')')
+    ? line.slice(line.lastIndexOf(')') + 1)
+    : line;
+  const m = /\bAs\s+(?:New\s+)?(?:\[([^\]]+)\]|(\p{L}[\p{L}\p{N}_]*))/iu.exec(afterParams);
+  if (!m) return null;
+  return m[1] ?? m[2] ?? null;
+}
 
 export function sweepProcedures(ctx: VbaExtractorContext, src: string): ProcInfo[] {
   const procs: ProcInfo[] = [];
@@ -48,6 +65,21 @@ export function sweepProcedures(ctx: VbaExtractorContext, src: string): ProcInfo
       : kindRaw.startsWith('function')
         ? 'function'
         : 'property';
+
+    // Factory-return inference: record a function's project-class return type
+    // so the call sweep can type `Set x = <name>(...)`. Restricted to `Sub`'s
+    // sibling `Function` (a `Property Let/Set` has no return type and a
+    // `Property Get`'s `As <Type>` is rarely a factory target). Primitives are
+    // skipped — `x.Method` on a primitive is never a project call.
+    if (kind === 'function') {
+      const retType = parseReturnType(line);
+      if (retType && !PRIMITIVE_TYPES.has(retType.toLowerCase())) {
+        const key = name.toLowerCase();
+        if (!ctx.functionReturnTypes.has(key)) {
+          ctx.functionReturnTypes.set(key, retType);
+        }
+      }
+    }
 
     const proc: ProcInfo = {
       name,

@@ -34,7 +34,7 @@ var path = require('path');
 var target = process.platform + '-' + process.arch; // e.g. darwin-arm64, linux-x64
 var pkg = '@aroman22/codegraph-vba-' + target;
 var isWindows = process.platform === 'win32';
-var REPO = 'ardelperal/codegraph';
+var REPO = 'ardelperal/codegraph-vba';
 
 main().catch(function (e) {
   process.stderr.write('codegraph: ' + (e && e.message ? e.message : String(e)) + '\n');

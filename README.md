@@ -47,7 +47,7 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## This is a fork — VBA / Access + Dysflow
 
-This repository is a fork of [`colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph), maintained at [`ardelperal/codegraph`](https://github.com/ardelperal/codegraph). It is **identical to the upstream for every language except VBA / Access** — the fork adds nothing new to TypeScript, Python, Go, Rust, Java, etc., and is kept rebased against `colbymchenry/codegraph:main` so it stays current with upstream fixes and benchmarks.
+This repository is a fork of [`colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph), maintained at [`ardelperal/codegraph-vba`](https://github.com/ardelperal/codegraph-vba). It is **identical to the upstream for every language except VBA / Access** — the fork adds nothing new to TypeScript, Python, Go, Rust, Java, etc., and is kept rebased against `colbymchenry/codegraph:main` so it stays current with upstream fixes and benchmarks.
 
 **Why fork?** To add VBA / Access language support that does not exist upstream, so agents can navigate Microsoft Access projects managed by Dysflow the same way they navigate TypeScript or Python today. See the [VBA / Access + Dysflow integration](#vba--access--dysflow-integration) section below for the feature spec, the pattern table, and the hard invariants.
 
@@ -63,7 +63,7 @@ pnpm add -g codegraph-vba
 
 ```bash
 # Option B — clone, build, and use the local binary (full control, useful for contributing):
-git clone https://github.com/ardelperal/codegraph.git
+git clone https://github.com/ardelperal/codegraph-vba.git
 cd codegraph
 pnpm install              # pnpm is the source of truth — see pnpm-lock.yaml
 pnpm run build            # produces dist/bin/codegraph.js
@@ -86,10 +86,10 @@ npm i -g @colbymchenry/codegraph
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh
 
 # Windows (PowerShell)
-irm https://raw.githubusercontent.com/ardelperal/codegraph/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex
 ```
 
 <details>
@@ -837,7 +837,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 **MCP hits `database is locked`** — current builds shouldn't: CodeGraph bundles its own Node runtime and uses Node's built-in `node:sqlite` in WAL mode, where concurrent reads never block on a writer. If you still see it:
 
-- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/ardelperal/codegraph/main/install.ps1 | iex` (Windows), or `npm i -g codegraph-vba@latest`.
+- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex` (Windows), or `npm i -g codegraph-vba@latest`.
 - **`codegraph-vba status` shows `Journal:` other than `wal`** — WAL couldn't be enabled on this filesystem (common on network shares and WSL2 `/mnt`), so reads can block on writes. Move the project (with its `.codegraph-vba/` folder) onto a local disk.
 
 **MCP server not connecting** — Your agent starts the server itself, so you don't launch it by hand. Make sure the project is initialized and indexed (`codegraph-vba status`) and that the path in your MCP config is correct. If it still won't connect, re-run `codegraph-vba install` to rewrite the config.
@@ -850,11 +850,11 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=ardelperal%2Fcodegraph&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=ardelperal%2Fcodegraph-vba&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ardelperal/codegraph&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ardelperal/codegraph&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ardelperal/codegraph&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ardelperal/codegraph-vba&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ardelperal/codegraph-vba&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ardelperal/codegraph-vba&type=date&legend=top-left" />
  </picture>
 </a>
 
@@ -868,6 +868,6 @@ MIT
 
 **Made for AI coding agents — Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, and Kiro**
 
-[Report Bug](https://github.com/ardelperal/codegraph/issues) · [Request Feature](https://github.com/ardelperal/codegraph/issues)
+[Report Bug](https://github.com/ardelperal/codegraph-vba/issues) · [Request Feature](https://github.com/ardelperal/codegraph-vba/issues)
 
 </div>

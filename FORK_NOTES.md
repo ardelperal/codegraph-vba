@@ -48,7 +48,7 @@ Todas las edges sintéticas deben llevar `provenance: 'heuristic'` y
 
 ## Remotes
 
-- `origin`: `ardelperal/codegraph` (este fork).
+- `origin`: `ardelperal/codegraph-vba` (este fork).
 - `upstream`: `colbymchenry/codegraph` (fuente original).
 
 ## Sincronización con upstream

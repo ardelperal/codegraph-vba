@@ -30,6 +30,7 @@ import {
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { scanDynamicDispatch } from './dynamic-boundaries';
+import { getUpdateNotice } from '../upgrade/update-check';
 
 /**
  * An expected, recoverable "codegraph can't serve this" condition — most
@@ -93,6 +94,36 @@ const CONTAINER_NODE_KINDS = new Set<NodeKind>([
 function lastQualifierPart(symbol: string): string {
   const parts = symbol.split(/::|[./]/).filter((p) => p.length > 0);
   return parts[parts.length - 1] ?? symbol;
+}
+
+/**
+ * Normalize Erlang-native symbol spellings in an explore query into the shapes
+ * the rest of the pipeline already understands. Agents working Erlang code
+ * name symbols the way the language spells them — `mod:fn/3`, `init/2` — and
+ * those tokens previously died in both consumers: the flow-builder's token
+ * filter rejects `:` and `/arity` outright, and the search-side field parser
+ * eats `mod:fn` as an unknown `field:value`. Measured on cowboy: the agent
+ * named `cowboy_stream_h:request_process/3` in two queries, got no body back
+ * either time, and fell back to Read.
+ *
+ *   - `fn/3` → `fn` (arity tail after an identifier; a path segment like
+ *     `src/2fa` doesn't match because the tail must be all digits)
+ *   - `mod:fn` → `mod.fn` (exactly one colon between identifiers, so it rides
+ *     the existing Class.method qualified handling; `::`, URLs, drive letters,
+ *     and times don't match, and the query language's own field prefixes —
+ *     kind:/lang:/language:/path:/name: — are left alone)
+ *
+ * Safe cross-language: Lua's `t:m` spelling maps to the same `t.m` its
+ * qualified names use, and no other supported spelling contains a bare
+ * single-colon identifier pair.
+ */
+export function normalizeQuerySpelling(query: string): string {
+  return query
+    .replace(/\b([A-Za-z_][\w@]*)\/(\d{1,3})(?=$|[\s,()[\]/])/g, '$1')
+    .replace(
+      /(^|[\s,()[\]])(?!(?:kind|lang|language|path|name):)([a-z_][\w@]*):([A-Za-z_][\w@]*)(?=$|[\s,()[\]])/g,
+      '$1$2.$3'
+    );
 }
 
 /**
@@ -334,10 +365,15 @@ function numberSourceLines(slice: string, firstLineNumber: number): string {
  * extension) stop blowing every header up to H1–H4. The path is bold + a code
  * span so it still reads as a header, and the leading ``**` `` stays a UNIQUE,
  * greppable marker — no other explore line begins with it — that the explore
- * truncation boundary (`handleExplore`) and the offload chunker
- * (`reasoning/reasoner.ts`) both key off to cut on whole file sections.
+ * truncation boundary (`handleExplore`) keys off to cut on whole file sections.
  */
 const FILE_SECTION_PREFIX = '**`';
+// Placeholder for codegraph_explore's "Found N symbols across M files." line.
+// The honest N/M can only be known after the final truncation drops trailing
+// sections (#1046), so the header is emitted as this sentinel and substituted
+// at the very end. This bracketed token never occurs in rendered source or a
+// file path, so the final string-replace can't collide.
+const SUMMARY_SENTINEL = '[[codegraph-explore-summary]]';
 function fileSectionHeader(filePath: string, suffix: string): string {
   return suffix
     ? `${FILE_SECTION_PREFIX}${filePath}\`** — ${suffix}`
@@ -1364,15 +1400,20 @@ export class ToolHandler {
       }
 
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
-      // is attached and healthy (daemon mode), so the daemon's single event loop
-      // stays free for the MCP transport under concurrent load — otherwise N
-      // concurrent explores serialize AND starve the transport until the whole
-      // batch drains (clients then time out). With no pool (direct mode) or a
-      // degraded one, dispatch runs in-process exactly as before. Either way the
-      // result flows through the cross-cutting notices — worktree-index mismatch
-      // (#155) and per-file staleness (#403) — which need the watched MAIN
-      // instance and so are always applied here, never in the worker.
-      const result = (this.queryPool && this.queryPool.healthy)
+      // is attached, healthy, AND has finished its first cold start (daemon
+      // mode), so the daemon's single event loop stays free for the MCP
+      // transport under concurrent load — otherwise N concurrent explores
+      // serialize AND starve the transport until the whole batch drains
+      // (clients then time out). Before the first worker is warm, calls run
+      // in-process: a call queued behind a cold start sat invisible until the
+      // 45s busy backstop — the daemon's first tool call stalling for however
+      // long a worker spawn takes on a loaded machine (the #662 flake). With
+      // no pool (direct mode) or a degraded one, dispatch runs in-process
+      // exactly as before. Either way the result flows through the
+      // cross-cutting notices — worktree-index mismatch (#155) and per-file
+      // staleness (#403) — which need the watched MAIN instance and so are
+      // always applied here, never in the worker.
+      const result = (this.queryPool && this.queryPool.healthy && this.queryPool.ready)
         ? await this.queryPool.run(toolName, args)
         : await this.executeReadTool(toolName, args);
       const withWorktree = this.withWorktreeNotice(result, args.projectPath as string | undefined);
@@ -1849,7 +1890,7 @@ export class ToolHandler {
       // names (Class.method / Class::method) — the agent's most precise input,
       // resolved exactly by findAllSymbols. (The old strip mangled Class.method
       // into Class, throwing the method away.)
-      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro)$/i;
+      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
       const tokens = [...new Set(
         query.split(/[\s,()[\]]+/)
           .map((t) => t.replace(FILE_EXT, '').trim())
@@ -1909,11 +1950,18 @@ export class ToolHandler {
         }
         // Same token, non-callable synth endpoints (capped, precision-gated on an
         // actual heuristic edge so plain config constants never qualify).
+        // Per-token sub-cap so one token's many endpoints (10 nix option writes
+        // of `programs.git.enable` across test configs) can't fill the pool
+        // before later tokens (`home.file`) get a slot.
         if (dynNamed.size < 12) {
+          let tokenDyn = 0;
           for (const n of hits) {
             if (CALLABLE.has(n.kind) || !DYN_KINDS.has(n.kind) || dynNamed.has(n.id)) continue;
-            if (hasHeuristicEdge(n.id)) dynNamed.set(n.id, n);
-            if (dynNamed.size >= 12) break;
+            if (hasHeuristicEdge(n.id)) {
+              dynNamed.set(n.id, n);
+              tokenDyn++;
+            }
+            if (dynNamed.size >= 12 || tokenDyn >= 4) break;
           }
         }
         if (named.size > 40) break;
@@ -2452,8 +2500,11 @@ export class ToolHandler {
    * tax on small projects while earning its keep on large ones.
    */
   private async handleExplore(args: Record<string, unknown>): Promise<ToolResult> {
-    const query = this.validateString(args.query, 'query');
-    if (typeof query !== 'string') return query;
+    const rawQuery = this.validateString(args.query, 'query');
+    if (typeof rawQuery !== 'string') return rawQuery;
+    // One normalization point so the flow-builder, relevance search, and
+    // ranking all see the same canonical spelling (Erlang `mod:fn/arity`).
+    const query = normalizeQuerySpelling(rawQuery);
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const projectRoot = cg.getProjectRoot();
@@ -2526,11 +2577,19 @@ export class ToolHandler {
     // trace endpoint picker uses) and inject it as an entry, so every symbol the
     // agent explicitly named is in the subgraph and its file is scored.
     const namedSeedIds = new Set<string>();
+    // The subset of named seeds that earns the named-FIRST sort tier. We still
+    // SEED every ≤3-def name (so RWR / flow ranking is unchanged), but only the
+    // most-substantive def is tiered — a bare name's unrelated namesakes (Go's
+    // `NewClient` = real client + test fake + xds pool) must not fill the tier
+    // and crowd out the real answer file (grpc's `dialoptions.go`). Corroborated
+    // overloads (the query also named the type) all earn it. (#1064)
+    const tierSeedIds = new Set<string>();
     {
-      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro)$/i;
+      const FILE_EXT = /\.(?:java|kt|kts|ts|tsx|js|jsx|mjs|cjs|cs|py|go|rb|php|swift|rs|cpp|cc|cxx|c|h|hpp|scala|lua|dart|vue|svelte|astro|erl|hrl)$/i;
       const CALLABLE = new Set(['method', 'function', 'component', 'constructor']);
       const isTestPath = (p: string) => /(^|\/)(tests?|specs?|__tests__|testdata|mocks?|fixtures?)\//i.test(p) || /\.(test|spec)\.[a-z]+$/i.test(p);
       const bodyLines = (n: Node) => Math.max(0, (n.endLine ?? n.startLine) - n.startLine);
+      const callerCount = (n: Node) => { try { return cg.getCallers(n.id).length; } catch { return 0; } };
       const tokens = [...new Set(
         query.split(/[\s,()[\]]+/)
           .map((t) => t.replace(FILE_EXT, '').trim())
@@ -2553,6 +2612,36 @@ export class ToolHandler {
           const lc = ct.toLowerCase();
           return n.filePath.toLowerCase().includes(lc) || n.qualifiedName.toLowerCase().includes(lc);
         });
+      // NL-stopword guard: this seeding treats every token as "a symbol the
+      // agent named", but explore also takes natural-language questions, whose
+      // ordinary English words collide with real callables — "…check the latest
+      // version…" exact-matched a lone `check()` method, which then earned the
+      // named-FIRST sort tier and displaced the corroborated answer files from
+      // the whole render budget (the agent fell back to Read). A shape-precise
+      // token (camelCase, PascalCase, snake_case, qualified) is an unambiguous
+      // symbol reference and seeds unconditionally; a BARE lowercase word seeds
+      // only where the query corroborates the file — another query token is
+      // itself a symbol defined in that same file (the "check drain fire"
+      // sibling-bag case), which an incidental English-word collision never is.
+      const lcTokens = new Set(tokens.map((x) => x.toLowerCase()));
+      const isPreciseToken = (x: string) =>
+        /[._$]|::|\//.test(x) || /[a-z][A-Z]/.test(x) || /^[A-Z]/.test(x);
+      const fileNameSets = new Map<string, Set<string>>();
+      const coNamedInFile = (t: string, fp: string): boolean => {
+        let names = fileNameSets.get(fp);
+        if (!names) {
+          names = new Set<string>();
+          try {
+            for (const n of cg.getNodesInFile(fp)) names.add(n.name.toLowerCase());
+          } catch { /* unreadable file entry — treat as uncorroborated */ }
+          fileNameSets.set(fp, names);
+        }
+        const self = t.toLowerCase();
+        for (const o of lcTokens) {
+          if (o !== self && names.has(o)) return true;
+        }
+        return false;
+      };
       for (const t of tokens) {
         // Enumerate ALL defs of a bare token via the direct index, not FTS — a
         // 50+-overload name (tokio `poll`) ranks the wanted def (`Harness::poll`)
@@ -2561,9 +2650,17 @@ export class ToolHandler {
         // codegraph_node's findSymbolMatches.) Qualified tokens keep findAllSymbols.
         const isQual = /[.\/]|::/.test(t);
         const raw = isQual ? this.findAllSymbols(cg, t).nodes : cg.getNodesByName(t);
-        const cands = raw
+        let cands = raw
           .filter((n) => CALLABLE.has(n.kind) && !isTestPath(n.filePath))
           .sort((a, b) => (bodyLines(b) > 1 ? 1 : 0) - (bodyLines(a) > 1 ? 1 : 0) || bodyLines(b) - bodyLines(a));
+        // Bare lowercase words only seed defs their query-siblings corroborate
+        // (see the NL-stopword guard above). Filtering CANDS (not picks) applies
+        // the guard uniformly to both branches below, including the >3-def
+        // single-pick fallback — an uncorroborated bare `run` must not tier its
+        // most-substantive namesake any more than a 1-def `check` may.
+        if (!isPreciseToken(t)) {
+          cands = cands.filter((n) => coNamedInFile(t, n.filePath));
+        }
         // A specific name (<=3 defs) injects all its defs. An overloaded name
         // (`validate` = 10, `request` = 44) would flood the subgraph, so inject
         // only: the overloads whose file/class the query ALSO names (the agent
@@ -2571,11 +2668,22 @@ export class ToolHandler {
         // capped; else fall back to the single most-substantive def. This is the
         // explore-side mirror of codegraph_node's overload disambiguation.
         let picks: Node[];
+        let tierPicks: Node[]; // subset that earns the named-first tier (#1064)
         if (cands.length <= 3) {
           picks = cands;
+          // Centrality de-noise: tier the most-substantive def PLUS any co-named
+          // def of comparable centrality (a real overload/wrapper — excalidraw's
+          // `mutateElement` lives in mutateElement.ts, App.tsx AND Scene.ts, all
+          // within ~2x callers). EXCLUDE a vastly-less-central namesake (Go's
+          // `NewClient`: real client 492 callers vs xds-pool 11, test-fake 3 →
+          // ratio <0.025) so it doesn't fill the tier and crowd out the answer.
+          const counts = new Map(cands.map((c) => [c.id, callerCount(c)]));
+          const maxCallers = Math.max(1, ...counts.values());
+          tierPicks = cands.filter((c, i) => i === 0 || (counts.get(c.id) ?? 0) >= maxCallers * 0.25);
         } else {
           const ctx = cands.filter(inNamedContext);
           picks = ctx.length > 0 ? ctx.slice(0, 4) : cands.slice(0, 1);
+          tierPicks = picks; // corroborated overloads (or the single fallback) all earn it
         }
         for (const n of picks) {
           if (!subgraph.nodes.has(n.id)) subgraph.nodes.set(n.id, n);
@@ -2586,6 +2694,7 @@ export class ToolHandler {
           // so a named symbol FTS already gathered never sorted to the top.)
           namedSeedIds.add(n.id);
         }
+        for (const n of tierPicks) tierSeedIds.add(n.id);
       }
     }
 
@@ -2598,6 +2707,38 @@ export class ToolHandler {
     for (const edge of subgraph.edges) {
       if (entryNodeIds.has(edge.source)) connectedToEntry.add(edge.target);
       if (entryNodeIds.has(edge.target)) connectedToEntry.add(edge.source);
+    }
+
+    // CHANGE SURFACE (#1064): a named method's signature types — its parameter
+    // and return types — are part of what you'd edit to "add a parameter to X",
+    // yet they can be lexically dissimilar to the query ("add a parameter to
+    // NewClient" shares no words with `dialoptions.go`, which defines NewClient's
+    // `DialOption`) and sit a hop away. COLLECT them here from each named-seed
+    // callable's outgoing signature edges (full graph — the type is often not in
+    // the subgraph); the decision to surface one is DEFERRED to the buried-rescue
+    // pass below, which fires only when the type's file would otherwise be
+    // dropped — so a well-connected type (excalidraw's element types, Alamofire's
+    // `DataRequest` on a flow query) is left to rank on its own and never
+    // displaces a flow-central file. Bounded: only the few named seeds, only the
+    // types in their signatures.
+    const CALLABLE_KINDS = new Set(['method', 'function', 'component', 'constructor']);
+    const TYPE_KINDS = new Set(['class', 'struct', 'interface', 'trait', 'protocol', 'enum', 'type_alias']);
+    const SIG_EDGE = new Set(['references', 'type_of', 'returns']);
+    const changeSurfaceCandidates: Node[] = [];
+    const seenChangeSurface = new Set<string>();
+    for (const seedId of tierSeedIds) {
+      const seedNode = subgraph.nodes.get(seedId);
+      if (!seedNode || !CALLABLE_KINDS.has(seedNode.kind)) continue;
+      let outs: Edge[] = [];
+      try { outs = cg.getOutgoingEdges(seedId); } catch { continue; }
+      for (const e of outs) {
+        if (!SIG_EDGE.has(e.kind)) continue;
+        const tgt = cg.getNode(e.target);
+        if (!tgt || !TYPE_KINDS.has(tgt.kind) || namedSeedIds.has(tgt.id)) continue;
+        if (seenChangeSurface.has(tgt.id)) continue;
+        seenChangeSurface.add(tgt.id);
+        changeSurfaceCandidates.push(tgt);
+      }
     }
 
     for (const node of subgraph.nodes.values()) {
@@ -2729,6 +2870,29 @@ export class ToolHandler {
       const n = subgraph.nodes.get(id);
       if (n) entryFiles.add(n.filePath);
     }
+    // Buried-rescue pass (#1064): surface a named method's signature type ONLY
+    // when its file is genuinely buried — near-zero graph mass AND not lexically
+    // matched. That is the invisible case (grpc's `DialOption` → `dialoptions.go`,
+    // g≈0, 0 term hits): reachable but ranked nowhere, so the agent greps. A
+    // well-connected type file (excalidraw element types, Alamofire `DataRequest`)
+    // is NOT buried and is left alone — rescuing it would displace a flow-central
+    // file (App.tsx, Validation.swift). Buried is judged on the PRE-rescue graph,
+    // so injecting the type below can't make it look connected. A rescued file is
+    // injected (so it renders), force-kept (gate + relevantFiles), and tiered.
+    const changeSurfaceFiles = new Set<string>();
+    for (const t of changeSurfaceCandidates) {
+      const fp = t.filePath;
+      const buried = (fileGraphScore.get(fp) ?? 0) < maxGraph * 0.06
+        && (fileTermHits.get(fp) ?? 0) < 2;
+      if (!buried) continue;
+      changeSurfaceFiles.add(fp);
+      if (!subgraph.nodes.has(t.id)) subgraph.nodes.set(t.id, t);
+      let group = fileGroups.get(fp);
+      if (!group) { group = { nodes: [], score: 0 }; fileGroups.set(fp, group); }
+      if (!group.nodes.some((n) => n.id === t.id)) group.nodes.push(t);
+      group.score = Math.max(group.score, 45);
+      if (!relevantFiles.some(([f]) => f === fp)) relevantFiles.push([fp, group]);
+    }
 
     // Relevance gate (so the generous budget is a CEILING, not a target): keep a
     // file only if it is STRUCTURALLY relevant by ANY of:
@@ -2747,6 +2911,7 @@ export class ToolHandler {
         (fileGraphScore.get(fp) ?? 0) >= maxGraph * 0.06
         || centralFiles.has(fp)
         || entryFiles.has(fp)
+        || changeSurfaceFiles.has(fp)
         || (fileTermHits.get(fp) ?? 0) >= 2,
       );
       if (gated.length >= 2) relevantFiles = gated;
@@ -2762,10 +2927,14 @@ export class ToolHandler {
     // in other files (`Validation.swift`), falls outside the budget, and the
     // agent Reads it. The named file is the answer — rank it at the top.
     const namedSeedFiles = new Set<string>();
-    for (const id of namedSeedIds) {
+    for (const id of tierSeedIds) {
       const n = subgraph.nodes.get(id);
       if (n) namedSeedFiles.add(n.filePath);
     }
+    // A rescued change-surface file (only the genuinely-buried ones — see the
+    // buried-rescue pass) is the lexically-dissimilar answer; give it the named
+    // tier so it isn't buried under files that merely share surface words (#1064).
+    for (const fp of changeSurfaceFiles) namedSeedFiles.add(fp);
 
     // Multi-term corroboration tier: a file that is BOTH (a) an entry/central file
     // (a search root, named seed, or graph-central hub — i.e. structurally part of
@@ -2833,9 +3002,16 @@ export class ToolHandler {
     const lines: string[] = [
       `**Exploration: ${query}**`,
       '',
-      `Found ${subgraph.nodes.size} symbols across ${fileGroups.size} files.`,
+      // Curated summary — filled in after the source loop (see below). We do NOT
+      // report `subgraph.nodes.size` / `fileGroups.size` here: that's the raw
+      // candidate gather, which a broad natural-language query inflates wildly
+      // (260 symbols / 124 files on a 636-file repo) even though only a handful
+      // render. Reporting the pool read as "260 results to wade through" when the
+      // real, correctly-ranked answer is the few files below (#1046).
+      '',
       '',
     ];
+    const summaryLineIdx = 2;
 
     // Blast radius (always-on, compact): for the entry symbols, who depends on
     // them + which tests cover them — locations only, no source — so the agent
@@ -2943,6 +3119,9 @@ export class ToolHandler {
 
     let totalChars = lines.join('\n').length;
     let filesIncluded = 0;
+    // Paths we actually render source for below. Drives the curated header count
+    // (#1046) — it must reflect what we show, not the raw candidate gather.
+    const renderedFilePaths: string[] = [];
     let anyFileTrimmed = false;
 
     for (const [filePath, group] of sortedFiles) {
@@ -3082,6 +3261,7 @@ export class ToolHandler {
             : 'skeleton (signatures only — codegraph_explore a name for its full body; do NOT Read)';
           lines.push(fileSectionHeader(filePath, `${names} · ${tag}`), '', '```' + lang, skel.join('\n'), '```', '');
           totalChars += skel.join('\n').length + 120;
+          renderedFilePaths.push(filePath);
           filesIncluded++;
           continue;
         }
@@ -3132,6 +3312,7 @@ export class ToolHandler {
         }
         lines.push(wholeHeader, '', '```' + lang, wholeSection, '```', '');
         totalChars += wholeSection.length + 200;
+        renderedFilePaths.push(filePath);
         filesIncluded++;
         continue;
       }
@@ -3416,8 +3597,15 @@ export class ToolHandler {
       lines.push('');
 
       totalChars += fileSection.length + 200;
+      renderedFilePaths.push(filePath);
       filesIncluded++;
     }
+
+    // The curated header count is computed from the files that SURVIVE the final
+    // truncation (see end of method) — `filesIncluded` can over-count when the
+    // hard ceiling drops trailing sections — so leave a sentinel here and fill it
+    // in once the output is final.
+    lines[summaryLineIdx] = SUMMARY_SENTINEL;
 
     // Add remaining files as references (from both relevant and peripheral files).
     // Small projects (per budget) skip this — the relevant story already fits
@@ -3477,6 +3665,7 @@ export class ToolHandler {
     const output = flow.text + lines.join('\n');
 
     const hardCeiling = Math.min(Math.round(budget.maxOutputChars * 1.5), 25000);
+    let finalText: string;
     if (output.length > hardCeiling) {
       // Cut at a FILE-SECTION boundary (the last ``**` `` file header before the
       // ceiling) so we drop whole trailing file-sections rather than slicing
@@ -3487,9 +3676,33 @@ export class ToolHandler {
       const lastSection = cut.lastIndexOf('\n' + FILE_SECTION_PREFIX);
       const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
       const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
-      return this.textResult(safe + '\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)');
+      finalText = safe + '\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)';
+    } else {
+      finalText = output;
     }
-    return this.textResult(output);
+
+    // Curated header (#1046): substitute the sentinel with the count of files
+    // whose source SURVIVES in the final text — not `subgraph`/`fileGroups` (the
+    // raw gather a broad query inflates) and not `filesIncluded` (which can
+    // over-count when the ceiling above drops trailing sections). A file counts
+    // only if its section header is still present; its relevant (non-import)
+    // symbols are summed for N. Files we couldn't fit are still named under "Not
+    // shown above" + the budget note, so nothing is silently dropped.
+    const survivors = renderedFilePaths.filter((fp) =>
+      finalText.includes(`${FILE_SECTION_PREFIX}${fp}\``));
+    const shownSymbols = survivors.reduce((sum, fp) => {
+      const g = fileGroups.get(fp);
+      if (!g) return sum;
+      return sum + new Set(
+        g.nodes.filter((n) => n.kind !== 'import' && n.kind !== 'export').map((n) => n.id),
+      ).size;
+    }, 0);
+    const summaryLine = survivors.length > 0
+      ? `Found ${shownSymbols} symbol${shownSymbols === 1 ? '' : 's'} across ${survivors.length} file${survivors.length === 1 ? '' : 's'}.`
+      : `Found ${subgraph.nodes.size} symbol${subgraph.nodes.size === 1 ? '' : 's'} across ${fileGroups.size} file${fileGroups.size === 1 ? '' : 's'}.`;
+    finalText = finalText.replace(SUMMARY_SENTINEL, summaryLine);
+
+    return this.textResult(finalText);
   }
 
   /**
@@ -3869,6 +4082,27 @@ export class ToolHandler {
       );
     }
 
+    // A newer release exists (#1243) — status is where users and agents look
+    // when something seems off, so surface the drift here too. Cheap memoized
+    // cache read; absent entirely when up to date or opted out.
+    const updateNotice = getUpdateNotice();
+    if (updateNotice) {
+      lines.push(`**Update available:** ${updateNotice}`);
+    }
+
+    // Non-zero at rest means a resolution pass was interrupted mid-run, so
+    // some files' call/impact edges are missing until the next sync sweeps
+    // the leftovers (#1187). Surface it — an agent trusting an incomplete
+    // blast radius is worse than one that knows to re-sync.
+    const pendingRefs = cg.getPendingReferenceCount();
+    if (pendingRefs > 0) {
+      lines.push(
+        `**Pending resolution:** ⚠ ${pendingRefs} references from an interrupted ` +
+        `index run — some caller/impact edges are missing until the next sync ` +
+        `(any file change triggers it, or run \`codegraph sync\`)`
+      );
+    }
+
     lines.push('', '**Nodes by Kind:**');
 
     for (const [kind, count] of Object.entries(stats.nodesByKind)) {
@@ -4237,6 +4471,26 @@ export class ToolHandler {
    * results across all matching symbols (e.g., multiple classes with an `execute` method).
    */
   private findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; note: string } {
+    // Nix option paths: the declaration is stored as `options.<path>` and
+    // config writes carry longer/quoted tails (`<path>."git/config".text`),
+    // so a dotted option token (`xdg.configFile`, `launchd.user.agents`) has
+    // no exact-name node and would degrade to bare-tail FTS soup — burying
+    // the declaration hub the nix-option-path edges hang off. Resolve the
+    // convention directly: declaration first, then the exact write, then a
+    // capped prefix scan of write sites. Three index hits; non-nix graphs
+    // fall straight through.
+    if (/^[a-z][\w'-]*(?:\.[\w'-]+)+$/.test(symbol)) {
+      const optionHits = [
+        ...cg.getNodesByName(`options.${symbol}`),
+        ...cg.getNodesByName(symbol),
+        ...cg.getNodesByNamePrefix(`${symbol}.`, 12),
+      ].filter((n) => n.language === 'nix');
+      if (optionHits.length > 0) {
+        const seen = new Set<string>();
+        const nodes = optionHits.filter((n) => !seen.has(n.id) && !!seen.add(n.id)).slice(0, 10);
+        return { nodes, note: '' };
+      }
+    }
     let results = cg.searchNodes(symbol, { limit: 50 });
 
     // Mirror the fallback in `findSymbol` for qualified queries — FTS

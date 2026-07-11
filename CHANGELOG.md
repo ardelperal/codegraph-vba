@@ -9,6 +9,29 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Synced with upstream `colbymchenry/codegraph` v1.4.1** (107 upstream commits merged into the fork). All VBA/Access extraction — its own files, resolvers, and 9 test suites — was preserved unchanged; conflicts occurred only at the integration seams and were resolved keeping the fork's VBA behavior while adopting upstream's improvements. **This merge is not released until `pnpm run build && pnpm test` passes on Node ≥22.5 <25.**
+
+### New Features (from upstream)
+
+- New languages recognized: Solidity, CFML/CFScript, CUDA, Metal, Nix, Erlang, COBOL, VB.NET, Terraform, ArkTS — alongside the existing VBA/Access support.
+- Edge table now has a `UNIQUE` identity index; duplicate edge rows are de-duplicated so `INSERT OR IGNORE` actually dedups. (upstream #1034)
+- `name_segment_vocab` lookup (prose-word → symbol-name) backing the prompt hook's graph-derived gate.
+- Unresolvable refs are tracked as `status=failed` and retried by `sync` when a changed file later adds a matching symbol. (upstream #1240)
+- Config `include` patterns force first-party source INTO the index even when `.gitignore` would drop it (projects under a second VCS). (upstream)
+- MCP notifies when a newer CodeGraph release exists. (upstream #1243)
+
+### Fixes (from upstream)
+
+- Parse worker no longer reports false timeouts under a stalled main thread; grammar WASM bytes are passed to workers as a memory load instead of a per-spawn disk read. (upstream #1231)
+- `uninstall` now removes the CLI binaries too, not just agent configs. (upstream #1254)
+
+### Fork-specific merge notes
+
+- Database schema re-stacked: adopted upstream's migrations v6–v8 (edge dedup, `name_segment_vocab`, unresolved-ref tracking) and moved the fork's `nodes.metadata` migration to v9 (idempotent), bumping `CURRENT_SCHEMA_VERSION` to 9.
+- Kept the fork identity (`@aroman22/codegraph-vba`, pnpm, Node ≥22.5) and Windows-oriented `spawnSync` handling, combined with upstream's `windowsHide`.
+
 ## [1.5.2] - 2026-07-05
 
 ### Fixes

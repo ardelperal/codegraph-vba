@@ -70,6 +70,45 @@ const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
  */
 const DEFAULT_MAX_IDLE_MS = 1_800_000; // 30 min
 
+/**
+ * Windows-only shutdown backstop. On Windows, calling `process.exit()` while a
+ * recursive `fs.watch` handle is still tearing down aborts the process with a
+ * libuv `UV_HANDLE_CLOSING` assertion (`0xC0000409`) — reproducible whenever the
+ * watched tree contains a nested repo (submodule / embedded clone), since that's
+ * what keeps a watch active at shutdown. The fix is to let the event loop drain
+ * so libuv finishes closing those handles, then exit naturally; this timer only
+ * force-exits if some unexpected handle keeps the loop alive past the grace
+ * window. Kept short so shutdown stays snappy in that fallback. See
+ * `finalizeDaemonExit`.
+ */
+const DAEMON_SHUTDOWN_BACKSTOP_MS = 2_000;
+
+/**
+ * Finalize daemon shutdown. On POSIX, exit immediately — it's clean and fast.
+ * On Windows, do NOT force an exit while watchers may still be closing (that
+ * trips the libuv assertion above); instead mark success and let the loop drain
+ * to a natural exit, with an UNREF'd backstop that force-exits only if a stray
+ * handle would otherwise hang shutdown. Pure and platform-injected so both
+ * branches are unit-testable off-Windows. Returns the backstop timer (Windows)
+ * so callers/tests can clear it.
+ */
+export function finalizeDaemonExit(
+  platform: NodeJS.Platform,
+  exit: (code: number) => void,
+): NodeJS.Timeout | null {
+  if (platform === 'win32') {
+    process.exitCode = 0;
+    const backstop = setTimeout(() => exit(0), DAEMON_SHUTDOWN_BACKSTOP_MS);
+    // Unref so it never keeps the loop alive: a natural drain (watchers closed,
+    // nothing else pending) exits before it fires; it only fires when some other
+    // handle is keeping the loop running, which is exactly when we need it.
+    backstop.unref?.();
+    return backstop;
+  }
+  exit(0);
+  return null;
+}
+
 /** How often the daemon sweeps connected clients for a dead peer process (#692). */
 const DEFAULT_CLIENT_SWEEP_MS = 30_000;
 
@@ -306,7 +345,10 @@ export class Daemon {
     if (process.platform !== 'win32') {
       try { fs.unlinkSync(this.socketPath); } catch { /* may already be gone */ }
     }
-    process.exit(0);
+    // POSIX exits here; Windows drains first (engine.stop() above began closing
+    // the file watcher, and exiting mid-teardown aborts the process). See
+    // finalizeDaemonExit / DAEMON_SHUTDOWN_BACKSTOP_MS.
+    finalizeDaemonExit(process.platform, (code) => process.exit(code));
   }
 
   private handleConnection(socket: net.Socket): void {
@@ -376,9 +418,11 @@ export class Daemon {
   /**
    * Defense-in-depth against a daemon that outlives its clients (#692), for the
    * cases the refcount + idle timer miss because a socket close never arrives:
-   *   - **Inactivity backstop:** exit if no inbound traffic for `maxIdleMs` while
-   *     clients are still (nominally) connected. A phantom client sends nothing,
-   *     so it can't pin the daemon past this window.
+   *   - **Inactivity backstop:** after `maxIdleMs` with no inbound traffic, reap
+   *     the daemon — but ONLY if no connected client can be proven alive (see
+   *     {@link backstopShouldExit}). This is the sole phantom class the sweep
+   *     below can't catch: a client whose client-hello never arrived, so we have
+   *     no pid to check.
    *   - **Liveness sweep:** drop any client whose peer process has died (per the
    *     client-hello pids), which re-arms the idle timer once the last real
    *     client is gone. Catches a dead peer within one sweep instead of waiting
@@ -390,10 +434,7 @@ export class Daemon {
     if (this.maxIdleMs > 0) {
       const tick = Math.min(this.maxIdleMs, 60_000);
       this.maxIdleTimer = setInterval(() => {
-        if (this.stopping || this.clients.size === 0) return; // idle timer owns the no-client case
-        if (Date.now() - this.lastActivityAt >= this.maxIdleMs) {
-          void this.stop('inactivity backstop');
-        }
+        if (this.backstopShouldExit(isProcessAlive)) void this.stop('inactivity backstop');
       }, tick);
       this.maxIdleTimer.unref?.();
     }
@@ -402,6 +443,37 @@ export class Daemon {
       this.clientSweepTimer = setInterval(() => this.reapDeadClients(isProcessAlive), sweepMs);
       this.clientSweepTimer.unref?.();
     }
+  }
+
+  /**
+   * Decide whether the inactivity backstop should reap the daemon right now.
+   * Public + `isAlive`-injected for deterministic tests; the timer calls it each
+   * tick with the real liveness probe.
+   *
+   * The backstop exists ONLY to catch a **phantom** client (#692) — one counted
+   * but actually gone, whose socket-close was never delivered. It must never
+   * reap a **live-but-quiet** session (connected, alive peer, just not querying):
+   * doing so silently severed the shared daemon and degraded that session — and
+   * any others sharing it — to an in-process engine. `lastActivityAt` only tracks
+   * inbound query bytes, and MCP has no keepalive, so a genuinely-live session
+   * trips the raw inactivity window after ~30 min of not being queried.
+   *
+   * So: once the inactivity window elapses, drop provably-dead peers (the same
+   * check the periodic sweep runs), then reap the daemon only when NOT ONE
+   * remaining client can be proven alive — i.e. every client left is an
+   * unknown-pid connection the sweep can't verify. A single provably-alive
+   * client keeps the daemon up. Has the sweep's side effect (drops dead peers).
+   */
+  backstopShouldExit(isAlive: (pid: number) => boolean): boolean {
+    if (this.stopping || this.clients.size === 0) return false; // idle timer owns the no-client case
+    if (Date.now() - this.lastActivityAt < this.maxIdleMs) return false; // still within the window
+    this.reapDeadClients(isAlive);
+    if (this.clients.size === 0) return false; // sweep cleared them — idle timer takes over
+    const anyProvablyAlive = [...this.clients].some((session) => {
+      const peers = this.clientPeers.get(session);
+      return peers != null && peers.pid !== null && !peerIsDead(peers, isAlive);
+    });
+    return !anyProvablyAlive;
   }
 
   /**
@@ -731,10 +803,24 @@ function readClientHello(
     ) => {
       if (settled) return;
       settled = true;
+      // PAUSE before detaching: removing the last 'data' listener does NOT
+      // stop a flowing stream, so bytes arriving (or unshifted) in the gap
+      // between this handler and the session transport attaching were emitted
+      // to zero listeners and silently DISCARDED — and the listener swap left
+      // the socket's flow state wedged, never delivering to the new listener.
+      // A proxy whose client-hello arrived glued to the initialize hit this
+      // ~1-in-5 under load: the daemon answered nothing for the whole session
+      // (the #662 test flake, and real dead sessions behind it). Paused, the
+      // unshifted tail and any new bytes buffer; SocketTransport.start()
+      // resumes explicitly.
+      try { socket.pause(); } catch { /* stream already gone */ }
       socket.removeListener('data', onData);
       socket.removeListener('error', onEnd);
       socket.removeListener('close', onEnd);
       clearTimeout(timer);
+      if (process.env.CODEGRAPH_MCP_DEBUG) {
+        process.stderr.write(`[mcp-debug] clientHello finish pid=${String(peers.pid)} putBack=${putBack ? putBack.length : 0} flowing=${String(socket.readableFlowing)}\n`);
+      }
       if (putBack && putBack.length > 0 && !socket.destroyed) {
         try { socket.unshift(putBack); } catch { /* stream already gone */ }
       }
@@ -764,7 +850,12 @@ function readClientHello(
       }
     };
     const onEnd = () => finish({ pid: null, hostPid: null });
-    const timer = setTimeout(() => finish({ pid: null, hostPid: null }), CLIENT_HELLO_TIMEOUT_MS);
+    // On timeout, hand back whatever partial bytes accumulated — discarding
+    // them would tear the first message the transport parses.
+    const timer = setTimeout(() => {
+      const partial = chunks.length === 0 ? undefined : (chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total));
+      finish({ pid: null, hostPid: null }, partial);
+    }, CLIENT_HELLO_TIMEOUT_MS);
     timer.unref?.();
     socket.on('data', onData);
     socket.on('error', onEnd);

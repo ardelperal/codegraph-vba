@@ -112,6 +112,7 @@ export const LANGUAGES = [
   'javascript',
   'tsx',
   'jsx',
+  'arkts',
   'python',
   'go',
   'rust',
@@ -141,10 +142,19 @@ export const LANGUAGES = [
   // `references` edges to the tables it names. Only treated as a query when a
   // sibling `queries.json` manifest is present (see directory discovery).
   'sql',
+  'solidity',
+  'nix',
   'yaml',
   'twig',
   'xml',
   'properties',
+  'cfml',
+  'cfscript',
+  'cfquery',
+  'cobol',
+  'vbnet',
+  'erlang',
+  'terraform',
   'unknown',
 ] as const;
 
@@ -477,11 +487,35 @@ export interface SearchResult {
   /** Matching node */
   node: Node;
 
-  /** Relevance score (0-1) */
+  /**
+   * Relevance score for relative ranking only — higher is more relevant.
+   * NOT normalized and NOT a 0-1 fraction: the FTS path returns an unbounded
+   * BM25 magnitude (often in the tens or hundreds), while the fuzzy/exact
+   * paths return ~0-1. Use it to order results, not as an absolute percentage.
+   */
   score: number;
 
   /** Matched text snippets for highlighting */
   highlights?: string[];
+}
+
+/**
+ * A symbol whose name-segments match prose words from a prompt — the
+ * graph-derived signal behind the front-load hook's medium tier
+ * (CodeGraph.getSegmentMatches). Always verified to exist in `nodes` at the
+ * time it is returned.
+ */
+export interface SegmentMatch {
+  /** Symbol name as indexed (e.g. `OrderStateMachine`). */
+  name: string;
+  /** Kind of the representative definition. */
+  kind: NodeKind;
+  /** File of the representative definition. */
+  filePath: string;
+  /** 1-based start line of the representative definition. */
+  startLine: number;
+  /** The prompt words (normalized) that matched this name's segments. */
+  matchedWords: string[];
 }
 
 // =============================================================================

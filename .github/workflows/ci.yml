@@ -1,11 +1,15 @@
 name: CI
 
-# Trigger on every push to a feature branch + every PR to main. Without
-# the feature-branch push trigger, CI never runs for in-flight branches and
-# the only signal a branch is broken is "wait until PR time and see it
-# fail" — too late to fix cheaply. The branch list intentionally mirrors
-# the conventional-commit prefixes we use, so `chore/*`, `release/*`,
-# and `docs/*` all pick up CI too.
+# Two legs, one gate:
+#   • Linux runs the FULL suite — this is how upstream validates. Upstream's
+#     language tests (arkts/cfml/nix/erlang/…) create and `unlink` SQLite DBs,
+#     which is fine on Linux but hits Windows `EBUSY: resource busy or locked`
+#     (you can't delete a .db whose handle is still open) plus file-handle
+#     exhaustion when the whole suite runs in one process. Linux is the
+#     comprehensive correctness gate.
+#   • Windows runs only the VBA/Access surface — the reason this fork exists.
+#     Those paths MUST pass on the real target OS, and they don't trip the
+#     Linux-assuming DB-teardown behavior above.
 on:
   pull_request:
     branches: [main]
@@ -23,23 +27,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: build + vitest (Node ${{ matrix.node-version }}, windows-latest)
-    runs-on: windows-latest
+  test-linux:
+    name: full suite (Node ${{ matrix.node-version }}, ubuntu-latest)
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # Match the engines field: >=22.5.0 <25.0.0. CodeGraph uses the
-        # built-in node:sqlite API, which is only available from Node 22.5+.
+        # engines: >=22.5.0 <25.0.0 (built-in node:sqlite needs 22.5+).
         node-version: [22]
-        # Windows-only: this project's primary target is Microsoft Access / VBA
-        # (Dysflow-corpus workflows, Access binary integration, Access-specific
-        # extraction paths in src/extraction/vba-*.ts). The remaining surface
-        # (TS / Python / Go / tree-sitter cross-language stuff) is Node.js
-        # and SQLite — both fully Windows-compatible — so an Ubuntu matrix leg
-        # adds CI minutes without exercising anything the Windows leg doesn't
-        # already cover. Drop it; revisit if/when a Linux-specific failure
-        # mode appears in production.
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -58,8 +53,36 @@ jobs:
       - name: Build (tsc + copy assets)
         run: pnpm run build
 
-      - name: Run vitest
-        run: pnpm test
+      - name: Run full vitest suite
+        # Raise the fd limit: the single-worker run opens many SQLite handles
+        # across the full suite; default soft limits can trip "too many open files".
+        run: ulimit -n 65536 2>/dev/null || true; pnpm test
 
-      - name: Run E2E regression (extract-vba-realfixtures)
-        run: pnpm exec vitest run __tests__/extraction-vba-realfixtures.test.ts
+  test-windows-vba:
+    name: VBA/Access suite (Node ${{ matrix.node-version }}, windows-latest)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install pnpm
+        run: npm install -g pnpm@10.16.1
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (tsc + copy assets)
+        run: pnpm run build
+
+      - name: VBA + Access/SQL extraction suites (the fork's delta)
+        # vitest positional args filter test files by path substring.
+        run: pnpm exec vitest run vba extraction-sql-query sql-query-discovery

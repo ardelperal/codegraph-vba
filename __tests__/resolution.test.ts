@@ -17,6 +17,7 @@ import type { UnresolvedRef } from '../src/resolution/types';
 import { detectFrameworks, getAllFrameworkResolvers } from '../src/resolution/frameworks';
 import { QueryBuilder } from '../src/db/queries';
 import { DatabaseConnection } from '../src/db';
+import { codeGraphDirName } from '../src/directory';
 
 describe('Resolution Module', () => {
   let tempDir: string;
@@ -2924,7 +2925,7 @@ class Both : public Base<char>, public Plain {}; // templated + plain in one cla
 `
       );
       cg = await CodeGraph.init(tempDir, { index: true });
-      const db = DatabaseConnection.open(path.join(tempDir, '.codegraph', 'codegraph.db'));
+      const db = DatabaseConnection.open(path.join(tempDir, codeGraphDirName(), 'codegraph.db'));
       const edges = db
         .getDb()
         .prepare(

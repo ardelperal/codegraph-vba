@@ -176,10 +176,10 @@ describe.skipIf(isWindows)('npm-shim launcher', () => {
   // startup. The shim's own parent here is the vitest runner (a real live pid).
   it('threads CODEGRAPH_HOST_PPID to the bundled server (#1185)', async () => {
     const pkg = makePkg();
-    const platformPkg = path.join(pkg, 'node_modules', '@colbymchenry', `codegraph-${target}`);
+    const platformPkg = path.join(pkg, 'node_modules', '@aroman22', `codegraph-vba-${target}`);
     writeHostPpidLauncher(path.join(platformPkg, 'bin'));
     fs.writeFileSync(path.join(platformPkg, 'package.json'),
-      JSON.stringify({ name: `@colbymchenry/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
+      JSON.stringify({ name: `@aroman22/codegraph-vba-${target}`, version: '9.9.9-test' }) + '\n');
     const r = await runShim(pkg, [], { CODEGRAPH_INSTALL_DIR: mkTmp('cache') });
 
     expect(r.status).toBe(0);
@@ -191,10 +191,10 @@ describe.skipIf(isWindows)('npm-shim launcher', () => {
 
   it('does not clobber an already-set CODEGRAPH_HOST_PPID (#1185)', async () => {
     const pkg = makePkg();
-    const platformPkg = path.join(pkg, 'node_modules', '@colbymchenry', `codegraph-${target}`);
+    const platformPkg = path.join(pkg, 'node_modules', '@aroman22', `codegraph-vba-${target}`);
     writeHostPpidLauncher(path.join(platformPkg, 'bin'));
     fs.writeFileSync(path.join(platformPkg, 'package.json'),
-      JSON.stringify({ name: `@colbymchenry/codegraph-${target}`, version: '9.9.9-test' }) + '\n');
+      JSON.stringify({ name: `@aroman22/codegraph-vba-${target}`, version: '9.9.9-test' }) + '\n');
     // An outer launcher already threaded the true host pid — it must win over
     // the shim's own parent, or a chain of launchers would each overwrite it.
     const r = await runShim(pkg, [], { CODEGRAPH_INSTALL_DIR: mkTmp('cache'), CODEGRAPH_HOST_PPID: '424242' });

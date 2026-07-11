@@ -20,6 +20,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
 import { DatabaseConnection } from '../src/db';
+import { codeGraphDirName } from '../src/directory';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 
@@ -128,7 +129,7 @@ describe('codegraph index — full re-index keeps the graph populated (#874)', (
  */
 describe('codegraph index — recovers a stale/oversized prior index (#1067)', () => {
   let tempDir: string;
-  const dbPath = (dir: string) => path.join(dir, '.codegraph', 'codegraph.db');
+  const dbPath = (dir: string) => path.join(dir, codeGraphDirName(), 'codegraph.db');
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-index-recover-'));

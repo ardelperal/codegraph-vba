@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
+import { codeGraphDirName } from '../src/directory';
 
 const BIN = path.resolve(__dirname, '../dist/bin/codegraph.js');
 const PKG_VERSION = JSON.parse(
@@ -130,7 +131,7 @@ describe('index completeness marker (index_state)', () => {
     // (require, not import: vite tries to bundle a dynamic import specifier.)
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DatabaseSync } = require('node:sqlite');
-    const db = new DatabaseSync(path.join(tempDir, '.codegraph', 'codegraph.db'));
+    const db = new DatabaseSync(path.join(tempDir, codeGraphDirName(), 'codegraph.db'));
     db.prepare(
       "INSERT INTO project_metadata (key, value, updated_at) VALUES ('index_state', 'indexing', 0) " +
         "ON CONFLICT(key) DO UPDATE SET value = 'indexing'"

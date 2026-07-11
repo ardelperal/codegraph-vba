@@ -16,6 +16,7 @@ import * as path from 'path';
 import { DatabaseConnection } from '../src/db';
 import { WalCheckpointValve, resolveWalValveMb } from '../src/db/wal-valve';
 import CodeGraph from '../src/index';
+import { codeGraphDirName } from '../src/directory';
 
 let tmpDir: string;
 
@@ -201,7 +202,7 @@ describe('indexAll WAL deferral end-to-end', () => {
     const counts1 = { nodes: r1.nodesCreated, edges: r1.edgesCreated };
     await cg1.close();
 
-    fs.rmSync(path.join(tmpDir, '.codegraph'), { recursive: true, force: true });
+    fs.rmSync(path.join(tmpDir, codeGraphDirName()), { recursive: true, force: true });
 
     process.env.CODEGRAPH_NO_WAL_DEFER = '1';
     try {

@@ -23,13 +23,19 @@ beforeAll(async () => {
   await loadAllGrammars();
 });
 
-describe('ArkTS attribute-chain resolution precision', () => {
-  let tmpDir: string | undefined;
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = undefined;
-  });
+let cg: CodeGraph | undefined;
+let tmpDir: string | undefined;
 
+afterEach(() => {
+  cg?.close();
+  cg = undefined;
+  if (tmpDir) {
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+  tmpDir = undefined;
+});
+
+describe('ArkTS attribute-chain resolution precision', () => {
   it('links .titleStyle() to the @Extend helper but never .width() to a decoy symbol', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-arkts-'));
     fs.mkdirSync(path.join(tmpDir, 'pages'));
@@ -65,7 +71,7 @@ describe('ArkTS attribute-chain resolution precision', () => {
         '}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const fns = cg.getNodesByKind('function');
@@ -98,12 +104,6 @@ describe('ArkTS attribute-chain resolution precision', () => {
 });
 
 describe('ArkTS ohpm workspace import resolution', () => {
-  let tmpDir: string | undefined;
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = undefined;
-  });
-
   it('resolves a bare workspace import through oh-package.json5 file: deps', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-ohpm-'));
     fs.mkdirSync(path.join(tmpDir, 'core/data/src/main/ets'), { recursive: true });
@@ -146,7 +146,7 @@ describe('ArkTS ohpm workspace import resolution', () => {
         '}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const classes = cg.getNodesByKind('class');
@@ -167,12 +167,6 @@ describe('ArkTS ohpm workspace import resolution', () => {
 });
 
 describe('ArkUI state → build() re-render bridge (assignment-gated)', () => {
-  let tmpDir: string | undefined;
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = undefined;
-  });
-
   it('links assigning methods to build(), but not read-only methods', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-arkui-state-'));
     fs.writeFileSync(
@@ -201,7 +195,7 @@ describe('ArkUI state → build() re-render bridge (assignment-gated)', () => {
         '}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const methods = cg.getNodesByKind('method');
@@ -228,12 +222,6 @@ describe('ArkUI state → build() re-render bridge (assignment-gated)', () => {
 });
 
 describe('ArkUI @ohos.events.emitter bridge', () => {
-  let tmpDir: string | undefined;
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = undefined;
-  });
-
   it('links emit → on through a shared named constant, chased through a local EventsId', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-arkui-emitter-'));
     fs.writeFileSync(
@@ -266,7 +254,7 @@ describe('ArkUI @ohos.events.emitter bridge', () => {
         '}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const methods = cg.getNodesByKind('method');
@@ -299,7 +287,7 @@ describe('ArkUI @ohos.events.emitter bridge', () => {
         '}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const fns = cg.getNodesByKind('function');
@@ -313,12 +301,6 @@ describe('ArkUI @ohos.events.emitter bridge', () => {
 });
 
 describe('ArkUI router bridge (pushUrl literal → @Entry struct)', () => {
-  let tmpDir: string | undefined;
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = undefined;
-  });
-
   it('links the navigating method to the target page struct, standard layout only', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-arkui-router-'));
     fs.mkdirSync(path.join(tmpDir, 'entry/src/main/ets/pages'), { recursive: true });
@@ -343,7 +325,7 @@ describe('ArkUI router bridge (pushUrl literal → @Entry struct)', () => {
         '}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const methods = cg.getNodesByKind('method');
@@ -361,12 +343,6 @@ describe('ArkUI router bridge (pushUrl literal → @Entry struct)', () => {
 });
 
 describe('ohpm main entry (custom barrel + .ts consumer)', () => {
-  let tmpDir: string | undefined;
-  afterEach(() => {
-    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-    tmpDir = undefined;
-  });
-
   it('resolves a bare import through a custom main, from an .ets AND a .ts consumer', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-ohpm-main-'));
     fs.mkdirSync(path.join(tmpDir, 'core/data/src'), { recursive: true });
@@ -408,7 +384,7 @@ describe('ohpm main entry (custom barrel + .ts consumer)', () => {
         '}\n'
     );
 
-    const cg = CodeGraph.initSync(tmpDir);
+    cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
     const classes = cg.getNodesByKind('class');

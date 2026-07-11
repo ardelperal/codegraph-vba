@@ -9,9 +9,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-11
+
 ### Changed
 
-- **Synced with upstream `colbymchenry/codegraph` v1.4.1** (107 upstream commits merged into the fork). All VBA/Access extraction — its own files, resolvers, and 9 test suites — was preserved unchanged; conflicts occurred only at the integration seams and were resolved keeping the fork's VBA behavior while adopting upstream's improvements. **This merge is not released until `pnpm run build && pnpm test` passes on Node ≥22.5 <25.**
+- **Synced with upstream `colbymchenry/codegraph` v1.4.1** (107 upstream commits merged into the fork). All VBA/Access extraction — its own files, resolvers, and 9 test suites — was preserved unchanged; conflicts occurred only at the integration seams and were resolved keeping the fork's VBA behavior while adopting upstream's improvements.
+
+### Fixed
+
+- Closed ArkTS test database handles before removing temporary directories, preventing Windows `EBUSY`/`EPERM` teardown failures.
 
 ### New Features (from upstream)
 
@@ -615,3 +621,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.4.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.4.0
 [1.5.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.5.0
 [1.5.1]: https://github.com/colbymchenry/codegraph/releases/tag/v1.5.1
+[1.6.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.6.0

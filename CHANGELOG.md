@@ -12,6 +12,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### New Features
 
 - VBA SQL table references now record whether the code reads or writes each table — derived from the SQL verb (`SELECT`/`FROM` and `JOIN` are reads; `INSERT`, `UPDATE`, and `DELETE` targets are writes; a form's `RecordSource`/`RowSource` binding is a read) — so you can ask which procedures *write* a table versus only read it. (#87)
+- VBA object variables assigned from a factory function in the same module (`Set x = CreateThing()` where `CreateThing` returns a class) are now typed from that function's return type, so calls like `x.DoWork` connect to the factory's class instead of dead-ending — more complete call graphs and impact analysis for factory-style Access code. (#89)
 
 ## [1.6.0] - 2026-07-11
 

@@ -138,6 +138,18 @@ export class VbaExtractorContext {
   /** Local event name (lowercase) → event node for `RaiseEvent` edge emission. */
   public localEvents = new Map<string, Node>();
 
+  /**
+   * Same-file function/property return types, keyed by lowercase proc name →
+   * declared return type. ONLY non-primitive (project-class) return types are
+   * stored. Populated by `sweepProcedures` (which runs before the call sweep);
+   * consumed by the call sweep's `Set x = Factory(...)` handling to type the
+   * assigned local var so a later `x.Method` qualified call resolves to the
+   * factory's class instead of a dead-end `x.Method` stub. Cross-file
+   * factories are not covered here (no return type is visible at extraction
+   * time) — that stays the resolver's frontier.
+   */
+  public functionReturnTypes = new Map<string, string>();
+
   constructor(filePath: string) {
     this.filePath = filePath;
   }

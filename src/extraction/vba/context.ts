@@ -243,12 +243,21 @@ export class VbaExtractorContext {
    * node named `targetName`. Used by Dim, WithEvents, Set-New, and SQL sweeps.
    * Fix 5: the synthetic node id is keyed on (filePath, kind, name) WITHOUT
    * lineNum so the same type/table referenced on N lines produces ONE node.
+   *
+   * `access` (optional): when a caller can classify the reference as a data
+   * read or write — SQL table references derive it from the statement verb —
+   * it is stamped onto `edge.metadata.access` so consumers can answer "who
+   * WRITES table X" vs "who READS table X". Mirrors the read/write tagging the
+   * TempVars sweep already emits (`emitTempVarReference`). Omitted for
+   * structural references (Dim/WithEvents/Set-New) where the direction is not
+   * meaningful.
    */
   public emitReference(
     targetName: string,
     lineNum: number,
     column: number,
     synthesizedBy: string,
+    access?: 'read' | 'write',
   ): void {
     if (!targetName) return;
     const targetId = generateNodeId(
@@ -280,7 +289,7 @@ export class VbaExtractorContext {
       target: targetId,
       kind: 'references',
       provenance: 'heuristic',
-      metadata: { synthesizedBy },
+      metadata: access ? { synthesizedBy, access } : { synthesizedBy },
       line: lineNum,
       column,
     };

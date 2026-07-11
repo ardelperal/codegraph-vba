@@ -508,6 +508,67 @@ End Sub`;
     expect(target?.name).toBe('tblOrders');
   });
 
+  // REQ-CODE-8 (access direction): every `vba-sql-table` reference carries a
+  // `metadata.access` of `'read'` or `'write'`, derived from the SQL verb, so
+  // consumers can answer "who WRITES table X" vs "who READS table X" — mirrors
+  // the read/write tagging TempVars references already carry.
+  function sqlEdgeFor(r: ReturnType<typeof extract>, tableName: string) {
+    return r.edges.find((e) => {
+      if (e.kind !== 'references' || e.metadata?.synthesizedBy !== 'vba-sql-table') return false;
+      return r.nodes.find((n) => n.id === e.target)?.name === tableName;
+    });
+  }
+
+  it('SELECT FROM tags the table access=read', () => {
+    const src = `Sub R()
+  DoCmd.RunSQL "SELECT * FROM tblCustomers"
+End Sub`;
+    const r = extract('src/modules/R.bas', src);
+    expect(sqlEdgeFor(r, 'tblCustomers')?.metadata?.access).toBe('read');
+  });
+
+  it('UPDATE tags the table access=write', () => {
+    const src = `Sub U()
+  CurrentDb.Execute "UPDATE tblOrders SET Status = 1"
+End Sub`;
+    const r = extract('src/modules/U.bas', src);
+    expect(sqlEdgeFor(r, 'tblOrders')?.metadata?.access).toBe('write');
+  });
+
+  it('INSERT INTO tags the target table access=write', () => {
+    const src = `Sub I()
+  DoCmd.RunSQL "INSERT INTO tblAudit (Id) VALUES (1)"
+End Sub`;
+    const r = extract('src/modules/I.bas', src);
+    expect(sqlEdgeFor(r, 'tblAudit')?.metadata?.access).toBe('write');
+  });
+
+  it('DELETE FROM tags the target table access=write (FROM after DELETE is a write, not a read)', () => {
+    const src = `Sub D()
+  DoCmd.RunSQL "DELETE FROM tblOld"
+End Sub`;
+    const r = extract('src/modules/D.bas', src);
+    expect(sqlEdgeFor(r, 'tblOld')?.metadata?.access).toBe('write');
+  });
+
+  it('INSERT INTO ... SELECT FROM tags target=write and source=read distinctly', () => {
+    const src = `Sub Copy()
+  getdb().Execute "INSERT INTO tblArchive SELECT * FROM tblLive"
+End Sub`;
+    const r = extract('src/modules/Copy.bas', src);
+    expect(sqlEdgeFor(r, 'tblArchive')?.metadata?.access).toBe('write');
+    expect(sqlEdgeFor(r, 'tblLive')?.metadata?.access).toBe('read');
+  });
+
+  it('JOIN source table in a SELECT is access=read', () => {
+    const src = `Sub J()
+  getdb().OpenRecordset "SELECT * FROM tblA INNER JOIN tblB ON tblA.Id = tblB.Id"
+End Sub`;
+    const r = extract('src/modules/J.bas', src);
+    expect(sqlEdgeFor(r, 'tblA')?.metadata?.access).toBe('read');
+    expect(sqlEdgeFor(r, 'tblB')?.metadata?.access).toBe('read');
+  });
+
   it('SQL inside a VBA comment does not match', () => {
     const src = `' DoCmd.RunSQL "SELECT * FROM tblFake"
 Public Sub DoWork()

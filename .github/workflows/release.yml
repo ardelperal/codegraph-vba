@@ -124,11 +124,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v${{ steps.ver.outputs.version }}"
-          # Title includes the package name (codegraph-vba) so users browsing the
-          # Releases page can tell at a glance that this is the VBA/Access fork
-          # rather than the upstream @colbymchenry/codegraph. The tag itself stays
-          # the plain semver tag (v<version>) for tooling compatibility.
-          TITLE="codegraph-vba $TAG"
+          # Title is the plain semver tag (v<version>), matching `gh release view` output.
+          TITLE="$TAG"
           # Idempotent: create the release once, otherwise (re-run) refresh assets.
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" release/codegraph-vba-* release/SHA256SUMS --clobber

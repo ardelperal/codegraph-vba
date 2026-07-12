@@ -197,6 +197,7 @@ export function isSourceFile(filePath: string, overrides?: Record<string, Langua
   // VBA form/report UI files are two-segment extensions; the extname lookup
   // would otherwise collapse them to `.txt`.
   if (detectVbaFormFile(filePath)) return true;
+  if (isVbaTestManifestFile(filePath)) return true; // Dysflow VBA test manifests (`tests.*.json`)
   if (isErlangAppFile(filePath)) return true; // OTP `.app`/`.app.src` resource files
   const dot = filePath.lastIndexOf('.');
   if (dot < 0) return false;
@@ -261,6 +262,23 @@ export function detectVbaFormFile(filePath: string): boolean {
   if (!basename) return false;
   const lower = basename.toLowerCase();
   return lower.endsWith('.form.txt') || lower.endsWith('.report.txt');
+}
+
+/**
+ * Dysflow VBA test manifests: `tests(.<slice>)*.json` (e.g. `tests.json`,
+ * `tests.vba.smoke.json`). Recognized by basename only — the content-shape gate
+ * (a top-level `tests` array of `{procedure}`) is applied inside
+ * `VbaTestManifestExtractor`, so `package.json` / `tsconfig.json` are excluded
+ * here and unrelated `tests.*.json` files emit nothing at extraction.
+ *
+ * `.json` is deliberately NOT in `EXTENSION_MAP` (ordinary JSON is not indexed);
+ * this is the sole gate that makes a manifest an indexable source file, mirroring
+ * the `.sql`/`queries.json` gate for `SqlQueryExtractor`.
+ */
+export function isVbaTestManifestFile(filePath: string): boolean {
+  if (!filePath) return false;
+  const basename = filePath.split(/[\\/]/).pop() ?? '';
+  return /^tests(\.[\w-]+)*\.json$/i.test(basename);
 }
 
 /**
@@ -460,6 +478,10 @@ export function detectLanguage(filePath: string, source?: string, overrides?: Re
   // gate that requires a sibling `queries.json`. Once it does, classify it as
   // `sql` so the dispatch routes it to `SqlQueryExtractor`.
   if (filePath.toLowerCase().endsWith('.sql')) return 'sql';
+  // Dysflow VBA test manifests are `tests.*.json`. `.json` is not in
+  // EXTENSION_MAP, so classify manifests as `vba` to route them to
+  // `VbaTestManifestExtractor`; the dispatch narrows on `isVbaTestManifestFile`.
+  if (isVbaTestManifestFile(filePath)) return 'vba';
   const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
   // Shopify OS 2.0 JSON templates / section groups → the Liquid extractor (it
   // links each section `"type"` to its `sections/<type>.liquid`).

@@ -15,6 +15,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - VBA object variables assigned from a factory function in the same module (`Set x = CreateThing()` where `CreateThing` returns a class) are now typed from that function's return type, so calls like `x.DoWork` connect to the factory's class instead of dead-ending — more complete call graphs and impact analysis for factory-style Access code. (#89)
 - Dysflow VBA test manifests (`tests.*.json`) are now indexed: each registered `Test_*` procedure is linked to its manifest, so you can ask which tests cover a changed symbol — and get the test names and tags to run — straight from the graph, without grepping the manifest files. (#91)
 - Dysflow VBA test sequences under `sequences/*.json` are now indexed: each `Test_*` procedure listed in a sequence's `procedures[]` is linked back to the sequence file, with the sequence's `runnerPolicy`, position, and origin carried on the edge — so you can ask which sequence exercises a procedure and what runner policy applies, straight from the graph. The `runnerPolicy` + `procedures` shape is the only one supported today; strict-sequence (`executionUnits`) and slices (`slices[]` + submanifests) shapes are deferred to a follow-up. (#97)
+- Indexing an Access/VBA project is faster on large exports: the extractor no longer re-splits the source into lines once per concern. Five independent line-by-line sweeps now share a single pre-tokenized line array and a single walker dispatches each line to its classifier, so extraction of a ~2900-line `.cls` runs ~10% faster at the same accuracy as before. (#83)
+
+### Fixes
+
+- VBA conditional-compilation expressions (`#If … Then`) with mixed arithmetic and comparison, e.g. `#If 2147483647 + 1 = -2147483648 Then`, are now evaluated correctly. The Pratt parser previously had no binary additive level, so expressions mixing `+`/`-` with `=` silently failed to parse and the inactive branch was indexed. (#84)
 
 ## [1.6.0] - 2026-07-11
 

@@ -8,7 +8,7 @@
 import { Node } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { foldVisibility } from './text-utils';
-import { VbaExtractorContext } from './context';
+import { VbaExtractorContext, VbaClassifier } from './context';
 
 /** `[visibility] Event <Name>(...)` custom event declaration. */
 const EVENT_DECL_RE =
@@ -29,143 +29,159 @@ const TYPE_MEMBER_RE =
 const DLL_DECLARE_RE =
   /^\s*((?:Public|Private)\s+)?Declare\s+(PtrSafe\s+)?(Sub|Function)\s+(\p{L}[\p{L}\p{N}_]*)\s+Lib\s+"([^"]+)"(?:\s+Alias\s+"([^"]+)")?/iu;
 
-export function sweepEventsTypesAndDeclares(ctx: VbaExtractorContext, src: string): number {
-  const lines = src.split('\n');
-  let count = 0;
+/**
+ * Issue #83: factory for the events/types/declares classifier. Closure
+ * state: `currentType` (the open `Type ... End Type` block).
+ */
+export function createEventsTypesDeclaresClassifier(): VbaClassifier {
   let currentType: { id: string; name: string } | null = null;
+  const cls: VbaClassifier = {
+    name: 'eventsTypesDeclares',
+    count: 0,
+    classifyLine(line, i, ctx) {
+      const lineNum = i + 1;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const lineNum = i + 1;
-
-    if (currentType) {
-      if (TYPE_END_RE.test(line)) {
-        currentType = null;
-        continue;
+      if (currentType) {
+        if (TYPE_END_RE.test(line)) {
+          currentType = null;
+          return;
+        }
+        const member = TYPE_MEMBER_RE.exec(line);
+        if (member) {
+          const memberName = member[1] ?? '';
+          const memberType = (member[2] ?? '').trim();
+          if (!memberName) return;
+          const memberId = generateNodeId(ctx.filePath, 'type_member', memberName, lineNum);
+          ctx.nodes.push({
+            id: memberId,
+            kind: 'type_member',
+            name: memberName,
+            qualifiedName: `${currentType.name}.${memberName}`,
+            filePath: ctx.filePath,
+            language: 'vba',
+            startLine: lineNum,
+            endLine: lineNum,
+            startColumn: 0,
+            endColumn: line.length,
+            metadata: { memberType },
+            updatedAt: Date.now(),
+          });
+          ctx.edges.push({
+            source: currentType.id,
+            target: memberId,
+            kind: 'type-member',
+            provenance: 'parser',
+          });
+        }
+        return;
       }
-      const member = TYPE_MEMBER_RE.exec(line);
-      if (member) {
-        const memberName = member[1] ?? '';
-        const memberType = (member[2] ?? '').trim();
-        if (!memberName) continue;
-        const memberId = generateNodeId(ctx.filePath, 'type_member', memberName, lineNum);
-        ctx.nodes.push({
-          id: memberId,
-          kind: 'type_member',
-          name: memberName,
-          qualifiedName: `${currentType.name}.${memberName}`,
+
+      const eventDecl = EVENT_DECL_RE.exec(line);
+      if (eventDecl) {
+        const visibility = foldVisibility(eventDecl[1] ?? '');
+        const name = eventDecl[2] ?? '';
+        if (!name) return;
+        const eventId = generateNodeId(ctx.filePath, 'event', name, lineNum);
+        const eventNode: Node = {
+          id: eventId,
+          kind: 'event',
+          name,
+          signature: line.trim(),
+          qualifiedName: ctx.classNamePrefix ? `${ctx.classNamePrefix}.${name}` : name,
           filePath: ctx.filePath,
           language: 'vba',
           startLine: lineNum,
           endLine: lineNum,
           startColumn: 0,
           endColumn: line.length,
-          metadata: { memberType },
+          visibility,
+          updatedAt: Date.now(),
+        };
+        ctx.nodes.push(eventNode);
+        ctx.localEvents.set(name.toLowerCase(), eventNode);
+        ctx.pushContainsFromModule(eventId);
+        this.count++;
+        return;
+      }
+
+      const typeStart = TYPE_START_RE.exec(line);
+      if (typeStart) {
+        const visibility = foldVisibility(typeStart[1] ?? '');
+        const name = typeStart[2] ?? '';
+        if (!name) return;
+        const typeId = generateNodeId(ctx.filePath, 'type', name, lineNum);
+        ctx.nodes.push({
+          id: typeId,
+          kind: 'type',
+          name,
+          qualifiedName: ctx.classNamePrefix ? `${ctx.classNamePrefix}.${name}` : name,
+          filePath: ctx.filePath,
+          language: 'vba',
+          startLine: lineNum,
+          endLine: lineNum,
+          startColumn: 0,
+          endColumn: line.length,
+          visibility,
           updatedAt: Date.now(),
         });
-        ctx.edges.push({
-          source: currentType.id,
-          target: memberId,
-          kind: 'type-member',
-          provenance: 'parser',
-        });
+        ctx.pushContainsFromModule(typeId);
+        currentType = { id: typeId, name };
+        this.count++;
+        return;
       }
-      continue;
-    }
 
-    const eventDecl = EVENT_DECL_RE.exec(line);
-    if (eventDecl) {
-      const visibility = foldVisibility(eventDecl[1] ?? '');
-      const name = eventDecl[2] ?? '';
-      if (!name) continue;
-      const eventId = generateNodeId(ctx.filePath, 'event', name, lineNum);
-      const eventNode: Node = {
-        id: eventId,
-        kind: 'event',
-        name,
-        signature: line.trim(),
-        qualifiedName: ctx.classNamePrefix ? `${ctx.classNamePrefix}.${name}` : name,
-        filePath: ctx.filePath,
-        language: 'vba',
-        startLine: lineNum,
-        endLine: lineNum,
-        startColumn: 0,
-        endColumn: line.length,
-        visibility,
-        updatedAt: Date.now(),
-      };
-      ctx.nodes.push(eventNode);
-      ctx.localEvents.set(name.toLowerCase(), eventNode);
-      ctx.pushContainsFromModule(eventId);
-      count++;
-      continue;
-    }
-
-    const typeStart = TYPE_START_RE.exec(line);
-    if (typeStart) {
-      const visibility = foldVisibility(typeStart[1] ?? '');
-      const name = typeStart[2] ?? '';
-      if (!name) continue;
-      const typeId = generateNodeId(ctx.filePath, 'type', name, lineNum);
-      ctx.nodes.push({
-        id: typeId,
-        kind: 'type',
-        name,
-        qualifiedName: ctx.classNamePrefix ? `${ctx.classNamePrefix}.${name}` : name,
-        filePath: ctx.filePath,
-        language: 'vba',
-        startLine: lineNum,
-        endLine: lineNum,
-        startColumn: 0,
-        endColumn: line.length,
-        visibility,
-        updatedAt: Date.now(),
-      });
-      ctx.pushContainsFromModule(typeId);
-      currentType = { id: typeId, name };
-      count++;
-      continue;
-    }
-
-    const declaration = DLL_DECLARE_RE.exec(line);
-    if (declaration) {
-      const visibility = foldVisibility(declaration[1] ?? '');
-      const ptrSafe = !!declaration[2];
-      const declareKind = (declaration[3] ?? '').toLowerCase();
-      const name = declaration[4] ?? '';
-      const dll = declaration[5] ?? '';
-      const aliasName = declaration[6] ?? undefined;
-      if (!name) continue;
-      const declareId = generateNodeId(ctx.filePath, 'declare', name, lineNum);
-      const declareNode: Node = {
-        id: declareId,
-        kind: 'declare',
-        name,
-        qualifiedName: ctx.classNamePrefix ? `${ctx.classNamePrefix}.${name}` : name,
-        filePath: ctx.filePath,
-        language: 'vba',
-        startLine: lineNum,
-        endLine: lineNum,
-        startColumn: 0,
-        endColumn: line.length,
-        visibility,
-        metadata: {
-          isDeclare: true,
-          dll,
-          declareKind,
-          ptrSafe,
-          ...(aliasName ? { aliasName } : {}),
-        },
-        updatedAt: Date.now(),
-      };
-      ctx.nodes.push(declareNode);
-      if (!ctx.functionNodeByName.has(name)) {
-        ctx.functionNodeByName.set(name, declareNode);
+      const declaration = DLL_DECLARE_RE.exec(line);
+      if (declaration) {
+        const visibility = foldVisibility(declaration[1] ?? '');
+        const ptrSafe = !!declaration[2];
+        const declareKind = (declaration[3] ?? '').toLowerCase();
+        const name = declaration[4] ?? '';
+        const dll = declaration[5] ?? '';
+        const aliasName = declaration[6] ?? undefined;
+        if (!name) return;
+        const declareId = generateNodeId(ctx.filePath, 'declare', name, lineNum);
+        const declareNode: Node = {
+          id: declareId,
+          kind: 'declare',
+          name,
+          qualifiedName: ctx.classNamePrefix ? `${ctx.classNamePrefix}.${name}` : name,
+          filePath: ctx.filePath,
+          language: 'vba',
+          startLine: lineNum,
+          endLine: lineNum,
+          startColumn: 0,
+          endColumn: line.length,
+          visibility,
+          metadata: {
+            isDeclare: true,
+            dll,
+            declareKind,
+            ptrSafe,
+            ...(aliasName ? { aliasName } : {}),
+          },
+          updatedAt: Date.now(),
+        };
+        ctx.nodes.push(declareNode);
+        if (!ctx.functionNodeByName.has(name)) {
+          ctx.functionNodeByName.set(name, declareNode);
+        }
+        ctx.pushContainsFromModule(declareId);
+        this.count++;
       }
-      ctx.pushContainsFromModule(declareId);
-      count++;
-    }
+    },
+  };
+  return cls;
+}
+
+/**
+ * Backward-compat wrapper (see procedures.ts). Returns the classifier's
+ * `count` so the orchestrator can decide `hasAnySymbols`.
+ */
+export function sweepEventsTypesAndDeclares(ctx: VbaExtractorContext, src: string): number {
+  const cls = createEventsTypesDeclaresClassifier();
+  const lines = src.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    cls.classifyLine(lines[i] ?? '', i, ctx);
   }
-
-  return count;
+  return cls.count;
 }

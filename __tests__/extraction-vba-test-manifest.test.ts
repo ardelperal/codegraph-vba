@@ -80,3 +80,62 @@ describe('VbaTestManifestExtractor — malformed JSON', () => {
     expect(r.errors[0]?.severity).toBe('warning');
   });
 });
+
+describe('VbaTestManifestExtractor — manifest references (SUB-2)', () => {
+  it('emits one vba-test-manifest reference per entry with metadata', () => {
+    const manifestFile = 'tests/tests.vba.smoke.json';
+    const r = extract(
+      manifestFile,
+      JSON.stringify({
+        tests: [
+          { procedure: 'Test_A', name: 'A happy', tags: ['presenter', 'happy'] },
+          { procedure: 'Test_B', name: 'B path', tags: ['b2'] },
+          { procedure: 'Test_C', name: 'C path', tags: [] },
+        ],
+      }),
+    );
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-test-manifest',
+    );
+    expect(refs).toHaveLength(3);
+
+    const fileNode = r.nodes.find((n) => n.kind === 'file');
+    for (const ref of refs) {
+      expect(ref.referenceKind).toBe('references');
+      expect(ref.fromNodeId).toBe(fileNode?.id);
+      expect(ref.metadata?.manifestFile).toBe(manifestFile);
+    }
+
+    const a = refs.find((u) => u.referenceName === 'Test_A');
+    expect(a?.metadata?.testName).toBe('A happy');
+    expect(a?.metadata?.tags).toEqual(['presenter', 'happy']);
+  });
+
+  it('defaults testName to the procedure and tags to [] when absent', () => {
+    const r = extract(
+      'tests/tests.vba.min.json',
+      JSON.stringify({ tests: [{ procedure: 'Test_Y' }] }),
+    );
+    const ref = r.unresolvedReferences.find((u) => u.referenceName === 'Test_Y');
+    expect(ref).toBeDefined();
+    expect(ref?.metadata?.testName).toBe('Test_Y');
+    expect(ref?.metadata?.tags).toEqual([]);
+  });
+
+  it('skips entries lacking a string procedure but keeps the valid ones', () => {
+    const r = extract(
+      'tests/tests.vba.mixed.json',
+      JSON.stringify({
+        tests: [
+          { procedure: 'Test_Ok' },
+          { name: 'no procedure' },
+          { procedure: 123 },
+        ],
+      }),
+    );
+    const refs = r.unresolvedReferences.filter(
+      (u) => u.metadata?.synthesizedBy === 'vba-test-manifest',
+    );
+    expect(refs.map((u) => u.referenceName)).toEqual(['Test_Ok']);
+  });
+});

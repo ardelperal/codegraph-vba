@@ -22,8 +22,15 @@
  * resolution to `Test_*` function nodes (SUB-3) are added in later slices.
  */
 import * as path from 'path';
-import { Node, ExtractionResult, ExtractionError } from '../types';
+import { Node, ExtractionResult, ExtractionError, UnresolvedReference } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
+
+/** One `tests[]` entry that carries a string `procedure`. */
+interface ManifestTestEntry {
+  procedure: string;
+  name?: unknown;
+  tags?: unknown;
+}
 
 /**
  * Content-shape gate: is `parsed` a VBA test manifest — a top-level `tests`
@@ -46,6 +53,7 @@ export class VbaTestManifestExtractor {
   private filePath: string;
   private source: string;
   private nodes: Node[] = [];
+  private unresolvedReferences: UnresolvedReference[] = [];
   private errors: ExtractionError[] = [];
 
   constructor(filePath: string, source: string) {
@@ -77,15 +85,51 @@ export class VbaTestManifestExtractor {
       return this.result(startTime);
     }
 
-    this.nodes.push(this.createFileNode());
+    const fileNode = this.createFileNode();
+    this.nodes.push(fileNode);
+    this.emitTestReferences(parsed, fileNode.id);
     return this.result(startTime);
+  }
+
+  /**
+   * One `UnresolvedReference` per `tests[]` entry carrying a string `procedure`,
+   * pointing at that procedure name. The `ReferenceResolver` (SUB-3) binds each
+   * to the existing `Test_*` `function` node — no duplicate node is emitted here.
+   * `name` defaults to the procedure name; `tags` defaults to `[]`.
+   */
+  private emitTestReferences(parsed: unknown, fromNodeId: string): void {
+    const tests = (parsed as { tests?: unknown[] }).tests ?? [];
+    for (const raw of tests) {
+      if (!raw || typeof raw !== 'object') continue;
+      const entry = raw as ManifestTestEntry;
+      if (typeof entry.procedure !== 'string') continue;
+
+      const testName = typeof entry.name === 'string' ? entry.name : entry.procedure;
+      const tags = Array.isArray(entry.tags) ? entry.tags : [];
+
+      this.unresolvedReferences.push({
+        fromNodeId,
+        referenceName: entry.procedure,
+        referenceKind: 'references',
+        line: 1,
+        column: 0,
+        filePath: this.filePath,
+        language: 'vba',
+        metadata: {
+          synthesizedBy: 'vba-test-manifest',
+          testName,
+          tags,
+          manifestFile: this.filePath,
+        },
+      });
+    }
   }
 
   private result(startTime: number): ExtractionResult {
     return {
       nodes: this.nodes,
       edges: [],
-      unresolvedReferences: [],
+      unresolvedReferences: this.unresolvedReferences,
       errors: this.errors,
       durationMs: Date.now() - startTime,
     };

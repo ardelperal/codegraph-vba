@@ -15,7 +15,7 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, detectVbaFormFile } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, detectVbaFormFile, isVbaTestManifestFile } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import { FN_REF_SPECS, captureFnRefCandidates, type FnRefSpec, type FnRefCandidate } from './function-ref';
 import { isGeneratedFile } from './generated-detection';
@@ -31,6 +31,7 @@ import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
 import { VbaExtractor } from './vba-extractor';
 import { VbaFormExtractor } from './vba-form-extractor';
+import { VbaTestManifestExtractor } from './vba-test-manifest-extractor';
 import { SqlQueryExtractor } from './sql-query-extractor';
 import { CfmlExtractor } from './cfml-extractor';
 import {
@@ -6588,6 +6589,13 @@ export function extractFromSource(
     // per control + one `references` edge to sibling `.cls`. See
     // `vba-form-ui-extraction` spec (REQ-FORM-1..4).
     const extractor = new VbaFormExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (detectedLanguage === 'vba' && isVbaTestManifestFile(filePath)) {
+    // Dysflow VBA test manifests — `tests(.<slice>)*.json`. Classified `vba`
+    // by `detectLanguage`, narrowed here by basename. Guarded JSON parse +
+    // content-shape gate; emits a `file` node (SUB-2 adds the per-entry
+    // `vba-test-manifest` references). See `vba-test-manifest-extraction` spec.
+    const extractor = new VbaTestManifestExtractor(filePath, source);
     result = extractor.extract();
   } else if (detectedLanguage === 'vba') {
     // VBA standard/class/legacy modules — `.bas`, `.cls`, `.frm`, `.dsr`.

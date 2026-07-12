@@ -26,6 +26,13 @@ export interface UnresolvedRef {
   language: Language;
   /** Possible qualified names it might resolve to */
   candidates?: string[];
+  /**
+   * Optional extractor-specific annotations carried from the source
+   * `UnresolvedReference` (e.g. `synthesizedBy: 'vba-test-manifest'` plus its
+   * `testName`/`tags`/`manifestFile`). Preserved in-memory through resolution
+   * so `createEdges` can stamp provenance onto the resolved edge.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /**

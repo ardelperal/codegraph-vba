@@ -112,6 +112,7 @@ interface UnresolvedRefRow {
   language: string;
   status: string;
   name_tail: string;
+  metadata: string | null;
 }
 
 /**
@@ -1902,8 +1903,8 @@ export class QueryBuilder {
   insertUnresolvedRef(ref: UnresolvedReference): void {
     if (!this.stmts.insertUnresolved) {
       this.stmts.insertUnresolved = this.db.prepare(`
-        INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language)
-        VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @filePath, @language)
+        INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language, metadata)
+        VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @filePath, @language, @metadata)
       `);
     }
 
@@ -1916,6 +1917,7 @@ export class QueryBuilder {
       candidates: ref.candidates ? JSON.stringify(ref.candidates) : null,
       filePath: ref.filePath ?? '',
       language: ref.language ?? 'unknown',
+      metadata: ref.metadata ? JSON.stringify(ref.metadata) : null,
     });
   }
 
@@ -1963,6 +1965,7 @@ export class QueryBuilder {
       candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
       filePath: row.file_path,
       language: row.language as Language,
+      metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
     }));
   }
 
@@ -1980,6 +1983,7 @@ export class QueryBuilder {
       candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
       filePath: row.file_path,
       language: row.language as Language,
+      metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
     }));
   }
 
@@ -2022,6 +2026,7 @@ export class QueryBuilder {
       candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
       filePath: row.file_path,
       language: row.language as Language,
+      metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
     }));
   }
 
@@ -2090,6 +2095,7 @@ export class QueryBuilder {
       candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
       filePath: row.file_path,
       language: row.language as Language,
+      metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
     }));
   }
 
@@ -2204,6 +2210,7 @@ export class QueryBuilder {
       candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
       filePath: row.file_path,
       language: row.language as Language,
+      metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
     }));
   }
 

@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS unresolved_refs (
     language TEXT NOT NULL DEFAULT 'unknown',
     status TEXT NOT NULL DEFAULT 'pending',
     name_tail TEXT NOT NULL DEFAULT '',
+    metadata TEXT, -- JSON object: extractor annotations (e.g. synthesizedBy) carried onto resolved edges
     FOREIGN KEY (from_node_id) REFERENCES nodes(id) ON DELETE CASCADE
 );
 

@@ -625,6 +625,7 @@ export class ReferenceResolver {
       column: ref.column,
       filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
       language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
+      metadata: ref.metadata,
     }));
 
     const total = refs.length;
@@ -1003,6 +1004,18 @@ export class ReferenceResolver {
           // tooling label "callback registration" and lets validation diff
           // exactly the edges this feature added.
           ...(ref.original.referenceKind === 'function_ref' ? { fnRef: true } : {}),
+          // Carry Dysflow VBA test-manifest provenance onto the resolved edge
+          // so `codegraph_explore`/`getCallers` can name the manifest + tags for
+          // a `Test_*` atom. Scoped to this synthesizer to keep every other
+          // resolved edge's metadata unchanged. See `vba-test-manifest-extraction`.
+          ...(ref.original.metadata?.synthesizedBy === 'vba-test-manifest'
+            ? {
+                synthesizedBy: 'vba-test-manifest',
+                testName: ref.original.metadata.testName,
+                tags: ref.original.metadata.tags,
+                manifestFile: ref.original.metadata.manifestFile,
+              }
+            : {}),
         },
       };
     });
@@ -1184,6 +1197,7 @@ export class ReferenceResolver {
         column: raw.column,
         filePath: raw.filePath || this.getFilePathFromNodeId(raw.fromNodeId),
         language: raw.language || this.getLanguageFromNodeId(raw.fromNodeId),
+        metadata: raw.metadata,
       };
       const result = this.resolveOne(ref);
       if (result) {

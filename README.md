@@ -51,11 +51,11 @@ This repository is a fork of [`colbymchenry/codegraph`](https://github.com/colby
 
 **Why fork?** To add VBA / Access language support that does not exist upstream, so agents can navigate Microsoft Access projects managed by Dysflow the same way they navigate TypeScript or Python today. See the [VBA / Access + Dysflow integration](#vba--access--dysflow-integration) section below for the feature spec, the pattern table, and the hard invariants.
 
-**The fork is published to npm as `codegraph-vba`.** The upstream package `@colbymchenry/codegraph` does **not** have VBA / Access support — install `codegraph-vba` to get it:
+**The fork is published to npm as `@aroman22/codegraph-vba`.** The upstream package `@colbymchenry/codegraph` does **not** have VBA / Access support — install `@aroman22/codegraph-vba` to get it:
 
 ```bash
 # Option A — install from npm (easiest; gets you the codegraph-vba CLI on PATH):
-npm i -g codegraph-vba
+npm i -g @aroman22/codegraph-vba
 # or with pnpm:
 pnpm add -g codegraph-vba
 # or the one-line OS installer (no Node required) — see Get Started below.
@@ -96,7 +96,7 @@ irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 
 <summary><b>Already have Node? Use npm instead (works on any version)</b></summary>
 
 ```bash
-npm i -g codegraph-vba
+npm i -g @aroman22/codegraph-vba
 ```
 
 <sub>CodeGraph bundles its own runtime — nothing to compile, no native build, works the same everywhere. The installer puts `codegraph-vba` on your PATH but **doesn't change your current shell** — open a new terminal before the next step so the command resolves.</sub>
@@ -470,7 +470,7 @@ That's it — your agent will use CodeGraph tools automatically when a `.codegra
 
 **Install globally:**
 ```bash
-npm i -g codegraph-vba
+npm i -g @aroman22/codegraph-vba
 ```
 
 **Add to `~/.claude.json`:**
@@ -837,7 +837,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 **MCP hits `database is locked`** — current builds shouldn't: CodeGraph bundles its own Node runtime and uses Node's built-in `node:sqlite` in WAL mode, where concurrent reads never block on a writer. If you still see it:
 
-- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex` (Windows), or `npm i -g codegraph-vba@latest`.
+- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex` (Windows), or `npm i -g @aroman22/codegraph-vba@latest`.
 - **`codegraph-vba status` shows `Journal:` other than `wal`** — WAL couldn't be enabled on this filesystem (common on network shares and WSL2 `/mnt`), so reads can block on writes. Move the project (with its `.codegraph-vba/` folder) onto a local disk.
 
 **MCP server not connecting** — Your agent starts the server itself, so you don't launch it by hand. Make sure the project is initialized and indexed (`codegraph-vba status`) and that the path in your MCP config is correct. If it still won't connect, re-run `codegraph-vba install` to rewrite the config.

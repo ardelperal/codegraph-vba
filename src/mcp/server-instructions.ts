@@ -86,6 +86,11 @@ format):
   extracted as a \`module\` plus one \`property\` per Access control - **no**
   \`function\`/\`sub\`/\`class\` nodes come from form files; the canonical code
   lives in the sibling \`.cls\`, parsed by the same extractor on that file.
+  Dysflow test manifests (\`tests.*.json\`) link each registered \`Test_*\`
+  procedure to its manifest with a \`references\` edge tagged
+  \`vba-test-manifest\` carrying the test name + tags, so \`getCallers\` of a
+  production symbol reaches its covering test atoms with the manifest and tags
+  to run.
   Pass \`projectPath\` to a codegraph index that includes VBA files.
 `;
 

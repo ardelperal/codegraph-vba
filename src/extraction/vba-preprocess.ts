@@ -567,7 +567,7 @@ class Parser {
 
   // Level 4: Comparisons (=, <>, <, <=, >, >=)
   private parseComparison(): number {
-    let expr = this.parseNot();
+    let expr = this.parseAdditive();
     while (true) {
       const op = this.peek().type;
       if (
@@ -579,7 +579,7 @@ class Parser {
         op === 'COMP_GE'
       ) {
         this.advance();
-        const right = this.parseNot();
+        const right = this.parseAdditive();
         let cmpResult = false;
         switch (op) {
           case 'COMP_EQ':
@@ -602,6 +602,26 @@ class Parser {
             break;
         }
         expr = (cmpResult ? -1 : 0) | 0;
+      } else {
+        break;
+      }
+    }
+    return expr;
+  }
+
+  // Level 3.5: Binary +, - (arithmetic binds tighter than comparison in VBA).
+  // Wrapped with `| 0` so 32-bit signed overflow matches VBA integer math
+  // (e.g. 2147483647 + 1 === -2147483648).
+  private parseAdditive(): number {
+    let expr = this.parseNot();
+    while (true) {
+      const op = this.peek().type;
+      if (op === 'OP_PLUS') {
+        this.advance();
+        expr = (expr + this.parseNot()) | 0;
+      } else if (op === 'OP_MINUS') {
+        this.advance();
+        expr = (expr - this.parseNot()) | 0;
       } else {
         break;
       }

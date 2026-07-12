@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.6.2] - 2026-07-12
+
 ### New Features
 
 - VBA SQL table references now record whether the code reads or writes each table — derived from the SQL verb (`SELECT`/`FROM` and `JOIN` are reads; `INSERT`, `UPDATE`, and `DELETE` targets are writes; a form's `RecordSource`/`RowSource` binding is a read) — so you can ask which procedures *write* a table versus only read it. (#87)
@@ -634,3 +637,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.5.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.5.0
 [1.5.1]: https://github.com/colbymchenry/codegraph/releases/tag/v1.5.1
 [1.6.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.6.0
+[1.6.2]: https://github.com/colbymchenry/codegraph/releases/tag/v1.6.2

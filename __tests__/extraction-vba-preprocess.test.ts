@@ -857,7 +857,12 @@ describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero 
       'Debug.Print "inactive"',
       '#End If',
     ].join('\n');
-    expect(preprocessConditionalCompilation(srcOverflow)).toContain('active');
+    // Assert the ACTIVE branch is kept AND the else branch is blanked. A bare
+    // `.toContain('active')` would falsely pass on the wrong branch because the
+    // string 'inactive' contains the substring 'active'.
+    const outOverflow = preprocessConditionalCompilation(srcOverflow);
+    expect(outOverflow).toContain('Debug.Print "active"');
+    expect(outOverflow).not.toContain('Debug.Print "inactive"');
 
     // Case insensitivity of #Const variables
     const srcCaseConst = [
@@ -868,9 +873,11 @@ describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero 
       'Debug.Print "inactive"',
       '#End If',
     ].join('\n');
-    expect(preprocessConditionalCompilation(srcCaseConst)).toContain('active');
+    const outCaseConst = preprocessConditionalCompilation(srcCaseConst);
+    expect(outCaseConst).toContain('Debug.Print "active"');
+    expect(outCaseConst).not.toContain('Debug.Print "inactive"');
 
-    // Nested negation: -(5 + -(3)) = -2
+    // Nested negation with binary addition: -(5 + -(3)) = -2
     const srcNestedNeg = [
       '#If -(5 + -(3)) = -2 Then',
       'Debug.Print "active"',
@@ -878,7 +885,9 @@ describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero 
       'Debug.Print "inactive"',
       '#End If',
     ].join('\n');
-    expect(preprocessConditionalCompilation(srcNestedNeg)).toContain('active');
+    const outNestedNeg = preprocessConditionalCompilation(srcNestedNeg);
+    expect(outNestedNeg).toContain('Debug.Print "active"');
+    expect(outNestedNeg).not.toContain('Debug.Print "inactive"');
   });
 });
 

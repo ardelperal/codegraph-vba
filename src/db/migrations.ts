@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 9;
+export const CURRENT_SCHEMA_VERSION = 10;
 
 /**
  * Migration definition
@@ -162,6 +162,20 @@ const migrations: Migration[] = [
       const cols = db.prepare('PRAGMA table_info(nodes)').all() as Array<{ name: string }>;
       if (!cols.some((c) => c.name === 'metadata')) {
         db.exec('ALTER TABLE nodes ADD COLUMN metadata TEXT');
+      }
+    },
+  },
+  {
+    version: 10,
+    description:
+      'Add unresolved_refs.metadata — persist extractor annotations (e.g. synthesizedBy) so resolved edges carry provenance (VBA test-manifest)',
+    up: (db) => {
+      // ALTER TABLE has no IF NOT EXISTS, so guard the column for idempotency —
+      // a database created from the current schema.sql already has it. Keep in
+      // lockstep with schema.sql.
+      const cols = db.prepare('PRAGMA table_info(unresolved_refs)').all() as Array<{ name: string }>;
+      if (!cols.some((c) => c.name === 'metadata')) {
+        db.exec('ALTER TABLE unresolved_refs ADD COLUMN metadata TEXT');
       }
     },
   },

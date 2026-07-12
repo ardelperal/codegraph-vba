@@ -1016,6 +1016,22 @@ export class ReferenceResolver {
                 manifestFile: ref.original.metadata.manifestFile,
               }
             : {}),
+          // Carry Dysflow VBA test-sequence provenance onto the resolved edge
+          // (SUB-6 of #91, issue #97). Sequences live under `sequences/` and
+          // name their `procedures[]`; the resolver path is identical to the
+          // manifest one (bare-name `matchFunctionRef` against a `function`
+          // node) so we only need to forward the new metadata bag. The same
+          // invariant holds: a sequence edge is only emitted when the named
+          // procedure resolves to a real `Test_*` `function` node — drift
+          // stays unresolved, no phantom nodes.
+          ...(ref.original.metadata?.synthesizedBy === 'vba-test-sequence'
+            ? {
+                synthesizedBy: 'vba-test-sequence',
+                runnerPolicy: ref.original.metadata.runnerPolicy,
+                sequenceFile: ref.original.metadata.sequenceFile,
+                procedureIndex: ref.original.metadata.procedureIndex,
+              }
+            : {}),
         },
       };
     });

@@ -15,7 +15,7 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, detectVbaFormFile, isVbaTestManifestFile } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, detectVbaFormFile, isVbaTestManifestFile, isVbaTestSequenceFile } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import { FN_REF_SPECS, captureFnRefCandidates, type FnRefSpec, type FnRefCandidate } from './function-ref';
 import { isGeneratedFile } from './generated-detection';
@@ -32,6 +32,7 @@ import { MyBatisExtractor } from './mybatis-extractor';
 import { VbaExtractor } from './vba-extractor';
 import { VbaFormExtractor } from './vba-form-extractor';
 import { VbaTestManifestExtractor } from './vba-test-manifest-extractor';
+import { VbaTestSequenceExtractor } from './vba-test-sequence-extractor';
 import { SqlQueryExtractor } from './sql-query-extractor';
 import { CfmlExtractor } from './cfml-extractor';
 import {
@@ -6589,6 +6590,19 @@ export function extractFromSource(
     // per control + one `references` edge to sibling `.cls`. See
     // `vba-form-ui-extraction` spec (REQ-FORM-1..4).
     const extractor = new VbaFormExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (detectedLanguage === 'vba' && isVbaTestSequenceFile(filePath)) {
+    // Dysflow VBA test sequences — `<root>/sequences/*.json` (SUB-6 of #91,
+    // #97). Classified `vba` by `detectLanguage`, narrowed here by the
+    // `sequences/`-directory path gate. Guarded JSON parse + content-shape
+    // gate (`runnerPolicy` + non-empty `procedures` array of strings);
+    // emits a `file` node + one `references`-kind `UnresolvedReference`
+    // per `procedures[]` entry with metadata `synthesizedBy: 'vba-test-sequence'`
+    // so the resolver binds to `Test_*` function nodes (same path SUB-3
+    // already uses for `vba-test-manifest`). Strict-sequence (`executionUnits`)
+    // and slices (`slices[]` + submanifests) shapes are explicitly
+    // rejected by the content-shape gate — see tasks.md Phase 6.
+    const extractor = new VbaTestSequenceExtractor(filePath, source);
     result = extractor.extract();
   } else if (detectedLanguage === 'vba' && isVbaTestManifestFile(filePath)) {
     // Dysflow VBA test manifests — `tests(.<slice>)*.json`. Classified `vba`

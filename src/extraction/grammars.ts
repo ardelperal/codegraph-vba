@@ -197,6 +197,7 @@ export function isSourceFile(filePath: string, overrides?: Record<string, Langua
   // VBA form/report UI files are two-segment extensions; the extname lookup
   // would otherwise collapse them to `.txt`.
   if (detectVbaFormFile(filePath)) return true;
+  if (isVbaTestSequenceFile(filePath)) return true; // Dysflow VBA test sequences (`<root>/sequences/*.json`) — SUB-6
   if (isVbaTestManifestFile(filePath)) return true; // Dysflow VBA test manifests (`tests.*.json`)
   if (isErlangAppFile(filePath)) return true; // OTP `.app`/`.app.src` resource files
   const dot = filePath.lastIndexOf('.');
@@ -279,6 +280,31 @@ export function isVbaTestManifestFile(filePath: string): boolean {
   if (!filePath) return false;
   const basename = filePath.split(/[\\/]/).pop() ?? '';
   return /^tests(\.[\w-]+)*\.json$/i.test(basename);
+}
+
+/**
+ * Dysflow VBA test-sequence file (`<root>/sequences/*.json`, e.g.
+ * `tests/sequences/cache-riesgo.json`). SUB-6 of epic #91. The path-detection
+ * gate is directory-based — a `.json` file anywhere under a `sequences/`
+ * directory — because the basename does not have to start with `tests`
+ * (a leaf-test file `tests.vba.cache-riesgo.json` is NOT a sequence; a
+ * `tests/sequences/cache-riesgo.json` IS).
+ *
+ * Disjoint from `isVbaTestManifestFile`:
+ *  - `isVbaTestManifestFile('tests/tests.vba.smoke.json')` → true
+ *  - `isVbaTestSequenceFile('tests/sequences/cache-riesgo.json')` → true
+ *  - `isVbaTestSequenceFile('tests/tests.vba.smoke.json')` → false
+ * The basename regex on the manifest gate (`^tests(.[\w-]+)*.json$`) does
+ * NOT match `cache-riesgo.json`, so the two detectors do not overlap. The
+ * content-shape gate inside `VbaTestSequenceExtractor` further rejects the
+ * `executionUnits` (strict-sequence) and `slices[]` (slices) shapes — both
+ * of which live at `tests/`, NOT under `sequences/`, and so are excluded
+ * from this extractor even if a future file slips into the same directory.
+ */
+export function isVbaTestSequenceFile(filePath: string): boolean {
+  if (!filePath) return false;
+  // Match `.../sequences/<anything>.json` (or `.JSON`), anywhere in the path.
+  return /(^|[\\/])sequences[\\/].+\.json$/i.test(filePath);
 }
 
 /**
@@ -478,6 +504,13 @@ export function detectLanguage(filePath: string, source?: string, overrides?: Re
   // gate that requires a sibling `queries.json`. Once it does, classify it as
   // `sql` so the dispatch routes it to `SqlQueryExtractor`.
   if (filePath.toLowerCase().endsWith('.sql')) return 'sql';
+  // Dysflow VBA test sequences live under `*/sequences/*.json` (SUB-6 of #91,
+  // issue #97). `.json` is not in EXTENSION_MAP, so classify sequences as
+  // `vba` to route them to `VbaTestSequenceExtractor`; the dispatch narrows
+  // on `isVbaTestSequenceFile`. Checked before the manifest gate so the
+  // sequence shape wins even when the basename coincidentally starts with
+  // `tests` (the two detectors are otherwise disjoint).
+  if (isVbaTestSequenceFile(filePath)) return 'vba';
   // Dysflow VBA test manifests are `tests.*.json`. `.json` is not in
   // EXTENSION_MAP, so classify manifests as `vba` to route them to
   // `VbaTestManifestExtractor`; the dispatch narrows on `isVbaTestManifestFile`.

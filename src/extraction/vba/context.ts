@@ -28,6 +28,30 @@ export interface ProcInfo {
   startLine: number;
 }
 
+/**
+ * Issue #83: the per-concern classifier shape. The single walker in
+ * `vba-extractor.ts` calls `classifyLine(line, index, ctx)` once per
+ * pre-split line, in a stable order across all six concerns. No internal
+ * `.split('\n')` — the split happens once in the walker.
+ */
+export interface VbaClassifier {
+  /** Stable, human-readable name for logs/metrics. */
+  readonly name: string;
+  /**
+   * Number of top-level symbols this classifier emitted. Read by the
+   * orchestrator to compute `hasAnySymbols` (skip module-node creation
+   * for files with NO symbols per REQ-CODE-10).
+   */
+  count: number;
+  /** Classify one pre-split line. May mutate `ctx` and bump `count`. */
+  classifyLine(line: string, index: number, ctx: VbaExtractorContext): void;
+  /**
+   * Optional end-of-file hook. Used by the calls-and-sql classifier to
+   * flush `procEndLines` → function node `endLine`.
+   */
+  finalize?(ctx: VbaExtractorContext): void;
+}
+
 export class VbaExtractorContext {
   public filePath: string;
   public nodes: Node[] = [];
@@ -55,6 +79,15 @@ export class VbaExtractorContext {
    * Let Foo`, and `Property Set Foo` all share the name `Foo`.
    */
   public localProcs = new Map<string, ProcInfo[]>();
+
+  /**
+   * Issue #83: flat list of every `ProcInfo` produced by the procedures
+   * classifier, in declaration order. Mirrors the array the legacy
+   * `sweepProcedures` returned; the orchestrator reads it after the single
+   * walker pass to (a) decide `hasAnySymbols`, and (b) check for a
+   * `New` initializer to set `hasClassInitializer` on the class node.
+   */
+  public procedures: ProcInfo[] = [];
 
   /**
    * Cache: procedure name → first matching function node emitted for that

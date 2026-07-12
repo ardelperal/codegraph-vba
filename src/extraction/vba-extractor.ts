@@ -26,11 +26,15 @@
  * owns those). `Option ...` directives are inert — `stripVbaComments()`
  * drops them.
  *
- * This class is a THIN ORCHESTRATOR: it owns the input, drives the file-level
- * node creation, and sequences the per-concern sweeps. All shared extraction
- * state (node/edge accumulators, the `functionNodeByName` / `localVarTypeMap`
- * maps, `moduleOrClassNode`) and the sweeps themselves live on
- * `VbaExtractorContext` under `src/extraction/vba/`.
+ * Issue #83: this class is now a THIN ORCHESTRATOR that owns a SINGLE
+ * per-line walk. Preprocessed source is split into a `readonly string[]`
+ * ONCE, then a `VbaWalker` (a small array of `VbaClassifier`s, one per
+ * concern) dispatches each line to every classifier in stable order.
+ * Previously, each of the 5 per-concern sweeps did its own
+ * `src.split('\n')` + full O(n) traversal — 6+ full traversals of every
+ * file. Acceptance criterion #1: source is now split at most ONCE for
+ * extraction; the 3 preprocessing stages are all `.replace()`-based
+ * (no split).
  */
 import * as path from 'path';
 import { Node, ExtractionResult } from '../types';
@@ -40,13 +44,13 @@ import {
   preprocessConditionalCompilation,
   stripVbaComments,
 } from './vba-preprocess';
-import { VbaExtractorContext } from './vba/context';
-import { sweepProcedures } from './vba/procedures';
-import { sweepEventsTypesAndDeclares } from './vba/declarations';
-import { sweepDimsAndWithEvents } from './vba/dims';
-import { sweepEnumsAndConsts } from './vba/enums-consts';
-import { sweepImplements } from './vba/implements';
-import { sweepCallsAndSql } from './vba/call-sweep';
+import { VbaExtractorContext, VbaClassifier } from './vba/context';
+import { createProceduresClassifier } from './vba/procedures';
+import { createEventsTypesDeclaresClassifier } from './vba/declarations';
+import { createDimsClassifier } from './vba/dims';
+import { createEnumsConstsClassifier } from './vba/enums-consts';
+import { createImplementsClassifier } from './vba/implements';
+import { createCallsAndSqlClassifier } from './vba/call-sweep';
 
 export class VbaExtractor {
   private filePath: string;
@@ -103,40 +107,48 @@ export class VbaExtractor {
       const className = isCls ? (vbName ?? fallbackName) : null;
       this.ctx.classNamePrefix = className;
 
-      // Module/class node — created lazily so a file containing only
-      // Option directives (REQ-CODE-10: "emits nothing") doesn't carry a
-      // module node with no symbols attached.
-      let hasAnySymbols = false;
+      // Issue #83: split-then-walk. The preprocessed source is split into
+      // lines ONCE into a shared `readonly string[]`. The procedures
+      // classifier runs FIRST on the full file so `ctx.localProcs`,
+      // `ctx.functionNodeByName`, `ctx.functionNodeByStartLine`, and
+      // `ctx.functionReturnTypes` are fully populated before the call/SQL
+      // classifier needs to resolve a same-file call target (the legacy
+      // `sweepProcedures` ran the entire file first too). The remaining
+      // five classifiers then share a single per-line walk, dispatching
+      // each line in stable order. The split count drops from 6+ (one per
+      // sweep) to 1; the walk count is 2 over the same `lines` array.
+      // `hasAnySymbols` is derived from each classifier's `count`.
+      const lines = uncommented.split('\n');
+      const proceduresCls = createProceduresClassifier();
+      const classifiers: VbaClassifier[] = [
+        createEventsTypesDeclaresClassifier(),
+        createImplementsClassifier(),
+        createDimsClassifier(),
+        createEnumsConstsClassifier(),
+        createCallsAndSqlClassifier(lines),
+      ];
 
-      // Sweep: procedures → function nodes + contains edges.
-      const procs = sweepProcedures(this.ctx, uncommented);
-      if (procs.length > 0) hasAnySymbols = true;
+      // Pre-walk: procedures only — populates the same-file function index
+      // (legacy behaviour: `sweepProcedures` ran first so the call sweep
+      // could look up call targets by name).
+      for (let i = 0; i < lines.length; i++) {
+        proceduresCls.classifyLine(lines[i] ?? '', i, this.ctx);
+      }
 
-      // Sweep: first-class Event / Type / Declare declarations (roadmap #26).
-      // This runs before call-site scanning so `RaiseEvent Foo` and calls to a
-      // `Declare` can resolve to real local nodes rather than fall through.
-      const declarationCount = sweepEventsTypesAndDeclares(this.ctx, uncommented);
-      if (declarationCount > 0) hasAnySymbols = true;
+      // Main walk: every other classifier sees every line in order.
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i] ?? '';
+        for (const c of classifiers) {
+          c.classifyLine(line, i, this.ctx);
+        }
+      }
 
-      // Sweep: Implements (REQ-CODE-5).
-      const implCount = sweepImplements(this.ctx, uncommented);
-      if (implCount > 0) hasAnySymbols = true;
+      // Finalize (calls-sql flushes proc-end line updates to function nodes).
+      for (const c of classifiers) c.finalize?.(this.ctx);
 
-      // Sweep: qualified Dim (REQ-CODE-6) and WithEvents (REQ-CODE-7).
-      const dimCount = sweepDimsAndWithEvents(this.ctx, uncommented);
-      if (dimCount > 0) hasAnySymbols = true;
-
-      // Sweep: Enum/Const declarations (REQ-CODE-12, REQ-CODE-13). Dysflow
-      // exports the full module text, so a constants module carries its
-      // `Const` lines and `Enum ... End Enum` blocks verbatim — these are the
-      // project's domain dictionary and must be in the graph.
-      const enumConstCount = sweepEnumsAndConsts(this.ctx, uncommented);
-      if (enumConstCount > 0) hasAnySymbols = true;
-
-      // Sweep: call sites (REQ-CODE-4) and SQL-in-strings (REQ-CODE-8).
-      // Both walk the same per-line view; combining them in one pass is
-      // simpler and keeps line tracking consistent.
-      sweepCallsAndSql(this.ctx, uncommented);
+      const hasAnySymbols =
+        proceduresCls.count > 0 || classifiers.some((c) => c.count > 0);
+      const procs = this.ctx.procedures;
 
       // Create the module/class node ONLY when the file has actual symbols
       // (REQ-CODE-10 — a file with ONLY Option directives emits zero symbol

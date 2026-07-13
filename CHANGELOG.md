@@ -9,6 +9,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+<<<<<<< HEAD
 
 ## [1.7.1] - 2026-07-13
 
@@ -16,9 +17,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The post-extraction VBA stub resolver's actual contract is now documented for consumers. `metadata.repointDecision` carries one of `reponted-to-real`, `declined-runtime`, `declined-ambiguous`, or `declined-not-found` — consumers detecting "missing callees" must filter on `repointDecision='declined-not-found'`, NOT on the raw `stub=true` count (which is dominated by runtime-object noise from `DAO.*`, `fso.*`, etc.). The original round-5 prompt's `stub_true_count < 500` acceptance criterion was replaced by the `declined-not-found` filter. Reference: `docs/vba-stub-repoint-decision.md`. (#115)
 
+=======
+>>>>>>> d6b5a57 (fix(install): clean orphan staging dirs on every npm install via postinstall)
 ### Fixes
 
-- The shared MCP daemon auto-respawns when killed while the proxy is still up. After `Stop-Process -Id <pid>` (or any other death cause) the proxy's per-project daemon watchdog detects the dead daemon via its `daemon.pid` lockfile and respawns it within 30s — file edits are picked up automatically instead of needing a manual `codegraph-vba sync`. The watchdog polls every 30s by default and unrefs its interval so it never keeps the event loop alive on its own. (#116)
+- Orphan npm staging dirs from any previous `npm install -g` failure (including pre-fix-era upgrades) are now cleaned automatically on every install via a `postinstall` script. No more EPERM noise on the next upgrade; no more manual cleanup of `.codegraph-vba-<HASH>` leftovers.
 
 ## [1.7.0] - 2026-07-13
 

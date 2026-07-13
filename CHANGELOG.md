@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.7.1] - 2026-07-13
+
 ### Documentation
 
 - The post-extraction VBA stub resolver's actual contract is now documented for consumers. `metadata.repointDecision` carries one of `reponted-to-real`, `declined-runtime`, `declined-ambiguous`, or `declined-not-found` — consumers detecting "missing callees" must filter on `repointDecision='declined-not-found'`, NOT on the raw `stub=true` count (which is dominated by runtime-object noise from `DAO.*`, `fso.*`, etc.). The original round-5 prompt's `stub_true_count < 500` acceptance criterion was replaced by the `declined-not-found` filter. Reference: `docs/vba-stub-repoint-decision.md`. (#115)
@@ -654,3 +657,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.6.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.6.0
 [1.6.2]: https://github.com/colbymchenry/codegraph/releases/tag/v1.6.2
 [1.7.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.0
+[1.7.1]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.1

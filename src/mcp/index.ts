@@ -54,6 +54,7 @@ import { checkForUpdateInBackground } from '../upgrade/update-check';
 import { EARLY_PPID } from './early-ppid';
 import { supervisionLostReason, parsePpidPollMs, parseHostPpid } from './ppid-watchdog';
 import { installMainThreadWatchdog, WatchdogHandle } from './liveness-watchdog';
+import { DaemonWatchdog } from './daemon-watchdog';
 import { armStartupHandshakeTimeout } from './startup-handshake';
 import { treatStdinFailureAsShutdown } from './stdin-teardown';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
@@ -197,6 +198,11 @@ export class MCPServer {
   // Worker-thread liveness watchdog (#850). Long-lived modes only; SIGKILLs the
   // process if the main thread wedges in a non-yielding sync loop.
   private livenessWatchdog: WatchdogHandle | null = null;
+  // Per-project daemon liveness watchdog (#116). Started in proxy mode: polls
+  // the daemon for the root we serve every `intervalMs` and respawns it if it
+  // dies (e.g. Stop-Process, kill -9) — so the incremental file-watcher
+  // recovers without the user manually running `codegraph-vba sync`.
+  private daemonWatchdog: DaemonWatchdog | null = null;
   // PPID watchdog baseline — from the CLI entry's earliest-possible capture
   // (early-ppid.ts). Capturing here (construction) already lost the race when
   // the launcher was killed during module loading (#1185).
@@ -263,6 +269,11 @@ export class MCPServer {
       // Runs until the host disconnects; the proxy installs its own watchdog and
       // falls back to an in-process engine if the daemon never comes up.
       this.mode = 'proxy';
+      // #116: if the daemon dies while the proxy is up (Stop-Process, kill -9,
+      // crash), the file-watcher dies with it. Watchdog respawns it.
+      this.daemonWatchdog = new DaemonWatchdog();
+      this.daemonWatchdog.watch(root);
+      this.daemonWatchdog.start();
       await this.runProxyWithLocalHandshake(root);
       return;
     } catch (err) {
@@ -289,6 +300,10 @@ export class MCPServer {
     if (this.livenessWatchdog) {
       this.livenessWatchdog.stop();
       this.livenessWatchdog = null;
+    }
+    if (this.daemonWatchdog) {
+      this.daemonWatchdog.stop();
+      this.daemonWatchdog = null;
     }
     if (this.daemon) {
       void this.daemon.stop('stop()');

@@ -16,6 +16,10 @@ import {
   runUpgrade,
   verifyResolvedVersion,
   buildWindowsUpgradeScript,
+  findOrphanStagings,
+  cleanupOrphanStagings,
+  readInstalledPackageVersion,
+  resolveNpmGlobalRoot,
   NPM_PACKAGE,
   type InstallMethod,
   type UpgradeDeps,
@@ -262,6 +266,10 @@ function makeDeps(
     warn: (m) => calls.logs.push(m),
     error: (m) => calls.errors.push(m),
     platform: overrides.platform ?? 'linux',
+    // Forward the post-install verification + pre-cleanup hooks so tests
+    // can drive them without touching the filesystem.
+    installedPackageVersion: overrides.installedPackageVersion,
+    orphanCleanupOverride: overrides.orphanCleanupOverride,
   };
   return { deps, calls };
 }
@@ -361,7 +369,7 @@ describe('runUpgrade', () => {
     const code = await runUpgrade({}, deps);
     expect(code).toBe(0);
     expect(calls.runs[0].cmd).toBe('npm');
-    expect(calls.runs[0].args).toEqual(['install', '-g', `${NPM_PACKAGE}@latest`]);
+    expect(calls.runs[0].args).toEqual(['install', '-g', '--prefer-online', `${NPM_PACKAGE}@latest`]);
   });
 
   it('npm on win32 routes through cmd.exe (a direct npm.cmd spawn EINVALs on modern Node)', async () => {
@@ -373,7 +381,7 @@ describe('runUpgrade', () => {
     await runUpgrade({}, deps);
     expect(calls.runs[0].cmd).toBe('cmd.exe');
     expect(calls.runs[0].args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
-    expect(calls.runs[0].args[3]).toBe(`npm install -g ${NPM_PACKAGE}@latest`);
+    expect(calls.runs[0].args[3]).toBe(`npm install -g --prefer-online ${NPM_PACKAGE}@latest`);
   });
 
   it('npm: a pinned version is passed through as @<version>', async () => {
@@ -382,8 +390,9 @@ describe('runUpgrade', () => {
       currentVersion: '0.9.9',
     });
     await runUpgrade({ version: '0.9.8' }, deps);
-    // npm spec carries no leading "v".
-    expect(calls.runs[0].args).toEqual(['install', '-g', `${NPM_PACKAGE}@0.9.8`]);
+    // npm spec carries no leading "v". `--prefer-online` bypasses the local
+    // npm cache so a stale 1.6.3 tarball can't shadow the freshly-published 1.7.0.
+    expect(calls.runs[0].args).toEqual(['install', '-g', '--prefer-online', `${NPM_PACKAGE}@0.9.8`]);
   });
 
   it('npm: surfaces a non-zero exit as failure', async () => {
@@ -709,5 +718,272 @@ describe('index extraction-version stamp / isIndexStale', () => {
     );
     expect(cg.isIndexStale()).toBe(true);
     cg.destroy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Orphan staging cleanup — npm leaves `.codegraph-vba-<HASH>` dirs behind when
+// a global upgrade is interrupted (EBUSY on a locked node.exe, EPERM during
+// cleanup, etc.). Those orphans block subsequent upgrades and can hold a stale
+// partial copy that confuses `npm view`. The cleanup must never touch the
+// live install dir.
+// ---------------------------------------------------------------------------
+
+describe('findOrphanStagings', () => {
+  it('returns paths to dirs starting with .codegraph-vba- in the global root', () => {
+    const files = new Set([
+      '/root/node_modules/.codegraph-vba-abc123',
+      '/root/node_modules/.codegraph-vba-def456',
+      '/root/node_modules/.codegraph-vba-win32-x64-789', // a real npm staging hash
+      '/root/node_modules/@aroman22/codegraph-vba',      // the live install — NOT an orphan
+      '/root/node_modules/some-other-package',           // unrelated — NOT an orphan
+    ]);
+    const orphans = findOrphanStagings(
+      '/root/node_modules',
+      // exists: the global root itself isn't in the children-only Set, so
+      // match it explicitly (real fs.existsSync returns true for any path
+      // that exists, including parents).
+      (p) => p === '/root/node_modules' || files.has(p),
+      (p) => Array.from(files)
+        .filter((f) => f.startsWith(p + '/'))
+        .map((f) => f.slice(p.length + 1).split('/')[0]!)
+    );
+    expect(orphans).toEqual([
+      '/root/node_modules/.codegraph-vba-abc123',
+      '/root/node_modules/.codegraph-vba-def456',
+      '/root/node_modules/.codegraph-vba-win32-x64-789',
+    ]);
+  });
+
+  it('returns [] when the global root does not exist', () => {
+    expect(findOrphanStagings('/nope', () => false, () => [])).toEqual([]);
+  });
+
+  it('returns [] when the global root cannot be read', () => {
+    expect(findOrphanStagings('/root', () => true, () => { throw new Error('EACCES'); })).toEqual([]);
+  });
+});
+
+describe('cleanupOrphanStagings', () => {
+  it('removes each orphan and reports the count', () => {
+    const removed: string[] = [];
+    const deps = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.9',
+    }).deps;
+    const result = cleanupOrphanStagings(deps, {
+      globalRoot: '/root/node_modules',
+      exists: () => true,
+      readdir: () => ['.codegraph-vba-abc', '.codegraph-vba-def', '@aroman22', 'other'],
+      rm: (p) => { removed.push(p); return true; },
+    });
+    expect(result).toBe(2);
+    // Both staging dirs removed; the live install and unrelated dirs untouched.
+    expect(removed).toEqual([
+      '/root/node_modules/.codegraph-vba-abc',
+      '/root/node_modules/.codegraph-vba-def',
+    ]);
+  });
+
+  it('counts only successful removals when some rm calls fail (locked file etc.)', () => {
+    const deps = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.9',
+    }).deps;
+    const result = cleanupOrphanStagings(deps, {
+      globalRoot: '/root/node_modules',
+      exists: () => true,
+      readdir: () => ['.codegraph-vba-a', '.codegraph-vba-b'],
+      rm: (p) => p.endsWith('.codegraph-vba-a'), // second one fails (locked)
+    });
+    expect(result).toBe(1);
+  });
+
+  it('returns 0 when the global root cannot be resolved (source checkout, bundle, npx)', () => {
+    // When the upgrade module runs from a non-node_modules path (test runner,
+    // bundle, source), resolveNpmGlobalRoot returns null and cleanup is a no-op.
+    const deps = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.9',
+    }).deps;
+    expect(resolveNpmGlobalRoot(deps)).toBeNull();
+    const result = cleanupOrphanStagings(deps, {
+      // globalRoot NOT specified → falls back to resolveNpmGlobalRoot(deps) → null
+      exists: () => true,
+      readdir: () => { throw new Error('should not be called'); },
+      rm: () => { throw new Error('should not be called'); },
+    });
+    expect(result).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Post-install version verification — npm can report "Installed v1.7.0" while
+// leaving package.json at v1.6.3 (stale cache, EPERM mid-install, PATH shadow).
+// Reading the installed package.json catches that.
+// ---------------------------------------------------------------------------
+
+describe('readInstalledPackageVersion', () => {
+  it('returns the version from the installed package.json', () => {
+    const deps = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.9',
+    }).deps;
+    const v = readInstalledPackageVersion(deps, {
+      globalRoot: '/root',
+      exists: () => true,
+      readFile: () => JSON.stringify({ name: NPM_PACKAGE, version: '1.7.0' }),
+    });
+    expect(v).toBe('1.7.0');
+  });
+
+  it('returns null when package.json does not exist', () => {
+    const deps = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.9',
+    }).deps;
+    const v = readInstalledPackageVersion(deps, {
+      globalRoot: '/root',
+      exists: () => false,
+      readFile: () => { throw new Error('should not be called'); },
+    });
+    expect(v).toBeNull();
+  });
+
+  it('returns null on JSON parse error', () => {
+    const deps = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.9',
+    }).deps;
+    const v = readInstalledPackageVersion(deps, {
+      globalRoot: '/root',
+      exists: () => true,
+      readFile: () => '{not json',
+    });
+    expect(v).toBeNull();
+  });
+
+  it('returns null when version field is missing or wrong type', () => {
+    const deps = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.9',
+    }).deps;
+    expect(readInstalledPackageVersion(deps, {
+      globalRoot: '/root',
+      exists: () => true,
+      readFile: () => JSON.stringify({ name: NPM_PACKAGE }),
+    })).toBeNull();
+    expect(readInstalledPackageVersion(deps, {
+      globalRoot: '/root',
+      exists: () => true,
+      readFile: () => JSON.stringify({ name: NPM_PACKAGE, version: 17 }),
+    })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end upgrade flow with stale-install detection + tarball fallback
+// ---------------------------------------------------------------------------
+
+describe('upgradeNpm post-install verification', () => {
+  it('falls back to the dist tarball when package.json version does not match the target', async () => {
+    // Simulate the silent stale-install failure mode: npm install -g ran
+    // (mock returns code 0), but the package.json is still the previous
+    // version. The upgrade must retry from the registry tarball URL.
+    const { deps, calls } = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.8',
+      installedPackageVersion: '0.9.8',
+    });
+    const code = await runUpgrade({}, deps);
+    expect(code).toBe(0);
+    // First run: regular npm install -g.
+    expect(calls.runs[0].args.slice(0, 4)).toEqual(['install', '-g', '--prefer-online', `${NPM_PACKAGE}@latest`]);
+    // Second run: tarball fallback — uses the RESOLVED version (0.9.9),
+    // not the user-supplied 'latest' string, because the npm registry has
+    // no `latest.tgz` literal (latest is a dist-tag).
+    expect(calls.runs[1].args).toEqual([
+      'install', '-g', '--force',
+      `https://registry.npmjs.org/${NPM_PACKAGE}/-/${NPM_PACKAGE.replace(/^@/, '')}-0.9.9.tgz`,
+    ]);
+    // User saw the warning + the retry. The "expected" version is the RESOLVED
+    // target (0.9.9 from the mocked resolveLatest), not the literal string
+    // "latest" the user passed — npm registry has no `latest.tgz` literal.
+    expect(calls.logs.join('\n')).toMatch(/installed package\.json says 0\.9\.8, expected 0\.9\.9/);
+    expect(calls.logs.join('\n')).toMatch(/Retrying from the npm registry tarball/);
+  });
+
+  it('does not retry when the installed version matches the target', async () => {
+    // The `currentVersion: '0.9.8'` + `installedPackageVersion: '1.7.0'` combo
+    // simulates a *successful* upgrade where the on-disk package.json now
+    // reflects the target. We can't pin the target version precisely here
+    // (the upgrade resolves `latest` from `resolveLatest`), but the post-
+    // verify is skipped because `versionSpec === 'latest'` and the test
+    // setup keeps currentVersion mismatched with installedPackageVersion so
+    // the upgrade proceeds; the installedPackageVersion we set is non-null
+    // so the verify step doesn't fall back to the warning branch either.
+    const { deps, calls } = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.8',
+      installedPackageVersion: '0.9.9', // matches the resolved latest
+    });
+    const code = await runUpgrade({}, deps);
+    expect(code).toBe(0);
+    // Only one npm run, no tarball fallback.
+    expect(calls.runs).toHaveLength(1);
+    expect(calls.runs[0].args.slice(0, 4)).toEqual(['install', '-g', '--prefer-online', `${NPM_PACKAGE}@latest`]);
+    // No tarball-related log lines.
+    expect(calls.logs.join('\n')).not.toMatch(/Retrying from the npm registry tarball/);
+  });
+
+  it('returns 1 and surfaces a clear error when the tarball fallback also fails', async () => {
+    const { deps, calls } = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.8',
+      installedPackageVersion: '0.9.8',
+    }, /* runExit */ 1); // every run returns 1 → fallback also fails
+    const code = await runUpgrade({}, deps);
+    expect(code).toBe(1);
+    expect(calls.errors.join('\n')).toMatch(/Tarball fallback also failed/);
+  });
+
+  it('runs pre-cleanup before the npm install call', async () => {
+    let cleanupCalls = 0;
+    const { deps, calls } = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.8',
+      orphanCleanupOverride: () => { cleanupCalls++; return 1; },
+      installedPackageVersion: '0.9.9', // match → no tarball fallback
+    });
+    await runUpgrade({}, deps);
+    expect(cleanupCalls).toBe(1);
+    expect(calls.logs.join('\n')).toMatch(/Removed 1 orphan npm staging dir/);
+  });
+
+  it('skips pre-cleanup for npm-local installs', async () => {
+    let cleanupCalls = 0;
+    const { deps } = makeDeps({
+      method: { kind: 'npm', scope: 'local' },
+      currentVersion: '0.9.8',
+      orphanCleanupOverride: () => { cleanupCalls++; return 0; },
+      installedPackageVersion: '0.9.9',
+    });
+    await runUpgrade({}, deps);
+    expect(cleanupCalls).toBe(0);
+  });
+
+  it('does not warn or retry when installedPackageVersion is null (cannot read)', async () => {
+    const { deps, calls } = makeDeps({
+      method: { kind: 'npm', scope: 'global' },
+      currentVersion: '0.9.8',
+      installedPackageVersion: null,
+    });
+    const code = await runUpgrade({}, deps);
+    expect(code).toBe(0);
+    // Only the regular npm install; no tarball fallback.
+    expect(calls.runs).toHaveLength(1);
+    // Soft hint, not a scary warning.
+    expect(calls.logs.join('\n')).toMatch(/Could not read installed package\.json/);
+    expect(calls.logs.join('\n')).not.toMatch(/Retrying from the npm registry tarball/);
   });
 });

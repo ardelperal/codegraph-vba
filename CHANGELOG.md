@@ -12,6 +12,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixes
 
 - VBA's `unresolved_refs` table now reports the syntactic shape of each unresolved reference — call sites, form-property reads and writes, `DoCmd.OpenQuery` arguments, and bare identifiers each get their own row kind — so a SQL filter for "missing callee" stops drowning in DAO-field and form-control noise. The legacy `references` kind is preserved for any path the round does not reclassify, so SQL filters that key on it keep working. (#108)
+- VBA's post-extraction call-stub resolver now correctly declines runtime-object call stubs (`DAO.*`, `fso.*`, `ListBox.AddItem`, `Collection.Add`, `err.*`, `VBA.*`, …) instead of pointing them at themselves; a user class or module that happens to share a runtime-object name is still linked. Stubs now carry a `repointDecision` field on their edge metadata so consumers can tell a runtime-object decline apart from a genuinely-missing callee. (#110, supersedes #109)
 
 ## [1.6.2] - 2026-07-12
 

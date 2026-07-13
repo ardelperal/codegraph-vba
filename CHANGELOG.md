@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.7.0] - 2026-07-13
+
 ### Fixes
 
 - VBA's `unresolved_refs` table now reports the syntactic shape of each unresolved reference — call sites, form-property reads and writes, `DoCmd.OpenQuery` arguments, and bare identifiers each get their own row kind — so a SQL filter for "missing callee" stops drowning in DAO-field and form-control noise. The legacy `references` kind is preserved for any path the round does not reclassify, so SQL filters that key on it keep working. (#108)
@@ -642,3 +645,4 @@ Thanks @andreinknv for the substantive draft this release was based on.
 [1.5.1]: https://github.com/colbymchenry/codegraph/releases/tag/v1.5.1
 [1.6.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.6.0
 [1.6.2]: https://github.com/colbymchenry/codegraph/releases/tag/v1.6.2
+[1.7.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.0

@@ -207,7 +207,7 @@ export function scanDoCmdOpenQuery(
     ctx.unresolvedReferences.push({
       fromNodeId: ctx.findOrCreateFunctionNodeId(caller),
       referenceName: targetName,
-      referenceKind: 'references',
+      referenceKind: 'dao-query',
       line: lineNum,
       column: m.index,
       filePath: ctx.filePath,

@@ -37,6 +37,15 @@ const FORMS_BANG_RE =
  * `metadata.synthesizedBy: 'vba-me-control'`. Operates on the masked
  * `callScanLine`. The +3 column offset skips the 3-char `Me.` / `Me!`
  * prefix (both are 3 chars).
+ *
+ * Round-3 (issue #108): the `referenceKind` is keyed off the operator
+ * (`.` vs `!`) at the match position. The same-line `=` heuristic
+ * distinguishes reads from assignments: `x = Me.Name` → `property-get`,
+ * `Me.Name = "X"` → `property-set`. Cross-line property-set is out of
+ * scope; the `=` rule is satisfied when the assignment appears on the
+ * SAME line at any position AFTER the matched control name (allowing
+ * trailing `.Caption = value` chained assignments too — they still
+ * flow a write into the captured control identifier).
  */
 export function scanMeControlReferences(
   ctx: VbaExtractorContext,
@@ -49,10 +58,31 @@ export function scanMeControlReferences(
   while ((m = ME_CONTROL_RE.exec(line)) !== null) {
     const controlName = m[1] ?? '';
     if (!controlName) continue;
+    // Round-3: operator is the char at `m.index + 2` (skipping the `Me`).
+    // Both `.` and `!` are 1 char so the captured name starts at `m.index + 3`.
+    const operator = line.charAt(m.index + 2); // '.' | '!'
+    const isBang = operator === '!';
+    // Same-line get vs set heuristic: anything past the captured control
+    // name on this line. Cover the `=` form (`Me.Name = "X"`) and ignore
+    // a previous-line `=`. The `= charAt(...)` short-circuits on the first
+    // non-whitespace; that matches VBA `Me.Name =` and tolerates intervening
+    // spaces. We do NOT match `==` (VBA has no `==`), and `=` inside a RHS
+    // expression on the SAME line is a false positive that's tolerable —
+    // round-4 can add a paren-depth check if needed.
+    const after = line.slice(m.index + 3 + controlName.length);
+    const eqIdx = after.indexOf('=');
+    const isAssign = eqIdx >= 0;
+    const referenceKind: 'property-get' | 'property-set' | 'bang-get' | 'bang-set' = isBang
+      ? isAssign
+        ? 'bang-set'
+        : 'bang-get'
+      : isAssign
+        ? 'property-set'
+        : 'property-get';
     ctx.unresolvedReferences.push({
       fromNodeId: ctx.findOrCreateFunctionNodeId(from),
       referenceName: controlName,
-      referenceKind: 'references',
+      referenceKind,
       line: lineNum,
       column: m.index + 3, // +3 to skip the `Me.` / `Me!` prefix
       filePath: ctx.filePath,
@@ -68,6 +98,14 @@ export function scanMeControlReferences(
  * emit ONE UnresolvedReference per match with `metadata.synthesizedBy
  * = 'vba-forms-bang'`. Operates on the ORIGINAL (unmasked) line. The form
  * identifier is unwrapped of surrounding `"` quotes and `[…]` brackets.
+ *
+ * Round-3 (issue #108): cross-form bang is always a property access
+ * (VBA semantics: there's no bang-call). The reference name is the FORM
+ * module — the resolver matches it against the indexed `Form_*` nodes
+ * downstream — so the kind is `'bang-get'` regardless of the read/write
+ * direction. A direct cross-form bang assignment
+ * (`Forms!FormX!Ctl = value`) is rare; round-3 emits `'bang-get'`
+ * uniformly and the resolvers do not care about access direction here.
  */
 export function scanFormsBang(
   ctx: VbaExtractorContext,
@@ -92,7 +130,7 @@ export function scanFormsBang(
     ctx.unresolvedReferences.push({
       fromNodeId: ctx.findOrCreateFunctionNodeId(from),
       referenceName: formName,
-      referenceKind: 'references',
+      referenceKind: 'bang-get',
       line: lineNum,
       column: m.index, // start of the `Forms` keyword
       filePath: ctx.filePath,

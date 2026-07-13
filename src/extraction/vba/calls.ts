@@ -82,7 +82,23 @@ export function scanCallSites(
     if (!member) {
       // Bare `Name(...)` — same-file resolution.
       const localFuncNode = ctx.findFunctionNodeByName(receiver);
-      if (!localFuncNode) continue;
+      if (!localFuncNode) {
+        // Round-3 (FR-2.1, issue #108): the call-sweep path used to
+        // silent-skip here, leaving the paren-form unresolvable call
+        // invisible in `unresolved_refs`. Surface it as `'call'` so the
+        // SQL filter `WHERE reference_kind = 'call'` reaches it.
+        ctx.unresolvedReferences.push({
+          fromNodeId: ctx.findOrCreateFunctionNodeId(from),
+          referenceName: receiver,
+          referenceKind: 'call',
+          line: lineNum,
+          column: col,
+          filePath: ctx.filePath,
+          language: 'vba',
+          metadata: { synthesizedBy: 'vba-paren-call-unresolved' },
+        });
+        continue;
+      }
       ctx.edges.push({
         source: ctx.findOrCreateFunctionNodeId(from),
         target: localFuncNode.id,
@@ -93,7 +109,23 @@ export function scanCallSites(
     } else {
       // Qualified `Receiver.Member(...)` — synthesize the call target only
       // for project-class local variables or undeclared module candidates.
-      if (!ctx.shouldProcessQualifiedCall(receiver)) continue;
+      if (!ctx.shouldProcessQualifiedCall(receiver)) {
+        // Round-3 (FR-2.2): receiver is a declared primitive or
+        // runtime-blacklisted. Surface the qualified call as
+        // `'qualified-call'` so the SQL filter still sees these from
+        // `(caller, qualified, line)` tuples the resolver can't bind.
+        ctx.unresolvedReferences.push({
+          fromNodeId: ctx.findOrCreateFunctionNodeId(from),
+          referenceName: `${receiver}.${member}`,
+          referenceKind: 'qualified-call',
+          line: lineNum,
+          column: col,
+          filePath: ctx.filePath,
+          language: 'vba',
+          metadata: { synthesizedBy: 'vba-qualified-call-unresolved' },
+        });
+        continue;
+      }
       // #12a: `receiverType` resolves to the real class name when
       // `receiver` is a declared project-class local var; otherwise it's the
       // raw `receiver` text unchanged (e.g. `.bas`-qualified module calls).
@@ -105,6 +137,19 @@ export function scanCallSites(
       // `modUtils.Foo(1)` are unaffected (`modUtils` is not a local var).
       const recvEntry = ctx.localVarTypeMap.get(receiver.toLowerCase());
       if (recvEntry && PRIMITIVE_TYPES.has(recvEntry.outer.toLowerCase())) {
+        // Match the round-3 surfaced row so the SQL filter has the
+        // receiver/member string even when the stub emission was
+        // suppressed.
+        ctx.unresolvedReferences.push({
+          fromNodeId: ctx.findOrCreateFunctionNodeId(from),
+          referenceName: `${receiver}.${member}`,
+          referenceKind: 'qualified-call',
+          line: lineNum,
+          column: col,
+          filePath: ctx.filePath,
+          language: 'vba',
+          metadata: { synthesizedBy: 'vba-qualified-call-unresolved' },
+        });
         continue;
       }
       const receiverType = ctx.resolveReceiverType(receiver);
@@ -240,19 +285,23 @@ export function detectStatementCall(line: string): string | null {
 
 /**
  * H1: emit a same-file `calls` edge for a statement-form Sub call to the
- * already-emitted function node named `procName`.
+ * already-emitted function node named `procName`. Returns `true` when a
+ * `calls` edge was pushed, `false` when the call was silenced
+ * (blacklist / runtime / self-call / unresolvable). Round-3 (issue
+ * #108) needs that boolean so the call sweep can fall through to push
+ * an `unqualified-ident` unresolved reference.
  */
 export function emitStatementCallEdge(
   ctx: VbaExtractorContext,
   caller: ProcInfo,
   procName: string,
   lineNum: number,
-): void {
-  if (procName === caller.name) return; // skip self-call
-  if (CALL_KEYWORD_BLACKLIST.has(procName)) return;
-  if (RUNTIME_RECEIVER_BLACKLIST.has(procName)) return;
+): boolean {
+  if (procName === caller.name) return false; // skip self-call
+  if (CALL_KEYWORD_BLACKLIST.has(procName)) return false;
+  if (RUNTIME_RECEIVER_BLACKLIST.has(procName)) return false;
   const target = ctx.findFunctionNodeByName(procName);
-  if (!target) return;
+  if (!target) return false;
   ctx.edges.push({
     source: ctx.findOrCreateFunctionNodeId(caller),
     target: target.id,
@@ -260,6 +309,7 @@ export function emitStatementCallEdge(
     line: lineNum,
     column: 0,
   });
+  return true;
 }
 
 /**

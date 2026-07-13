@@ -364,8 +364,65 @@ export interface ExtractionError {
  * a function name used as a VALUE (callback registration, #756). It never
  * becomes an edge kind: resolution maps it to a `references` edge targeting
  * function/method nodes only (see `matchFunctionRef`).
+ *
+ * Round-3 (issue #108) extends the union with shape-based classifiers so
+ * the consumer can filter `unresolved_refs` by syntactic shape at the SQL
+ * layer. The legacy `EdgeKind` literal `'references'` is preserved as
+ * `references` here via `EdgeKind` — back-compat for any push site this
+ * round does not reclassify (e.g. the Implements emitter). New literals:
+ *   - `call`             paren-form `Name(...)` or statement-form Sub call
+ *   - `qualified-call`   `Receiver.Member(...)` (qualified-paren) or
+ *                        `Receiver.Member args` (qualified-statement)
+ *   - `property-get`     `Me.Name` (dot access, read)
+ *   - `property-set`     `Me.Name = value` (dot access, assignment)
+ *   - `bang-get`         `Me!SubCtl` (bang read) or
+ *                        `Forms!FormX!Ctl` / `Forms("FormX")!Ctl` (cross-form)
+ *   - `bang-set`         `Me!SubCtl = value` (bang assignment)
+ *   - `unqualified-ident` bare identifier without `(` after; default for
+ *                        `HayErrorEnRiesgo`-style hits — Const-read takes
+ *                        priority via FR-3.1 disambiguation
+ *   - `member-with`      `.Member` inside a `With <receiver>` block
+ *   - `dao-query`        `DoCmd.OpenQuery "X"` argument
+ * `dao-field-get` / `dao-field-set` are deliberately deferred to round-4.
  */
-export type ReferenceKind = EdgeKind | 'function_ref';
+export type ReferenceKind = EdgeKind | 'function_ref' | 'call' | 'qualified-call' | 'property-get' | 'property-set' | 'bang-get' | 'bang-set' | 'unqualified-ident' | 'member-with' | 'dao-query';
+
+/**
+ * Runtime guard for whether a `ReferenceKind` literal is also an `EdgeKind`
+ * literal (i.e. the value flows from an unresolved-ref row straight onto the
+ * kind column of a resolved edge without remapping). Round-3 (issue #108)
+ * introduced shape-based classifier literals (`call`, `qualified-call`,
+ * `property-get`, …) that are valid as a `ReferenceKind` but are NOT valid
+ * edge kinds — edges still use the `calls`/`references` family of literals.
+ * The resolver uses this guard to fall back to `'references'` for the edge
+ * kind while keeping the shape preserved on the unresolved-ref row, so the
+ * consumer's SQL filter still works after resolution.
+ */
+export function isEdgeKindLiteral(value: ReferenceKind): value is EdgeKind {
+  switch (value) {
+    case 'contains':
+    case 'calls':
+    case 'imports':
+    case 'exports':
+    case 'extends':
+    case 'implements':
+    case 'references':
+    case 'type_of':
+    case 'returns':
+    case 'instantiates':
+    case 'overrides':
+    case 'decorates':
+    case 'event-handler':
+    case 'opens-form':
+    case 'opens-report':
+    case 'raises-event':
+    case 'subscribes-event':
+    case 'type-member':
+      return true;
+    default:
+      return false;
+  }
+}
 
 /**
  * A reference that couldn't be resolved during extraction

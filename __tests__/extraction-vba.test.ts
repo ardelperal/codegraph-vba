@@ -1020,6 +1020,13 @@ describe('VbaExtractor — bang operator (Issue #44)', () => {
     // Regression: Me!txtFoo must produce the EXACT same emission shape as
     // Me.txtFoo — one UnresolvedReference with referenceName 'txtFoo' and
     // metadata.synthesizedBy === 'vba-me-control'.
+    //
+    // Round-3 (issue #108): the bang operator + same-line `=` rule means
+    // `Me!txtFoo = "Hello"` resolves to `bang-set` (FR-1.2). The dot
+    // variant `Me.txtFoo = "Hello"` resolves to `property-set`. The
+    // parity test below verifies the two operators classify INTO THE
+    // SAME FAMILY (`property-*` for dot, `bang-*` for bang) but NOT the
+    // same literal — bang is its own kind family per VBA semantics.
     const src = `Public Sub X()
     Me!txtFoo = "Hello"
 End Sub`;
@@ -1029,10 +1036,10 @@ End Sub`;
     );
     expect(refs.length).toBe(1);
     expect(refs[0]?.referenceName).toBe('txtFoo');
-    expect(refs[0]?.referenceKind).toBe('references');
+    expect(refs[0]?.referenceKind).toBe('bang-set');
   });
 
-  it('Me!txtFoo and Me.txtFoo produce byte-identical UnresolvedReferences (regression parity)', () => {
+  it('Me!txtFoo and Me.txtFoo produce same-family UnresolvedReferences (bang-* vs property-* parity)', () => {
     const srcDot = `Public Sub X()
     Me.txtFoo = "Hello"
 End Sub`;
@@ -1050,7 +1057,11 @@ End Sub`;
     expect(bangRef.length).toBe(dotRef.length);
     expect(bangRef.length).toBe(1);
     expect(bangRef[0]?.referenceName).toBe(dotRef[0]?.referenceName);
-    expect(bangRef[0]?.referenceKind).toBe(dotRef[0]?.referenceKind);
+    // Round-3 shape-based classifier: dot→property-set, bang→bang-set.
+    // They classify into the same FAMILY (both are -set) but the
+    // operator-decided literal differs per FR-1.1/FR-1.2/FR-3.2.
+    expect(dotRef[0]?.referenceKind).toBe('property-set');
+    expect(bangRef[0]?.referenceKind).toBe('bang-set');
   });
 
   it('Forms!FormX!txtY.Value = 1 emits a vba-forms-bang UnresolvedReference to FormX', () => {
@@ -1064,7 +1075,9 @@ End Sub`;
     expect(refs.length).toBeGreaterThanOrEqual(1);
     const toFormX = refs.find((u) => u.referenceName === 'FormX');
     expect(toFormX).toBeDefined();
-    expect(toFormX?.referenceKind).toBe('references');
+    // Round-3 (FR-1.3): cross-form bang is ALWAYS 'bang-get' regardless
+    // of read/write direction — there's no bang-call shape in VBA.
+    expect(toFormX?.referenceKind).toBe('bang-get');
   });
 
   it('Forms!FormX (no control segment) emits a vba-forms-bang UnresolvedReference to FormX', () => {
@@ -1077,6 +1090,7 @@ End Sub`;
     );
     expect(refs.length).toBe(1);
     expect(refs[0]?.referenceName).toBe('FormX');
+    expect(refs[0]?.referenceKind).toBe('bang-get');
   });
 
   it('Forms("FormX")!txtY emits the same vba-forms-bang UnresolvedReference to FormX as Forms!FormX!txtY', () => {
@@ -1090,7 +1104,7 @@ End Sub`;
     expect(refs.length).toBeGreaterThanOrEqual(1);
     const toFormX = refs.find((u) => u.referenceName === 'FormX');
     expect(toFormX).toBeDefined();
-    expect(toFormX?.referenceKind).toBe('references');
+    expect(toFormX?.referenceKind).toBe('bang-get');
   });
 
   it('Forms!FormX.Foo (post-form property access, not a control) does NOT emit a vba-forms-bang reference', () => {
@@ -1306,6 +1320,10 @@ describe('VbaExtractor — DoCmd.OpenQuery built-in modeling (Issue #48)', () =>
     // binds to the REAL `query` node emitted by SqlQueryExtractor for
     // `queries/<Name>.sql`. Same emission shape as vba-me-control /
     // vba-forms-bang.
+    //
+    // Round-3 (FR-1.4): the literal arg classifies as 'dao-query' so the
+    // SQL filter `WHERE reference_kind = 'dao-query'` reaches these
+    // rows directly (issue #108).
     const src = `Public Sub OpenIt()
     DoCmd.OpenQuery "Consulta1"
 End Sub`;
@@ -1316,7 +1334,7 @@ End Sub`;
     );
     expect(refs.length).toBe(1);
     expect(refs[0]?.referenceName).toBe('Consulta1');
-    expect(refs[0]?.referenceKind).toBe('references');
+    expect(refs[0]?.referenceKind).toBe('dao-query');
 
     // No stub nodes (OpenQuery doesn't synthesize one).
     const stubs = r.nodes.filter((n) => n.kind === 'report-layout' || n.kind === 'form-layout');
@@ -1343,7 +1361,7 @@ End Sub`;
     );
     expect(refs.length).toBe(1);
     expect(refs[0]?.referenceName).toBe('qDepuracion');
-    expect(refs[0]?.referenceKind).toBe('references');
+    expect(refs[0]?.referenceKind).toBe('dao-query');
   });
 
   it('DoCmd.OpenQuery CONSULTA_UNKNOWN (Const not defined) falls back to bare identifier', () => {

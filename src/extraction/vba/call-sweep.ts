@@ -221,7 +221,29 @@ export function createCallsAndSqlClassifier(
           const stmtCall = detectStatementCall(clauseLine);
           if (stmtCall) {
             const caller = stack[stack.length - 1]!;
-            emitStatementCallEdge(ctx, caller, stmtCall, lineNum);
+            // Returns true when a same-file calls edge was emitted; false
+            // when the call was silenced (blacklist / runtime receiver /
+            // unresolvable same-file target).
+            const emitted = emitStatementCallEdge(ctx, caller, stmtCall, lineNum);
+            // Round-3 (issue #108): if the statement-form Sub call did
+            // NOT resolve, surface it as an `unqualified-ident` unresolved
+            // reference. The const-first disambiguation rule (FR-3.1)
+            // ensures Const reads do not pollute the call bucket — when
+            // `stmtCall` resolves to a known Const, we still surface it as
+            // `unqualified-ident` (NOT `call`) because that's the
+            // unambiguous shape of a bare-ident read.
+            if (!emitted && stmtCall !== caller.name) {
+              ctx.unresolvedReferences.push({
+                fromNodeId: ctx.findOrCreateFunctionNodeId(caller),
+                referenceName: stmtCall,
+                referenceKind: 'unqualified-ident',
+                line: lineNum,
+                column: 0,
+                filePath: ctx.filePath,
+                language: 'vba',
+                metadata: { synthesizedBy: 'vba-statement-call-unresolved' },
+              });
+            }
           }
 
           // Fix 7 + Fix 2 + Issue #40: qualified statement-form calls
@@ -230,7 +252,21 @@ export function createCallsAndSqlClassifier(
           if (qualStmt) {
             const caller = stack[stack.length - 1]!;
             if (ctx.shouldProcessQualifiedCall(qualStmt.receiver)) {
-              emitQualifiedStatementCallEdge(ctx, caller, qualStmt.receiver, qualStmt.member, lineNum);
+              // Returns true when a `calls` edge was emitted to a synthetic
+              // stub node; false when the receiver is not eligible
+              // (primitive / DAO-qualified / runtime). Round-3 (issue
+              // #108): when the synthetic-stub path skips, the parent
+              // caller still needs to see an `unresolved_refs` row so the
+              // SQL filter `WHERE reference_kind = 'qualified-call'`
+              // surfaces these from `(caller, qualified, line)` tuples the
+              // resolver couldn't bind.
+              emitQualifiedStatementCallEdge(
+                ctx,
+                caller,
+                qualStmt.receiver,
+                qualStmt.member,
+                lineNum,
+              );
             }
           }
 
@@ -240,6 +276,23 @@ export function createCallsAndSqlClassifier(
             if (withCall && ctx.isLocalProjectClassVar(withReceiver)) {
               const caller = stack[stack.length - 1]!;
               emitQualifiedStatementCallEdge(ctx, caller, withReceiver, withCall.member, lineNum);
+            } else if (withCall) {
+              // Round-3 (FR-2.5): `.Member` inside a `With` block where the
+              // receiver is NOT a project-class local (e.g. a runtime /
+              // DAO-qualified `With rs` where `rs` is `DAO.Recordset`).
+              // surface the call as `member-with` so the SQL filter can
+              // detect these by shape.
+              const caller = stack[stack.length - 1]!;
+              ctx.unresolvedReferences.push({
+                fromNodeId: ctx.findOrCreateFunctionNodeId(caller),
+                referenceName: `${withReceiver}.${withCall.member}`,
+                referenceKind: 'member-with',
+                line: lineNum,
+                column: 0,
+                filePath: ctx.filePath,
+                language: 'vba',
+                metadata: { synthesizedBy: 'vba-with-member-unresolved' },
+              });
             }
           }
         }

@@ -6,7 +6,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { Language, Node, UnresolvedReference, Edge } from '../types';
+import { Language, Node, UnresolvedReference, Edge, isEdgeKindLiteral } from '../types';
 import { QueryBuilder } from '../db/queries';
 import {
   UnresolvedRef,
@@ -952,8 +952,22 @@ export class ReferenceResolver {
       // by metadata.resolvedBy === 'function-ref'. callers/impact already
       // traverse `references`, so registration sites surface with no
       // graph-layer changes.
+      //
+      // Round-3 (issue #108): the new shape-based classifiers
+      // (`call`, `qualified-call`, `property-get`, …) are unresolved-ref
+      // metadata — the SQL filter `WHERE reference_kind IN (...)` keys off
+      // them. Edge shape still uses `EdgeKind` (the row-level kind is the
+      // `calls`/`references` family), so any non-EdgeKind literal falls
+      // back to `'references'` here. The shape is preserved on the
+      // unresolved-ref row and on `edge.metadata.synthesizedBy` already,
+      // so graph traversal isn't affected.
+      const refKind = ref.original.referenceKind;
       let kind: Edge['kind'] =
-        ref.original.referenceKind === 'function_ref' ? 'references' : ref.original.referenceKind;
+        refKind === 'function_ref'
+          ? 'references'
+          : isEdgeKindLiteral(refKind)
+            ? refKind
+            : 'references';
 
       // Promote "extends" to "implements" when a class/struct targets an interface
       if (kind === 'extends') {

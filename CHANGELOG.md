@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- The shared MCP daemon auto-respawns when killed while the proxy is still up. After `Stop-Process -Id <pid>` (or any other death cause) the proxy's per-project daemon watchdog detects the dead daemon via its `daemon.pid` lockfile and respawns it within 30s — file edits are picked up automatically instead of needing a manual `codegraph-vba sync`. The watchdog polls every 30s by default and `unref`s its interval so it never keeps the event loop alive on its own. (#116)
 
 ## [1.7.0] - 2026-07-13
 

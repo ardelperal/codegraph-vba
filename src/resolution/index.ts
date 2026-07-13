@@ -27,6 +27,30 @@ import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packa
 import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
+import { isRuntimeObject } from './vba-runtime-objects';
+
+/**
+ * Outcome of resolving a single VBA call-stub (issue #110). Recorded on the
+ * stub's incoming `calls` edge as `metadata.repointDecision` for
+ * observability so a consumer can tell a runtime-object decline apart from a
+ * genuinely-missing callee:
+ *   - `reponted-to-real`    — a real user target was found; edge repointed (stub:false).
+ *   - `declined-runtime`    — receiver is a runtime object with no user shadow; kept stub:true.
+ *   - `declined-ambiguous`  — 2+ real candidates; can't safely pick one; kept stub:true.
+ *   - `declined-not-found`  — no real target and not a runtime object (genuine miss); kept stub:true.
+ * (The `reponted-to-real` spelling is the wire value consumers already key on.)
+ */
+export type RepointDecision =
+  | 'reponted-to-real'
+  | 'declined-runtime'
+  | 'declined-ambiguous'
+  | 'declined-not-found';
+
+/** Resolver verdict for one VBA call-stub: the decision plus the real target when repointing. */
+interface StubResolution {
+  decision: RepointDecision;
+  target?: Node;
+}
 
 /** Node kinds that can declare supertypes (extends/implements). */
 const SUPERTYPE_BEARING_KINDS = new Set<Node['kind']>([
@@ -1885,14 +1909,25 @@ export class ReferenceResolver {
     let repointedCount = 0;
 
     for (const stub of stubs) {
-      const target = this.resolveVbaCallStubTarget(stub, stubIds);
+      const resolution = this.resolveVbaCallStubTarget(stub, stubIds);
       const incoming = this.queries.getIncomingEdges(stub.id, ['calls']);
 
-      if (!target) {
-        // Ambiguous or unmatched — leave the stub and its edges untouched.
+      if (resolution.decision !== 'reponted-to-real' || !resolution.target) {
+        // #110: declined — stamp WHY on each incoming edge for observability
+        // (runtime-object vs ambiguous vs genuine miss) and keep the edge
+        // `stub:true` pointing at the synthetic node. Re-pointing the edge to
+        // its EXISTING target is a metadata-only update. The stub node stays
+        // in the graph as the (still-unresolved) call target; a consumer's
+        // `stub=true` lint now sees a clean, classified signal.
+        for (const edge of incoming) {
+          if (edge.id === undefined) continue;
+          const meta = { ...(edge.metadata ?? {}), repointDecision: resolution.decision };
+          this.queries.repointEdgeTarget(edge.id, edge.target, JSON.stringify(meta));
+        }
         continue;
       }
 
+      const target = resolution.target;
       for (const edge of incoming) {
         if (edge.id === undefined) continue; // defensive — DB reads always set it
         const tupleKey = `${edge.source}\0${target.id}`;
@@ -1906,8 +1941,8 @@ export class ReferenceResolver {
         seenTuples.add(tupleKey);
         // F5: clear the stub flag but KEEP synthesizedBy/receiverType/member
         // — the edge is still a heuristic VBA-name-resolution edge, just no
-        // longer a dead end.
-        const meta = { ...(edge.metadata ?? {}), stub: false };
+        // longer a dead end. #110: record the repoint decision too.
+        const meta = { ...(edge.metadata ?? {}), stub: false, repointDecision: 'reponted-to-real' };
         this.queries.repointEdgeTarget(edge.id, target.id, JSON.stringify(meta));
         repointedCount++;
       }
@@ -1996,32 +2031,42 @@ export class ReferenceResolver {
    * strategy (exact qualifiedName match, then `.bas` module-scoped
    * fallback).
    */
-  private resolveVbaCallStubTarget(stub: Node, stubIds: Set<string>): Node | null {
+  private resolveVbaCallStubTarget(stub: Node, stubIds: Set<string>): StubResolution {
     const isRealCandidate = (n: Node) =>
       n.id !== stub.id &&
       !stubIds.has(n.id) &&
       n.kind === 'function' &&
       n.language === 'vba';
 
+    // `stub.qualifiedName` is `${receiver}.${member}`. The receiver drives the
+    // runtime-object classification when no real target is found (#110).
+    const dot = stub.qualifiedName.indexOf('.');
+    const receiver = dot > 0 ? stub.qualifiedName.slice(0, dot) : stub.qualifiedName;
+
+    // #110: the two-step name resolution runs FIRST. A runtime-object receiver
+    // that ALSO has a real user declaration (a "shadow" class/module named,
+    // e.g., `DAO`) is repointed here like any other real symbol (FR-2.1) — so
+    // the runtime-object skip below only fires when NO real target exists,
+    // which is exactly the noise the consumer's `stub=true` lint wants gone.
+    const decline = (): StubResolution => ({
+      decision: isRuntimeObject(receiver) ? 'declined-runtime' : 'declined-not-found',
+    });
+
     // Step 1: exact qualifiedName match (class-typed stubs land here — see
     // #12a's resolved-type rename).
     const exact = this.queries
       .getNodesByQualifiedNameExact(stub.qualifiedName)
       .filter(isRealCandidate);
-    if (exact.length === 1) return exact[0]!;
-    if (exact.length >= 2) return null;
+    if (exact.length === 1) return { decision: 'reponted-to-real', target: exact[0]! };
+    if (exact.length >= 2) return { decision: 'declined-ambiguous' };
 
-    // Step 2: `.bas`-qualified fallback. `stub.qualifiedName` is
-    // `${receiver}.${member}` where `receiver` didn't resolve to a
+    // Step 2: `.bas`-qualified fallback. The `receiver` didn't resolve to a
     // project-class type at extraction time (kept as raw receiver text —
     // the `.bas`-qualified-call case, since the extractor's
-    // `resolveReceiverType` only substitutes for DECLARED local class
-    // vars).
-    const dot = stub.qualifiedName.indexOf('.');
-    if (dot <= 0) return null;
-    const receiver = stub.qualifiedName.slice(0, dot);
+    // `resolveReceiverType` only substitutes for DECLARED local class vars).
+    if (dot <= 0) return decline();
     const member = stub.qualifiedName.slice(dot + 1);
-    if (!member) return null;
+    if (!member) return decline();
 
     // Bare-name candidates in ANY `.bas` file — real `.bas` function
     // qualifiedNames carry no module prefix (unlike `.cls` methods), so a
@@ -2032,7 +2077,7 @@ export class ReferenceResolver {
         (n) =>
           isRealCandidate(n) && n.filePath.toLowerCase().endsWith('.bas'),
       );
-    if (memberCandidates.length === 0) return null;
+    if (memberCandidates.length === 0) return decline();
 
     // Narrow to the `.bas` file(s) whose module identity (VB_Name, i.e. the
     // sibling `module` node's name) equals `receiver`, case-insensitive —
@@ -2044,11 +2089,12 @@ export class ReferenceResolver {
         .filter((n) => n.kind === 'module' && n.language === 'vba')
         .map((n) => n.filePath),
     );
-    if (moduleFiles.size === 0) return null;
+    if (moduleFiles.size === 0) return decline();
 
     const narrowed = memberCandidates.filter((n) => moduleFiles.has(n.filePath));
-    if (narrowed.length === 1) return narrowed[0]!;
-    return null; // 0 or 2+ after narrowing — decline
+    if (narrowed.length === 1) return { decision: 'reponted-to-real', target: narrowed[0]! };
+    if (narrowed.length >= 2) return { decision: 'declined-ambiguous' };
+    return decline(); // 0 after narrowing — runtime-object or genuine miss
   }
 
   private gateLanguage(result: ResolvedRef | null, ref: UnresolvedRef): ResolvedRef | null {

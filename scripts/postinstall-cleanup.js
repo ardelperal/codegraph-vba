@@ -6,20 +6,7 @@
  * regardless of which binary triggered the upgrade. Sweeps orphan staging dirs
  * (`.<pkg>-<HASH>`) from the global npm root so a subsequent `npm install`
  * doesn't trip EBUSY/EPERM on a locked `node.exe` left behind by a previous
- * interrupted upgrade. Idempotent + best-effort; never fatal to install.
- *
- * The same logic lives in `src/upgrade/index.ts:cleanupOrphanStagings` for the
- * runtime upgrade path, but a postinstall hook is the right place for THIS
- * concern because:
- *
- * 1. It runs in the staging dir BEFORE the new binary is on PATH, so it can
- *    use the new cleanup code even when the triggering upgrade came from an
- *    older binary (PR #114 only added pre-cleanup to the upgrade command;
- *    pre-fix upgrades can't clean pre-fix orphans).
- * 2. `npm install -g` runs postinstall by default (the `--ignore-scripts`
- *    flag is opt-in; users who set it explicitly are on their own).
- * 3. The script is small + dependency-free (only `fs`, `path`) so it has
- *    minimal cost when there's nothing to clean.
+ * interrupted upgrade.
  *
  * Mirrors `src/upgrade/index.ts:cleanupOrphanStagings` semantics — if that
  * file changes, update this in lockstep.
@@ -34,33 +21,68 @@ const path = require('path');
 const PKG_PREFIX = '.codegraph-vba-';
 
 /**
- * Walk up from `startDir` until we hit a `node_modules/` ancestor; return its
- * parent (the npm global root). Mirrors resolveNpmGlobalRoot in
- * src/upgrade/index.ts. Cross-platform via path.dirname walking — works on
- * POSIX + Windows with forward/back slashes.
+ * Find the npm global root: walk up from `startDir` until we reach a
+ * directory whose direct children include `.codegraph-vba-*` entries. That
+ * directory is the npm global root (the staging dirs and the final install's
+ * `node_modules/` all live under it).
+ *
+ * We can't just look for `node_modules/` because the script may run from
+ * INSIDE a staging dir (e.g. `<root>/.codegraph-vba-stage123/node_modules/@aroman22/codegraph-vba/scripts/`),
+ * where walking up finds the staging's own `node_modules/` first — that's the
+ * red herring. The "has `.codegraph-vba-*` children" check reliably
+ * identifies the real global root.
  */
 function resolveNpmGlobalRoot(startDir) {
   let dir = path.resolve(startDir);
   const root = path.parse(dir).root;
   for (;;) {
-    if (path.basename(dir) === 'node_modules') return path.dirname(dir);
+    // Skip `.codegraph-vba-<HASH>` staging dirs themselves — we don't want
+    // to check inside them (the staging dir's own name matches, but it's
+    // not the global root).
+    if (path.basename(dir).startsWith(PKG_PREFIX)) {
+      dir = path.dirname(dir);
+      continue;
+    }
+    // Found a directory whose children include `.codegraph-vba-*` entries?
+    // That's the npm global root (it contains the staging dirs as siblings
+    // of the final install's `node_modules/`).
+    try {
+      const entries = fs.readdirSync(dir);
+      if (entries.some((e) => e.startsWith(PKG_PREFIX))) return dir;
+    } catch {
+      /* not readable; keep walking */
+    }
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
-    if (dir === root) {
-      // Reached filesystem root without finding a node_modules ancestor —
-      // probably an unusual install layout. Bail.
-      return null;
-    }
+    if (dir === root) return null;
   }
 }
 
 /**
- * Best-effort: remove every `<PKG_PREFIX><HASH>` dir under the global
- * node_modules. Returns the count actually removed.
+ * Walk up from `startDir` and return the first ancestor whose basename
+ * starts with `.codegraph-vba-`. Used to identify the staging dir we're
+ * part of, so the cleanup can skip it (deleting the dir we're running
+ * from under npm would race with npm's atomic move).
  */
-function cleanupOrphanStagings(globalRoot) {
-  if (!fs.existsSync(globalRoot)) return 0;
+function findCurrentStagingAncestor(startDir) {
+  let dir = path.resolve(startDir);
+  const root = path.parse(dir).root;
+  for (;;) {
+    if (path.basename(dir).startsWith(PKG_PREFIX)) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+    if (dir === root) return null;
+  }
+}
+
+/**
+ * Best-effort: remove every `.codegraph-vba-<HASH>` dir under `globalRoot`,
+ * skipping the staging that this script is currently running from. Returns
+ * the count actually removed.
+ */
+function cleanupOrphanStagings(globalRoot, currentStaging) {
   let entries;
   try {
     entries = fs.readdirSync(globalRoot);
@@ -71,6 +93,7 @@ function cleanupOrphanStagings(globalRoot) {
   for (const entry of entries) {
     if (!entry.startsWith(PKG_PREFIX)) continue;
     const orphan = path.join(globalRoot, entry);
+    if (currentStaging && orphan === currentStaging) continue;
     try {
       fs.rmSync(orphan, { recursive: true, force: true });
       removed++;
@@ -83,15 +106,13 @@ function cleanupOrphanStagings(globalRoot) {
 }
 
 function main() {
-  // Walk up from this script's location to find the global node_modules
-  // ancestor. npm guarantees the postinstall runs from the package's install
-  // dir, so `<here>/node_modules/...` resolves up to the npm global root.
   const globalRoot = resolveNpmGlobalRoot(__dirname);
   if (!globalRoot) {
     // No npm global root reachable — unusual layout. Skip silently.
     return;
   }
-  const cleaned = cleanupOrphanStagings(globalRoot);
+  const currentStaging = findCurrentStagingAncestor(__dirname);
+  const cleaned = cleanupOrphanStagings(globalRoot, currentStaging);
   if (cleaned > 0) {
     process.stderr.write(
       `[codegraph-vba postinstall] removed ${cleaned} orphan staging dir${cleaned === 1 ? '' : 's'}\n`

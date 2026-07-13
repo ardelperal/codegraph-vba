@@ -902,9 +902,11 @@ describe('upgradeNpm post-install verification', () => {
     // Second run: tarball fallback — uses the RESOLVED version (0.9.9),
     // not the user-supplied 'latest' string, because the npm registry has
     // no `latest.tgz` literal (latest is a dist-tag).
+    // The unscoped name comes from stripping the full `@<scope>/` prefix
+    // (`codegraph-vba` from `@aroman22/codegraph-vba`), not just the `@`.
     expect(calls.runs[1].args).toEqual([
       'install', '-g', '--force',
-      `https://registry.npmjs.org/${NPM_PACKAGE}/-/${NPM_PACKAGE.replace(/^@/, '')}-0.9.9.tgz`,
+      'https://registry.npmjs.org/@aroman22/codegraph-vba/-/codegraph-vba-0.9.9.tgz',
     ]);
     // User saw the warning + the retry. The "expected" version is the RESOLVED
     // target (0.9.9 from the mocked resolveLatest), not the literal string

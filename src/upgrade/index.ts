@@ -918,7 +918,12 @@ function upgradeNpmFromTarball(targetVersion: string, deps: UpgradeDeps): number
     deps.error('Cannot resolve a tarball URL without a resolved version; pin one: `codegraph-vba upgrade <version>`.');
     return 1;
   }
-  const url = `https://registry.npmjs.org/${NPM_PACKAGE}/-/${NPM_PACKAGE.replace(/^@/, '')}-${targetVersion}.tgz`;
+  // npm registry tarball URL pattern: `<registry>/@<scope>/<name>/-/<name>-<version>.tgz`
+  // The unscoped name (`codegraph-vba` from `@aroman22/codegraph-vba`) is the
+  // last path segment, NOT the whole thing with the `@` stripped. Strip the
+  // full `@scope/` prefix.
+  const unscoped = NPM_PACKAGE.replace(/^@[^/]+\//, '');
+  const url = `https://registry.npmjs.org/${NPM_PACKAGE}/-/${unscoped}-${targetVersion}.tgz`;
   const args = ['install', '-g', '--force', url];
   deps.log(c.dim(`Fallback install from tarball: npm ${args.join(' ')}`));
   const inv = npmInvocation(deps.platform, args);

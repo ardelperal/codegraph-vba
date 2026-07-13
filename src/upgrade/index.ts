@@ -296,6 +296,22 @@ export interface UpgradeDeps {
   warn: (msg: string) => void;
   error: (msg: string) => void;
   platform: NodeJS.Platform;
+  /**
+   * Override for the version read from the installed package.json. Used by
+   * the post-install verification: if npm reports success but the on-disk
+   * version differs from the target, the upgrade retries from the registry
+   * tarball URL. `null` simulates "could not read the file" (no retry, no
+   * warning); undefined falls back to actually reading the package.json.
+   * Tests set this to simulate the silent stale-install failure mode without
+   * touching the filesystem.
+   */
+  installedPackageVersion?: string | null;
+  /**
+   * Override for the orphan-staging sweep count. Tests use this to verify
+   * pre-cleanup runs (and is skipped for non-global methods). undefined
+   * triggers a real `readdir` + `rm` against the global node_modules tree.
+   */
+  orphanCleanupOverride?: () => number;
 }
 
 const c = {
@@ -393,8 +409,11 @@ export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promi
       break;
     case 'npm':
       // npm version specs have no leading "v" (`@0.9.8`, not `@v0.9.8` — the
-      // latter resolves as a nonexistent dist-tag).
-      code = await upgradeNpm(method, opts.version ? stripV(latest) : 'latest', deps);
+      // latter resolves as a nonexistent dist-tag). The resolved target
+      // (`latest`, with the `v` stripped) is passed separately so the
+      // post-install verification compares against the actual target version
+      // (not the literal string "latest").
+      code = await upgradeNpm(method, opts.version ? stripV(latest) : 'latest', stripV(latest), deps);
       break;
     case 'npx':
       deps.log(c.green('npx always runs the latest version on demand — nothing to upgrade.'));
@@ -704,14 +723,71 @@ export function npmInvocation(platform: NodeJS.Platform, npmArgs: string[]): { c
 function upgradeNpm(
   method: Extract<InstallMethod, { kind: 'npm' }>,
   versionSpec: string,
+  targetVersion: string,
   deps: UpgradeDeps
 ): number {
+  // PRE-CLEANUP: npm leaves orphan staging dirs when an upgrade is interrupted
+  // (EBUSY on a locked node.exe, EPERM during cleanup, etc.). Those orphans can
+  // hold a `dist/` + `node_modules/` with no `package.json`, lock the next
+  // upgrade attempt, and eventually cause npm to report "Installed X" without
+  // actually moving the package.json — a silent stale-cache failure mode we
+  // hit on v1.7.0 (see issue write-up in obs 17859). Sweep them before every
+  // upgrade. Best-effort; never fatal to the upgrade.
+  if (method.scope === 'global') {
+    const cleaned = deps.orphanCleanupOverride
+      ? deps.orphanCleanupOverride()
+      : cleanupOrphanStagings(deps);
+    if (cleaned > 0) {
+      deps.log(c.dim(`Removed ${cleaned} orphan npm staging dir${cleaned === 1 ? '' : 's'} before upgrade.`));
+    }
+  }
+
+  // `--prefer-online` makes npm reach the registry instead of the local cache,
+  // which catches up stale npm cache entries (the cause of the silent
+  // "Installed v1.7.0 but package.json still 1.6.3" failure mode).
   const args = method.scope === 'global'
-    ? ['install', '-g', `${NPM_PACKAGE}@${versionSpec}`]
-    : ['install', `${NPM_PACKAGE}@${versionSpec}`];
+    ? ['install', '-g', '--prefer-online', `${NPM_PACKAGE}@${versionSpec}`]
+    : ['install', '--prefer-online', `${NPM_PACKAGE}@${versionSpec}`];
   deps.log(c.dim(`Running: npm ${args.join(' ')}`));
   const inv = npmInvocation(deps.platform, args);
-  const code = deps.run(inv.cmd, inv.args, process.env);
+  const firstAttemptCode = deps.run(inv.cmd, inv.args, process.env);
+
+  // RECOVERY PATH: if the first attempt failed outright OR npm reported
+  // success but the installed package.json version is stale (cache, EPERM
+  // mid-install, PATH shadow), retry from the dist tarball URL — which bypasses
+  // the npm cache + staging dirs entirely. This is the user's escape hatch
+  // when the regular upgrade fails for any reason; without it, the only
+  // option is a manual `npm cache clean --force` they didn't ask for.
+  let code = firstAttemptCode;
+  let stale = false;
+  if (method.scope === 'global') {
+    const actual = deps.installedPackageVersion !== undefined
+      ? deps.installedPackageVersion
+      : readInstalledPackageVersion(deps);
+    if (actual !== null && actual !== targetVersion) {
+      stale = true;
+      deps.warn(`npm reported success but installed package.json says ${actual}, expected ${targetVersion}.`);
+    } else if (actual === null && firstAttemptCode === 0) {
+      deps.warn('Could not read installed package.json to verify the upgrade. Run `codegraph-vba --version` to confirm.');
+    } else if (firstAttemptCode !== 0) {
+      deps.warn(`npm install failed (exit ${firstAttemptCode}); trying tarball fallback.`);
+    }
+
+    if (stale || firstAttemptCode !== 0) {
+      deps.log(c.dim('Retrying from the npm registry tarball (bypasses cache + staging).'));
+      const tarballCode = upgradeNpmFromTarball(targetVersion, deps);
+      if (tarballCode === 0) {
+        code = 0;
+      } else {
+        deps.error(
+          `Tarball fallback also failed (exit ${tarballCode}). ` +
+          `Retry with \`npm cache clean --force\`, then re-run.`
+        );
+        code = 1;
+      }
+    }
+  }
+
   if (code !== 0) {
     deps.error(`npm exited with code ${code}.`);
     if (method.scope === 'global') {
@@ -724,6 +800,129 @@ function upgradeNpm(
   deps.log(c.green('✓ Upgrade complete.'));
   deps.log(reindexAdvisory());
   return 0;
+}
+
+/**
+ * Resolve the npm global root for the current install. The upgrade module is
+ * always running from inside its own install — `<root>/node_modules/@scope/pkg/
+ * dist/upgrade/index.js` on both Windows and Unix — so we can derive the root
+ * by walking up `__filename` to the first `node_modules` ancestor and taking
+ * its parent. No need to shell out to `npm root -g` (which would consume a
+ * capture slot in tests and is platform-dependent).
+ *
+ * Returns null when not running from a `node_modules` tree (e.g. source
+ * checkout, npx cache, bundle). Callers treat null as "no globals to scan".
+ */
+export function resolveNpmGlobalRoot(_deps?: UpgradeDeps): string | null {
+  const filename = __filename || '';
+  const norm = filename.replace(/\\/g, '/');
+  const m = /^(.*?)\/node_modules\//.exec(norm);
+  if (!m) return null;
+  return m[1] ?? null;
+}
+
+/**
+ * Find npm orphan staging dirs in the global node_modules tree. An "orphan" is
+ * a directory matching `.codegraph-vba-<HASH>` or `.codegraph-vba-win32-<ARCH>`
+ * next to the live `@aroman22/codegraph-vba` install — npm creates these when
+ * it begins a global upgrade and the previous run was interrupted (EBUSY on
+ * node.exe, EPERM during cleanup, etc.). They block subsequent upgrades and
+ * can hold a partial copy of an older version that confuses `npm view`.
+ *
+ * Returns the list of absolute paths to remove. Pure so it's unit-tested with
+ * an injected fs.
+ */
+export function findOrphanStagings(
+  globalRoot: string,
+  exists: (p: string) => boolean = fs.existsSync,
+  readdir: (p: string) => string[] = (p) => fs.readdirSync(p)
+): string[] {
+  const orphans: string[] = [];
+  if (!exists(globalRoot)) return orphans;
+  let entries: string[];
+  try {
+    entries = readdir(globalRoot);
+  } catch {
+    return orphans;
+  }
+  for (const entry of entries) {
+    if (!entry.startsWith('.codegraph-vba-')) continue;
+    // npm registry + paths use forward slashes uniformly; force path.posix so
+    // Windows `path.join` doesn't substitute backslashes (which would mismatch
+    // the npm cache's own internal paths).
+    orphans.push(path.posix.join(globalRoot, entry));
+  }
+  return orphans;
+}
+
+/**
+ * Remove orphan npm staging dirs from the global node_modules tree. Best-effort
+ * — failures are logged but never fatal to the upgrade (a leftover orphan is
+ * annoying; blocking the upgrade over it is worse). Exposed for tests.
+ *
+ * Returns the count successfully removed.
+ */
+export function cleanupOrphanStagings(
+  deps: UpgradeDeps,
+  opts: { rm?: (p: string) => boolean; exists?: (p: string) => boolean; readdir?: (p: string) => string[]; globalRoot?: string | null } = {}
+): number {
+  const rm = opts.rm ?? ((p: string) => { try { fs.rmSync(p, { recursive: true, force: true }); return true; } catch { return false; } });
+  const exists = opts.exists ?? fs.existsSync;
+  const readdir = opts.readdir ?? ((p: string) => fs.readdirSync(p));
+  const globalRoot = opts.globalRoot !== undefined ? opts.globalRoot : resolveNpmGlobalRoot(deps);
+  if (!globalRoot) return 0;
+  const orphans = findOrphanStagings(globalRoot, exists, readdir);
+  let removed = 0;
+  for (const orphan of orphans) {
+    if (rm(orphan)) removed++;
+  }
+  return removed;
+}
+
+/**
+ * Read the installed package.json and return its `version` field, or null if
+ * the file can't be read or parsed. Used by the post-install verification to
+ * catch silent stale-install failure modes (npm reports success but the
+ * on-disk version is older than the target). Exposed for tests.
+ */
+export function readInstalledPackageVersion(
+  deps: UpgradeDeps,
+  opts: { readFile?: (p: string) => string; exists?: (p: string) => boolean; globalRoot?: string | null } = {}
+): string | null {
+  const exists = opts.exists ?? fs.existsSync;
+  const readFile = opts.readFile ?? ((p: string) => fs.readFileSync(p, 'utf-8')) as (p: string) => string;
+  const root = opts.globalRoot ?? resolveNpmGlobalRoot(deps);
+  if (!root) return null;
+  const pkgPath = path.join(root, 'node_modules', NPM_PACKAGE, 'package.json');
+  if (!exists(pkgPath)) return null;
+  try {
+    const parsed = JSON.parse(readFile(pkgPath));
+    return typeof parsed?.version === 'string' ? parsed.version : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Last-resort fallback: install from the dist tarball URL, which bypasses the
+ * npm cache and staging dirs entirely. Used when the regular `npm install -g`
+ * fails outright OR reports success but the installed package.json doesn't
+ * match the target (stale cache, stuck staging, EPERM mid-install).
+ *
+ * `targetVersion` must be the RESOLVED version (e.g. `'0.9.9'`), NOT the
+ * user-supplied spec — `latest` is a dist-tag, not a literal tarball name;
+ * the URL needs the real semver.
+ */
+function upgradeNpmFromTarball(targetVersion: string, deps: UpgradeDeps): number {
+  if (!targetVersion || targetVersion === 'latest') {
+    deps.error('Cannot resolve a tarball URL without a resolved version; pin one: `codegraph-vba upgrade <version>`.');
+    return 1;
+  }
+  const url = `https://registry.npmjs.org/${NPM_PACKAGE}/-/${NPM_PACKAGE.replace(/^@/, '')}-${targetVersion}.tgz`;
+  const args = ['install', '-g', '--force', url];
+  deps.log(c.dim(`Fallback install from tarball: npm ${args.join(' ')}`));
+  const inv = npmInvocation(deps.platform, args);
+  return deps.run(inv.cmd, inv.args, process.env);
 }
 
 // ---------------------------------------------------------------------------

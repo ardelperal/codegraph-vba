@@ -9,6 +9,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Add the opt-in, read-only `codegraph_query` MCP tool for structured CLI symbol queries.
 
 ## [1.7.3] - 2026-07-13
 

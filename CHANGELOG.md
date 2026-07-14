@@ -18,6 +18,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Added the opt-in `codegraph_sync` MCP lifecycle tool for synchronizing a project's full index, including project selection, quiet mode, process output, and exit-code reporting. (#122)
 - Orphan npm staging dirs from any previous `npm install -g` failure (including pre-fix-era upgrades) are now cleaned automatically on every install via a `postinstall` script. No more EPERM noise on the next upgrade; no more manual cleanup of `.codegraph-vba-<HASH>` leftovers.
 
 ## [1.7.1] - 2026-07-13

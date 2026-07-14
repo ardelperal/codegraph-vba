@@ -206,16 +206,46 @@ describe.skip('MCP lifecycle tools — codegraph_index', () => {
   });
 });
 
-describe.skip('MCP lifecycle tools — codegraph_sync', () => {
+describe('MCP lifecycle tools — codegraph_sync', () => {
   let projectDir: string;
+  const originalTools = process.env.CODEGRAPH_MCP_TOOLS;
+  const originalAllowlist = process.env.CODEGRAPH_MCP_ALLOWLIST;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    delete process.env.CODEGRAPH_MCP_ALLOWLIST;
+    process.env.CODEGRAPH_MCP_TOOLS = 'explore,sync';
     projectDir = freshProject();
-    CodeGraph.initSync(projectDir);
+    const cg = CodeGraph.initSync(projectDir);
+    await cg.indexAll();
+    cg.close();
   });
-  afterEach(() => cleanup(projectDir));
+  afterEach(() => {
+    if (originalTools === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
+    else process.env.CODEGRAPH_MCP_TOOLS = originalTools;
+    if (originalAllowlist === undefined) delete process.env.CODEGRAPH_MCP_ALLOWLIST;
+    else process.env.CODEGRAPH_MCP_ALLOWLIST = originalAllowlist;
+    cleanup(projectDir);
+  });
 
-  it('syncs new files into an existing index', () => {
+  it('requires explicit opt-in', async () => {
+    delete process.env.CODEGRAPH_MCP_TOOLS;
+    const result = await new ToolHandler(null).execute('codegraph_sync', { path: projectDir, quiet: true });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('disabled via CODEGRAPH_MCP_TOOLS');
+  });
+
+  it('denies canonical targets outside the mutation-root allowlist', async () => {
+    const allowedRoot = path.join(projectDir, 'allowed');
+    const escape = path.join(allowedRoot, 'escape');
+    fs.mkdirSync(allowedRoot);
+    fs.symlinkSync(projectDir, escape, 'junction');
+    process.env.CODEGRAPH_MCP_ALLOWLIST = allowedRoot;
+    const result = await new ToolHandler(null).execute('codegraph_sync', { path: escape, quiet: true });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('outside CODEGRAPH_MCP_ALLOWLIST');
+  });
+
+  it('syncs new files into an existing index', async () => {
     const cg = CodeGraph.openSync(projectDir);
     const before = cg.getStats();
     cg.close();
@@ -225,10 +255,11 @@ describe.skip('MCP lifecycle tools — codegraph_sync', () => {
       'export function added(){ return 1; }\n',
     );
 
-    // TODO(RED): MCP tool calls cg.sync() (which the engine already exposes).
-    const cg2 = CodeGraph.openSync(projectDir);
-    void cg2.sync();
-    cg2.close();
+    const result = await new ToolHandler(null).execute('codegraph_sync', {
+      path: projectDir,
+      quiet: true,
+    });
+    expect(result.isError).not.toBe(true);
 
     const cg3 = CodeGraph.openSync(projectDir);
     const after = cg3.getStats();
@@ -236,35 +267,51 @@ describe.skip('MCP lifecycle tools — codegraph_sync', () => {
     expect(after.fileCount).toBeGreaterThan(before.fileCount);
   });
 
-  it('is a no-op when the index is already in sync', () => {
+  it('is a no-op when the index is already in sync', async () => {
     const cg = CodeGraph.openSync(projectDir);
     const before = cg.getStats();
     cg.close();
 
-    // TODO(RED): sync() should report 0 files changed on a clean repo.
-    const cg2 = CodeGraph.openSync(projectDir);
-    const result = cg2.sync();
-    cg2.close();
-
-    expect(result.filesAdded).toBe(0);
-    expect(result.filesModified).toBe(0);
-    expect(result.filesRemoved).toBe(0);
+    const result = await new ToolHandler(null).execute('codegraph_sync', {
+      path: projectDir,
+      quiet: true,
+    });
+    expect(result.isError).not.toBe(true);
     const cg3 = CodeGraph.openSync(projectDir);
     const after = cg3.getStats();
     cg3.close();
     expect(after.fileCount).toBe(before.fileCount);
   });
+
+  it('uses the configured default project when path arguments are omitted', async () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-cwd-'));
+    const originalCwd = process.cwd();
+    const cg = CodeGraph.openSync(projectDir);
+    try {
+      process.chdir(elsewhere);
+      const result = await new ToolHandler(cg).execute('codegraph_sync', { quiet: true });
+      expect(result.isError).not.toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+      cg.close();
+      cleanup(elsewhere);
+    }
+  });
 });
 
 describe('MCP lifecycle tools — codegraph_query', () => {
   let projectDir: string;
+  const originalTools = process.env.CODEGRAPH_MCP_TOOLS;
 
   beforeEach(() => {
+    process.env.CODEGRAPH_MCP_TOOLS = 'query';
     projectDir = freshProject();
     CodeGraph.initSync(projectDir).close();
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    if (originalTools === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
+    else process.env.CODEGRAPH_MCP_TOOLS = originalTools;
     fs.rmSync(projectDir, { recursive: true, force: true });
   });
 

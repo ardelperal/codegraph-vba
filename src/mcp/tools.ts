@@ -733,6 +733,30 @@ export const tools: ToolDefinition[] = [
     annotations: READ_ONLY_ANNOTATIONS,
   },
   {
+    name: 'codegraph_sync',
+    description: 'Synchronize an existing CodeGraph index with filesystem changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project or directory whose full CodeGraph index should be synchronized.',
+        },
+        quiet: {
+          type: 'boolean',
+          description: 'Suppress progress output.',
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'codegraph_status',
     description: 'Index health check (files / nodes / edges). Skip unless debugging.',
     inputSchema: {
@@ -832,7 +856,7 @@ function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
   return defs.map((tool) => {
     // Lifecycle tools operate on their own required `path`; they do not need a
     // pre-opened default index, so their cross-project hint remains optional.
-    if (tool.annotations?.readOnlyHint === false) return tool;
+    if (tool.annotations?.readOnlyHint === false && tool.inputSchema.required?.includes('path')) return tool;
     if (!tool.inputSchema.properties.projectPath) return tool;
     const required = tool.inputSchema.required ?? [];
     if (required.includes('projectPath')) return tool;
@@ -990,7 +1014,8 @@ export class ToolHandler {
   /**
    * Optional allowlist of exposed tools, parsed from the CODEGRAPH_MCP_TOOLS
    * env var (comma-separated short names, e.g. "trace,search,node,context").
-   * Unset/empty → every tool is exposed. Lets an operator (or an A/B harness)
+   * Unset/empty → legacy direct calls to read-only tools are allowed, while
+   * mutating lifecycle tools remain opt-in. Lets an operator (or an A/B harness)
    * trim the tool surface without rebuilding the client config; the ablated
    * tool is then truly absent from ListTools rather than merely denied on call.
    * Matching is on the short form, so "node" and "codegraph_node" both work.
@@ -1006,9 +1031,11 @@ export class ToolHandler {
   /** Whether a tool name passes the CODEGRAPH_MCP_TOOLS allowlist (if any). */
   private isToolAllowed(name: string): boolean {
     const allow = this.toolAllowlist();
-    // Mutating lifecycle tools are opt-in even for callers bypassing tools/list.
-    if (!allow && name === 'codegraph_init') return false;
-    return !allow || allow.has(name.replace(/^codegraph_/, ''));
+    const shortName = name.replace(/^codegraph_/, '');
+    if (allow) return allow.has(shortName);
+    // Preserve backwards compatibility for direct read-only calls. Mutating
+    // lifecycle tools must be explicitly enabled even when tools/list is bypassed.
+    return shortName !== 'init' && shortName !== 'sync';
   }
 
   /**
@@ -1473,6 +1500,10 @@ export class ToolHandler {
         return await this.handleStatus(args);
       }
 
+      if (toolName === 'codegraph_sync') {
+        return this.handleSync(args);
+      }
+
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
       // is attached, healthy, AND has finished its first cold start (daemon
       // mode), so the daemon's single event loop stays free for the MCP
@@ -1511,11 +1542,44 @@ export class ToolHandler {
     }
   }
 
-  /** Execute a mutating CodeGraph CLI command after enforcing its path allowlist. */
-  private executeMutatingTool(command: 'init', args: Record<string, unknown>): ToolResult {
-    const target = this.validateString(args.path, 'path');
-    if (typeof target !== 'string') return target;
+  /** Run the CLI sync command and preserve its complete process output. */
+  private handleSync(args: Record<string, unknown>): ToolResult {
+    if (args.quiet !== undefined && typeof args.quiet !== 'boolean') {
+      return this.errorResult('quiet must be a boolean');
+    }
 
+    const target = args.path ?? args.projectPath ?? this.cg?.getProjectRoot() ?? process.cwd();
+    if (typeof target !== 'string') return this.errorResult('path must be a string');
+    const resolvedTarget = this.validateMutationTarget(target);
+    if (typeof resolvedTarget !== 'string') return resolvedTarget;
+    const commandArgs = [resolvePath(__dirname, '../../dist/bin/codegraph.js'), 'sync', resolvedTarget];
+    if (args.quiet === true) commandArgs.push('--quiet');
+
+    const result = spawnSync(process.execPath, commandArgs, {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const stdout = result.stdout ?? '';
+    const stderr = result.stderr ?? '';
+    const output = [stdout, stderr].filter(Boolean).join(stdout && stderr ? '\n' : '');
+
+    if (result.error) {
+      return this.errorResult(`${result.error.message}${output ? `\n${output}` : ''}`);
+    }
+    if (result.status !== 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: [output, `codegraph sync exited with code ${result.status}`].filter(Boolean).join('\n'),
+        }],
+        isError: true,
+      };
+    }
+    return this.textResult(output || 'codegraph sync exited with code 0');
+  }
+
+  /** Resolve symlinks/junctions and enforce mutation-root boundaries. */
+  private validateMutationTarget(target: string): string | ToolResult {
     const canonicalize = (candidate: string): string => {
       let existing = resolvePath(candidate);
       const missing: string[] = [];
@@ -1530,19 +1594,22 @@ export class ToolHandler {
     const resolvedTarget = canonicalize(target);
     const rawAllowlist = process.env.CODEGRAPH_MCP_ALLOWLIST?.trim();
     if (rawAllowlist && rawAllowlist !== '*') {
-      const allowed = rawAllowlist
-        .split(delimiter)
-        .map((entry: string) => entry.trim())
-        .filter(Boolean)
-        .some((entry: string) => {
-          const root = canonicalize(entry);
-          const relativePath = relative(root, resolvedTarget);
-          return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
-        });
-      if (!allowed) {
-        return this.errorResult(`Path is outside CODEGRAPH_MCP_ALLOWLIST: ${resolvedTarget}`);
-      }
+      const allowed = rawAllowlist.split(delimiter).map(entry => entry.trim()).filter(Boolean).some(entry => {
+        const relativePath = relative(canonicalize(entry), resolvedTarget);
+        return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+      });
+      if (!allowed) return this.errorResult(`Path is outside CODEGRAPH_MCP_ALLOWLIST: ${resolvedTarget}`);
     }
+    return resolvedTarget;
+  }
+
+  /** Execute a mutating CodeGraph CLI command after enforcing its path allowlist. */
+  private executeMutatingTool(command: 'init', args: Record<string, unknown>): ToolResult {
+    const target = this.validateString(args.path, 'path');
+    if (typeof target !== 'string') return target;
+
+    const resolvedTarget = this.validateMutationTarget(target);
+    if (typeof resolvedTarget !== 'string') return resolvedTarget;
 
     const adjacentCli = resolvePath(__dirname, '../bin/codegraph.js');
     const builtCli = existsSync(adjacentCli) ? adjacentCli : resolvePath(__dirname, '../../dist/bin/codegraph.js');

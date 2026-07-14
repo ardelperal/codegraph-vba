@@ -9,6 +9,13 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Added `codegraph_init` MCP tool (CLI subprocess wrapper around `codegraph init`). Off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,init`.
+- Add the opt-in, read-only `codegraph_query` MCP tool for structured CLI symbol queries.
+
+## [1.7.3] - 2026-07-13
+
 ### Fixes
 
 - Added the opt-in `codegraph_sync` MCP lifecycle tool for synchronizing a project's full index, including project selection, quiet mode, process output, and exit-code reporting. (#122)
@@ -51,3 +58,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Closed ArkTS test database handles before removing temporary directories, preventing Windows `EBUSY`/`EPERM` teardown failures.
+[1.7.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.3

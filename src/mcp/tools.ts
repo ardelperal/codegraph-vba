@@ -27,10 +27,14 @@ import {
   existsSync,
   readFileSync,
 } from 'fs';
+import { spawnSync } from 'child_process';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { scanDynamicDispatch } from './dynamic-boundaries';
 import { getUpdateNotice } from '../upgrade/update-check';
+
+/** Narrow subprocess seam for testing CLI-only MCP wrappers. */
+export const cliProcess = { spawnSync };
 
 /**
  * An expected, recoverable "codegraph can't serve this" condition — most
@@ -534,6 +538,35 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
  * All tools support cross-project queries via the optional `projectPath` parameter.
  */
 export const tools: ToolDefinition[] = [
+  {
+    name: 'codegraph_query',
+    description: 'Run the canonical CodeGraph CLI symbol query and return its structured JSON output.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Symbol name or partial name to query',
+        },
+        path: {
+          type: 'string',
+          description: 'Validated project directory passed to the CLI; overrides projectPath when both are set. Defaults to the selected project root.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results (default: 10)',
+          default: 10,
+        },
+        kind: {
+          type: 'string',
+          description: 'Filter by node kind',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['query'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
   {
     name: 'codegraph_search',
     description: 'Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.',
@@ -1476,6 +1509,7 @@ export class ToolHandler {
    */
   private async dispatchTool(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
     switch (toolName) {
+      case 'codegraph_query': return await this.handleQuery(args);
       case 'codegraph_search': return await this.handleSearch(args);
       case 'codegraph_callers': return await this.handleCallers(args);
       case 'codegraph_callees': return await this.handleCallees(args);
@@ -1485,6 +1519,44 @@ export class ToolHandler {
       case 'codegraph_files': return await this.handleFiles(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
+  }
+
+  /** Run the CLI-only query command and preserve its JSON stdout verbatim. */
+  private async handleQuery(args: Record<string, unknown>): Promise<ToolResult> {
+    const query = this.validateString(args.query, 'query');
+    if (typeof query !== 'string') return query;
+
+    let projectPath: string;
+    if (args.path !== undefined) {
+      const explicitPath = this.validateString(args.path, 'path');
+      if (typeof explicitPath !== 'string') return explicitPath;
+      projectPath = explicitPath;
+      const pathError = validateProjectPath(projectPath);
+      if (pathError) return this.errorResult(pathError);
+    } else {
+      projectPath = this.getCodeGraph(args.projectPath as string | undefined).getProjectRoot();
+    }
+
+    const limit = clamp(Number(args.limit) || 10, 1, 100);
+    const commandArgs = ['query', query, '-p', projectPath, '-l', String(limit)];
+    if (args.kind !== undefined) {
+      const kind = this.validateString(args.kind, 'kind');
+      if (typeof kind !== 'string') return kind;
+      commandArgs.push('-k', kind);
+    }
+    commandArgs.push('--json');
+
+    const cliEntry = resolvePath(__dirname, '../bin/codegraph.js'); // Keep CLI and MCP on the same package version.
+    const result = cliProcess.spawnSync(
+      process.execPath,
+      [cliEntry, ...commandArgs],
+      { encoding: 'utf8', timeout: 30_000 },
+    );
+    if (result.error) return this.errorResult(`codegraph query failed: ${result.error.message}`);
+    if (result.status !== 0) {
+      return this.errorResult(`codegraph query failed: ${(result.stderr || '').trim() || `exit code ${result.status}`}`);
+    }
+    return this.textResult(result.stdout || '');
   }
 
   /**

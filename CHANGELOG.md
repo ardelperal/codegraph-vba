@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Added `codegraph_init` MCP tool (CLI subprocess wrapper around `codegraph init`). Off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,init`.
 - Add the opt-in, read-only `codegraph_query` MCP tool for structured CLI symbol queries.
 
 ## [1.7.3] - 2026-07-13

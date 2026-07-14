@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.8.0] - 2026-07-14
+
 ### New Features
 
 - Added the opt-in `codegraph_init` MCP lifecycle tool (CLI subprocess wrapper around `codegraph init`). Off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,init`. (#121)
@@ -59,3 +62,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Closed ArkTS test database handles before removing temporary directories, preventing Windows `EBUSY`/`EPERM` teardown failures.
 [1.7.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.3
+[1.8.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.8.0

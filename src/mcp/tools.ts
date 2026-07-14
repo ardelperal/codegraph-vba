@@ -1014,8 +1014,8 @@ export class ToolHandler {
   /**
    * Optional allowlist of exposed tools, parsed from the CODEGRAPH_MCP_TOOLS
    * env var (comma-separated short names, e.g. "trace,search,node,context").
-   * Unset/empty → default tools plus legacy direct calls to read-only tools are allowed.
-   * Lets an operator (or an A/B harness)
+   * Unset/empty → legacy direct calls to read-only tools are allowed, while
+   * mutating lifecycle tools remain opt-in. Lets an operator (or an A/B harness)
    * trim the tool surface without rebuilding the client config; the ablated
    * tool is then truly absent from ListTools rather than merely denied on call.
    * Matching is on the short form, so "node" and "codegraph_node" both work.
@@ -1033,9 +1033,9 @@ export class ToolHandler {
     const allow = this.toolAllowlist();
     const shortName = name.replace(/^codegraph_/, '');
     if (allow) return allow.has(shortName);
-    // The execution surface must match tools/list: every non-default tool,
-    // whether read-only or mutating, requires explicit operator opt-in.
-    return DEFAULT_MCP_TOOLS.has(shortName);
+    // Preserve backwards compatibility for direct read-only calls. Mutating
+    // lifecycle tools must be explicitly enabled even when tools/list is bypassed.
+    return shortName !== 'init' && shortName !== 'sync';
   }
 
   /**

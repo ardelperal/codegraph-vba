@@ -6,6 +6,8 @@
 
 import type CodeGraph from '../index';
 import type { QueryPool } from './query-pool';
+import { spawnSync } from 'child_process';
+import * as path from 'path';
 import { findNearestCodeGraphRoot } from '../directory';
 // Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
 // helper in engine.ts. ToolHandler must load to answer tools/list (static
@@ -743,6 +745,31 @@ export const tools: ToolDefinition[] = [
     },
     annotations: READ_ONLY_ANNOTATIONS,
   },
+  {
+    name: 'codegraph_uninit',
+    description: 'Remove a project\'s CodeGraph index by invoking the CLI. Destructive and disabled by default; re-enable with CODEGRAPH_MCP_TOOLS=explore,uninit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project directory to uninitialize (default: current working directory).',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Skip the CLI confirmation prompt (default: false).',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
 ];
 
 /**
@@ -1399,6 +1426,10 @@ export class ToolHandler {
         return await this.handleStatus(args);
       }
 
+      if (toolName === 'codegraph_uninit') {
+        return this.executeMutatingTool('uninit', args);
+      }
+
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
       // is attached, healthy, AND has finished its first cold start (daemon
       // mode), so the daemon's single event loop stays free for the MCP
@@ -1485,6 +1516,50 @@ export class ToolHandler {
       case 'codegraph_files': return await this.handleFiles(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
+  }
+
+  /** Execute an opt-in filesystem-mutating CLI command in a separate process. */
+  private executeMutatingTool(command: 'uninit', args: Record<string, unknown>): ToolResult {
+    const target = path.resolve(
+      (args.path as string | undefined) ??
+      (args.projectPath as string | undefined) ??
+      process.cwd(),
+    );
+
+    const allowlist = process.env.CODEGRAPH_MCP_ALLOWLIST?.trim();
+    if (allowlist && allowlist !== '*') {
+      const allowed = allowlist
+        .split(path.delimiter)
+        .filter(Boolean)
+        .some((entry) => {
+          const root = path.resolve(entry);
+          const relative = path.relative(root, target);
+          return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+        });
+      if (!allowed) {
+        return this.errorResult(`Path ${target} is not permitted by CODEGRAPH_MCP_ALLOWLIST`);
+      }
+    }
+
+    const adjacentCli = path.resolve(__dirname, '../bin/codegraph.js');
+    const cliPath = existsSync(adjacentCli)
+      ? adjacentCli
+      : path.resolve(__dirname, '../../dist/bin/codegraph.js');
+    const cliArgs = [cliPath, command, target];
+    if (args.force === true) cliArgs.push('--force');
+    const result = spawnSync(process.execPath, cliArgs, {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    const isError = result.error !== undefined || result.status !== 0;
+    const text = result.error
+      ? `${output}${output && !output.endsWith('\n') ? '\n' : ''}${result.error.message}`
+      : output;
+    return {
+      content: [{ type: 'text', text }],
+      ...(isError ? { isError: true } : {}),
+    };
   }
 
   /**

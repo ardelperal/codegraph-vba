@@ -15,6 +15,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Added `codegraph_affected` MCP tool (CLI subprocess wrapper around `codegraph affected`). Off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,affected`. (#127)
 - Added `codegraph_index` MCP tool (CLI subprocess wrapper around `codegraph index`). Idempotent rebuild; off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,index`. (#129)
 
 

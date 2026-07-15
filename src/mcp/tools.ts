@@ -488,6 +488,7 @@ export interface ToolAnnotations {
 interface PropertySchema {
   type: string;
   description: string;
+  items?: { type: string };
   enum?: string[];
   default?: unknown;
 }
@@ -539,6 +540,51 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
  * All tools support cross-project queries via the optional `projectPath` parameter.
  */
 export const tools: ToolDefinition[] = [
+  {
+    name: 'codegraph_affected',
+    description: 'Map changed source files to affected tests via the codegraph CLI. Read-only and disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          description: 'Changed source paths to map to affected test files.',
+          items: { type: 'string' },
+        },
+        path: {
+          type: 'string',
+          description: 'Project root (default: the selected project or current working directory).',
+        },
+        stdin: {
+          type: 'boolean',
+          description: 'Read additional changed paths from standard input.',
+          default: false,
+        },
+        depth: {
+          type: 'number',
+          description: 'Maximum dependency traversal depth (default: 5).',
+          default: 5,
+        },
+        filter: {
+          type: 'string',
+          description: 'Glob filter applied to affected test paths.',
+        },
+        json: {
+          type: 'boolean',
+          description: 'Request JSON output from the CLI.',
+          default: false,
+        },
+        quiet: {
+          type: 'boolean',
+          description: 'Suppress non-result CLI output.',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['files'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
   {
     name: 'codegraph_index',
     description: 'Rebuild a project index from scratch via the codegraph CLI. Idempotent and disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
@@ -1095,7 +1141,7 @@ export class ToolHandler {
     if (allow) return allow.has(shortName);
     // Preserve backwards compatibility for direct read-only calls. Mutating
     // lifecycle tools must be explicitly enabled even when tools/list is bypassed.
-    return shortName !== 'init' && shortName !== 'sync' && shortName !== 'index';
+    return shortName !== 'init' && shortName !== 'sync' && shortName !== 'index' && shortName !== 'affected';
   }
 
   /**
@@ -1157,7 +1203,7 @@ export class ToolHandler {
         'codegraph_search',
         'codegraph_node',
       ]);
-      if (stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
+      if (!allow && stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
         visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
       }
 
@@ -1555,6 +1601,10 @@ export class ToolHandler {
         return this.executeMutatingTool('index', args);
       }
 
+      if (toolName === 'codegraph_affected') {
+        return this.handleAffected(args);
+      }
+
       // codegraph_status reports watcher state (pending files, degraded mode,
       // worktree warning) and embeds its own sections — it must run on the MAIN
       // thread against the watched default instance, so it is NEVER off-loaded to
@@ -1644,6 +1694,64 @@ export class ToolHandler {
       };
     }
     return this.textResult(output || 'codegraph sync exited with code 0');
+  }
+
+  /** Run the CLI-only affected command and preserve its complete process output. */
+  private handleAffected(args: Record<string, unknown>): ToolResult {
+    if (!Array.isArray(args.files) || args.files.some(file => typeof file !== 'string')) {
+      return this.errorResult('files must be an array of strings');
+    }
+    for (const flag of ['stdin', 'json', 'quiet'] as const) {
+      if (args[flag] !== undefined && typeof args[flag] !== 'boolean') {
+        return this.errorResult(`${flag} must be a boolean`);
+      }
+    }
+
+    const target = args.path ?? args.projectPath ?? this.cg?.getProjectRoot() ?? process.cwd();
+    if (typeof target !== 'string') return this.errorResult('path must be a string');
+    const pathError = validateProjectPath(target);
+    if (pathError) return this.errorResult(pathError);
+
+    const depth = args.depth === undefined ? 5 : Number(args.depth);
+    if (!Number.isInteger(depth) || depth < 0) {
+      return this.errorResult('depth must be a non-negative integer');
+    }
+    let filter: string | undefined;
+    if (args.filter !== undefined) {
+      const validated = this.validateString(args.filter, 'filter');
+      if (typeof validated !== 'string') return validated;
+      filter = validated;
+    }
+
+    const cliEntry = resolvePath(__dirname, '../bin/codegraph.js');
+    const commandArgs = [cliEntry, 'affected', ...(args.files as string[]), '-p', target, '-d', String(depth)];
+    if (filter !== undefined) commandArgs.push('-f', filter);
+    if (args.json === true) commandArgs.push('--json');
+    if (args.quiet === true) commandArgs.push('--quiet');
+    if (args.stdin === true) commandArgs.push('--stdin');
+
+    const result = cliProcess.spawnSync(process.execPath, commandArgs, {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    const stdout = result.stdout ?? '';
+    const stderr = result.stderr ?? '';
+    let output = [stdout, stderr, result.error?.message].filter(Boolean).join('\n');
+    const failed = result.status !== 0 || result.error !== undefined;
+    if (!failed && args.json === true) {
+      try {
+        output = JSON.stringify(JSON.parse(stdout));
+      } catch (error) {
+        return this.errorResult(`codegraph affected returned invalid JSON: ${error instanceof Error ? error.message : String(error)}\n${output}`);
+      }
+    }
+    return {
+      content: [{
+        type: 'text',
+        text: output || result.error?.message || `codegraph affected exited with status ${result.status}`,
+      }],
+      ...(failed ? { isError: true } : {}),
+    };
   }
 
   /** Resolve symlinks/junctions and enforce mutation-root boundaries. */

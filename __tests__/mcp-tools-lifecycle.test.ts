@@ -410,10 +410,11 @@ describe('MCP lifecycle tools — codegraph_query', () => {
   });
 });
 
-describe.skip('MCP lifecycle tools — codegraph_affected', () => {
+describe('MCP lifecycle tools — codegraph_affected', () => {
   let projectDir: string;
+  const originalTools = process.env.CODEGRAPH_MCP_TOOLS;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     projectDir = freshProject();
     fs.writeFileSync(
       path.join(projectDir, 'src/helper.ts'),
@@ -424,25 +425,90 @@ describe.skip('MCP lifecycle tools — codegraph_affected', () => {
       "import { helper } from './helper';\ntest('t', () => helper());\n",
     );
     const cg = CodeGraph.initSync(projectDir);
-    void cg.indexAll();
+    await cg.indexAll();
     cg.close();
   });
-  afterEach(() => cleanup(projectDir));
-
-  it('returns test files affected by a given source file change', () => {
-    const cg = CodeGraph.openSync(projectDir);
-    const result = cg.affected(['src/util.ts']);
-    cg.close();
-    expect(result).toContain('src/helper.test.ts');
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (originalTools === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
+    else process.env.CODEGRAPH_MCP_TOOLS = originalTools;
+    cleanup(projectDir);
   });
 
-  it('returns an empty array for a source file with no test dependents', () => {
+  it('invokes the bundled affected CLI with all supported options and preserves its output', async () => {
+    process.env.CODEGRAPH_MCP_TOOLS = 'affected';
+    const stdout = JSON.stringify(['src/helper.test.ts']);
+    const spawn = vi.spyOn(cliProcess, 'spawnSync').mockReturnValue({
+      pid: 1, output: [null, stdout, 'warning'], stdout, stderr: 'warning', status: 0, signal: null,
+    });
     const cg = CodeGraph.openSync(projectDir);
-    const result = cg.affected(['src/helper.ts']);
+    const handler = new ToolHandler(cg);
+    expect(handler.getTools().map(tool => tool.name)).toContain('codegraph_affected');
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-affected-cwd-'));
+    const originalCwd = process.cwd();
+    process.chdir(elsewhere);
+    const result = await handler.execute('codegraph_affected', {
+      files: ['src/util.ts'], depth: 3, filter: '**/*.test.ts', json: true, quiet: true,
+    }).finally(() => process.chdir(originalCwd));
+    cleanup(elsewhere);
     cg.close();
-    expect(Array.isArray(result)).toBe(true);
-    // helper.ts itself is not a test; no test imports it directly.
-    expect(result).not.toContain('src/helper.ts');
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toEqual(['src/helper.test.ts']);
+    expect(spawn).toHaveBeenCalledWith(
+      process.execPath,
+      [path.resolve(__dirname, '../src/bin/codegraph.js'), 'affected', 'src/util.ts', '-p', projectDir,
+        '-d', '3', '-f', '**/*.test.ts', '--json', '--quiet'],
+      { encoding: 'utf8', timeout: 30_000 },
+    );
+  });
+
+  it('is opt-in, read-only, and reflects a non-zero CLI exit', async () => {
+    const previous = process.env.CODEGRAPH_MCP_TOOLS;
+    delete process.env.CODEGRAPH_MCP_TOOLS;
+    const disabled = await new ToolHandler(null).execute('codegraph_affected', {
+      files: [], path: projectDir,
+    });
+    expect(disabled.isError).toBe(true);
+    expect(disabled.content[0].text).toContain('disabled via CODEGRAPH_MCP_TOOLS');
+
+    process.env.CODEGRAPH_MCP_TOOLS = 'explore,affected';
+    try {
+      const listed = getStaticTools();
+      const definition = listed.find((tool) => tool.name === 'codegraph_affected');
+      expect(definition?.inputSchema.required).toEqual(['files']);
+      expect(definition?.annotations).toEqual({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
+      vi.spyOn(cliProcess, 'spawnSync').mockReturnValue({
+        pid: 1, output: [null, '', 'not indexed'], stdout: '', stderr: 'not indexed', status: 2, signal: null,
+      });
+      const result = await new ToolHandler(null).execute('codegraph_affected', {
+        files: [], path: projectDir, stdin: true,
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe('not indexed');
+
+      const spawnError = Object.assign(new Error('spawnSync EPIPE'), { code: 'EPIPE' });
+      vi.mocked(cliProcess.spawnSync).mockReturnValue({
+        pid: 1, output: [null, 'partial', 'warning'], stdout: 'partial', stderr: 'warning',
+        status: null, signal: null, error: spawnError,
+      });
+      const partial = await new ToolHandler(null).execute('codegraph_affected', {
+        files: [], path: projectDir,
+      });
+      expect(partial.content[0].text).toBe('partial\nwarning\nspawnSync EPIPE');
+
+      vi.mocked(cliProcess.spawnSync).mockReturnValue({ ...vi.mocked(cliProcess.spawnSync).mock.results[0]!.value, stdout: '{bad', stderr: '', status: 0, error: undefined });
+      const malformed = await new ToolHandler(null).execute('codegraph_affected', { files: [], path: projectDir, json: true });
+      expect(malformed.isError).toBe(true);
+      expect(malformed.content[0].text).toContain('invalid JSON');
+    } finally {
+      if (previous === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
+      else process.env.CODEGRAPH_MCP_TOOLS = previous;
+    }
   });
 });
 

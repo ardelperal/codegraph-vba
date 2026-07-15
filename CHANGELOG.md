@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Added `codegraph_uninit` MCP tool (CLI subprocess wrapper around `codegraph uninit`). Destructive; off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,uninit`.
+
 ### New Features
 
 - Added `codegraph_index` MCP tool (CLI subprocess wrapper around `codegraph index`). Idempotent rebuild; off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,index`. (#129)

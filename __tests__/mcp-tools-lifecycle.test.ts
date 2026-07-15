@@ -33,7 +33,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
-import { cliProcess, getStaticTools, ToolHandler } from '../src/mcp/tools';
+import { cliProcess, getStaticTools, ToolHandler, tools } from '../src/mcp/tools';
 
 function freshProject(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-mcp-lifecycle-'));
@@ -139,30 +139,53 @@ describe('MCP lifecycle tools — codegraph_init', () => {
 });
 
 // RED baselines below belong to separate lifecycle issues and must not gate #121.
-describe.skip('MCP lifecycle tools — codegraph_uninit', () => {
+describe('MCP lifecycle tools — codegraph_uninit', () => {
   let projectDir: string;
 
   beforeEach(() => {
     projectDir = freshProject();
-    CodeGraph.initSync(projectDir);
+    CodeGraph.initSync(projectDir).close();
   });
   afterEach(() => cleanup(projectDir));
 
-  it('removes .codegraph-vba/ from a previously-initialized project', () => {
-    // TODO(RED): MCP tool should exec `codegraph uninit --cwd <path>` and
-    // return ok: true with removedFiles count.
+  it('removes .codegraph-vba/ from a previously-initialized project', async () => {
     expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(true);
-    // The MCP tool wrapper would call into a CLI subprocess; here we just
-    // verify the underlying invariant via direct manipulation.
-    fs.rmSync(path.join(projectDir, '.codegraph-vba'), { recursive: true });
+
+    process.env.CODEGRAPH_MCP_TOOLS = 'explore,uninit';
+    const result = await new ToolHandler(null).execute('codegraph_uninit', {
+      path: projectDir,
+      force: true,
+    });
+    delete process.env.CODEGRAPH_MCP_TOOLS;
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('Removed CodeGraph');
     expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(false);
+    const definition = tools.find((tool) => tool.name === 'codegraph_uninit');
+    expect(definition?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
+    expect(getStaticTools().some((tool) => tool.name === 'codegraph_uninit')).toBe(false);
+    process.env.CODEGRAPH_MCP_TOOLS = 'explore,uninit';
+    expect(getStaticTools().some((tool) => tool.name === 'codegraph_uninit')).toBe(true);
+    delete process.env.CODEGRAPH_MCP_TOOLS;
   });
 
-  it('refuses to uninit a project with no .codegraph-vba/', () => {
+  it('returns the CLI result when the project has no .codegraph-vba/', async () => {
     fs.rmSync(path.join(projectDir, '.codegraph-vba'), { recursive: true });
-    // TODO(RED): MCP tool should return isError: true with code E_NOT_INDEXED.
-    // Verify the precondition: project has no .codegraph-vba/ before the call.
-    expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(false);
+
+    process.env.CODEGRAPH_MCP_TOOLS = 'explore,uninit';
+    const result = await new ToolHandler(null).execute('codegraph_uninit', {
+      projectPath: projectDir,
+      force: true,
+    });
+    delete process.env.CODEGRAPH_MCP_TOOLS;
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('not initialized');
   });
 });
 

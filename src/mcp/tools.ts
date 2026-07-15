@@ -837,6 +837,31 @@ export const tools: ToolDefinition[] = [
     annotations: READ_ONLY_ANNOTATIONS,
   },
   {
+    name: 'codegraph_uninit',
+    description: 'Remove a project\'s CodeGraph index by invoking the CLI. Destructive and disabled by default; re-enable with CODEGRAPH_MCP_TOOLS=explore,uninit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project directory to uninitialize (default: current working directory).',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Skip the CLI confirmation prompt (default: false).',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'codegraph_init',
     description: 'Initialize and index a project by invoking the codegraph init CLI. This mutates the target project and is disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
     inputSchema: {
@@ -1539,6 +1564,10 @@ export class ToolHandler {
         return await this.handleStatus(args);
       }
 
+      if (toolName === 'codegraph_uninit') {
+        return this.executeMutatingTool('uninit', args);
+      }
+
       if (toolName === 'codegraph_sync') {
         return this.handleSync(args);
       }
@@ -1643,8 +1672,8 @@ export class ToolHandler {
   }
 
   /** Execute a mutating CodeGraph CLI command after enforcing its path allowlist. */
-  private executeMutatingTool(command: 'init' | 'index', args: Record<string, unknown>): ToolResult {
-    const rawTarget = args.path ?? args.projectPath ?? (command === 'index' ? process.cwd() : undefined);
+  private executeMutatingTool(command: 'init' | 'uninit' | 'index', args: Record<string, unknown>): ToolResult {
+    const rawTarget = args.path ?? args.projectPath ?? (command === 'init' ? undefined : process.cwd());
     const target = this.validateString(rawTarget, 'path');
     if (typeof target !== 'string') return target;
 
@@ -1654,18 +1683,23 @@ export class ToolHandler {
     const adjacentCli = resolvePath(__dirname, '../bin/codegraph.js');
     const builtCli = existsSync(adjacentCli) ? adjacentCli : resolvePath(__dirname, '../../dist/bin/codegraph.js');
     const cliArgs = [builtCli, command];
-    if (command === 'index') cliArgs.push(resolvedTarget);
-    if (args.force === true) cliArgs.push('--force');
-    if (command === 'index' && args.quiet === true) cliArgs.push('--quiet');
-    if (args.verbose === true) cliArgs.push('--verbose');
-    if (command === 'init') cliArgs.push(resolvedTarget);
+    if (command === 'init') {
+      if (args.force === true) cliArgs.push('--force');
+      if (args.verbose === true) cliArgs.push('--verbose');
+      cliArgs.push(resolvedTarget);
+    } else {
+      cliArgs.push(resolvedTarget);
+      if (args.force === true) cliArgs.push('--force');
+      if (command === 'index' && args.quiet === true) cliArgs.push('--quiet');
+      if (command === 'index' && args.verbose === true) cliArgs.push('--verbose');
+    }
 
     const result = spawnSync(process.execPath, cliArgs, { encoding: 'utf8' });
     const output = [result.stdout, result.stderr].filter(Boolean).join('');
     const failed = result.status !== 0 || result.error !== undefined;
     return {
       content: [{ type: 'text', text: output || result.error?.message || `codegraph ${command} exited with status ${result.status}` }],
-      isError: failed,
+      ...(command === 'uninit' ? (failed ? { isError: true } : {}) : { isError: failed }),
     };
   }
 

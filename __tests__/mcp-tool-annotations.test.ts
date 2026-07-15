@@ -36,6 +36,15 @@ function expectReadOnly(tool: ToolDefinition): void {
 
 /** Assert each tool's exact read-only or mutating contract. */
 function expectToolAnnotations(tool: ToolDefinition): void {
+  if (tool.name === 'codegraph_uninit') {
+    expect(tool.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
+    return;
+  }
   if (tool.name === 'codegraph_init') {
     expect(tool.annotations).toEqual({
       readOnlyHint: false,

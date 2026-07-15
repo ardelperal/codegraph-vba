@@ -53,6 +53,12 @@ describe('CODEGRAPH_MCP_TOOLS allowlist', () => {
     expect(res.content[0].text).toMatch(/disabled via CODEGRAPH_MCP_TOOLS/);
   });
 
+  it('preserves legacy direct read-only calls when unset', async () => {
+    delete process.env[ENV];
+    const res = await new ToolHandler(null).execute('codegraph_search', { query: 'x' });
+    expect(res.content[0].text).not.toMatch(/disabled via CODEGRAPH_MCP_TOOLS/);
+  });
+
   it('lets an allowlisted tool past the guard', async () => {
     process.env[ENV] = 'search';
     // No CodeGraph attached, so it fails *after* the allowlist guard — the

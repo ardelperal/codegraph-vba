@@ -275,11 +275,18 @@ describe('huecos 3 & 5: VBA event-handler and Form_Load integration', () => {
   it('codegraph_search de Form_Load debe incluir el prefijo de form en la salida (hueco-5)', async () => {
     if (!cg) return;
     const { ToolHandler } = await import('../src/mcp/tools');
-    const handler = new ToolHandler(cg);
-    const res = await handler.execute('codegraph_search', { query: 'Form_Load' });
-    const text = res.content?.[0]?.text ?? '';
-    expect(text).toContain('Form_TestForm.Form_Load');
-    expect(text).toContain('Form_OtherForm.Form_Load');
+    const previousTools = process.env.CODEGRAPH_MCP_TOOLS;
+    process.env.CODEGRAPH_MCP_TOOLS = 'search';
+    try {
+      const handler = new ToolHandler(cg);
+      const res = await handler.execute('codegraph_search', { query: 'Form_Load' });
+      const text = res.content?.[0]?.text ?? '';
+      expect(text).toContain('Form_TestForm.Form_Load');
+      expect(text).toContain('Form_OtherForm.Form_Load');
+    } finally {
+      if (previousTools === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
+      else process.env.CODEGRAPH_MCP_TOOLS = previousTools;
+    }
   });
 });
 

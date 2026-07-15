@@ -27,7 +27,7 @@ const ALL_TOOLS = tools.map((t) => t.name).join(',');
 function expectReadOnly(tool: ToolDefinition): void {
   expect(tool.annotations, `${tool.name} is missing annotations`).toBeDefined();
   // The hint Cursor Ask mode (and other clients) gate on.
-  expect(tool.annotations!.readOnlyHint).toBe(tool.name !== 'codegraph_sync');
+  expect(tool.annotations!.readOnlyHint).toBe(!['codegraph_index', 'codegraph_sync'].includes(tool.name));
   // The exact triplet the issue asks for, plus the honest closed-world hint.
   expect(tool.annotations!.destructiveHint).toBe(false);
   expect(tool.annotations!.idempotentHint).toBe(true);

@@ -540,6 +540,41 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
  */
 export const tools: ToolDefinition[] = [
   {
+    name: 'codegraph_index',
+    description: 'Rebuild a project index from scratch via the codegraph CLI. Idempotent and disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project directory to rebuild (default: current working directory).',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Index even when the path looks like a home directory or filesystem root.',
+          default: false,
+        },
+        quiet: {
+          type: 'boolean',
+          description: 'Suppress progress output.',
+          default: false,
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'Enable verbose CLI output.',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'codegraph_query',
     description: 'Run the canonical CodeGraph CLI symbol query and return its structured JSON output.',
     inputSchema: {
@@ -1060,7 +1095,7 @@ export class ToolHandler {
     if (allow) return allow.has(shortName);
     // Preserve backwards compatibility for direct read-only calls. Mutating
     // lifecycle tools must be explicitly enabled even when tools/list is bypassed.
-    return shortName !== 'init' && shortName !== 'sync';
+    return shortName !== 'init' && shortName !== 'sync' && shortName !== 'index';
   }
 
   /**
@@ -1516,6 +1551,10 @@ export class ToolHandler {
         return this.executeMutatingTool('init', args);
       }
 
+      if (toolName === 'codegraph_index') {
+        return this.executeMutatingTool('index', args);
+      }
+
       // codegraph_status reports watcher state (pending files, degraded mode,
       // worktree warning) and embeds its own sections — it must run on the MAIN
       // thread against the watched default instance, so it is NEVER off-loaded to
@@ -1633,10 +1672,8 @@ export class ToolHandler {
   }
 
   /** Execute a mutating CodeGraph CLI command after enforcing its path allowlist. */
-  private executeMutatingTool(command: 'init' | 'uninit', args: Record<string, unknown>): ToolResult {
-    const rawTarget = command === 'init'
-      ? args.path
-      : args.path ?? args.projectPath ?? process.cwd();
+  private executeMutatingTool(command: 'init' | 'uninit' | 'index', args: Record<string, unknown>): ToolResult {
+    const rawTarget = args.path ?? args.projectPath ?? (command === 'init' ? undefined : process.cwd());
     const target = this.validateString(rawTarget, 'path');
     if (typeof target !== 'string') return target;
 
@@ -1653,6 +1690,8 @@ export class ToolHandler {
     } else {
       cliArgs.push(resolvedTarget);
       if (args.force === true) cliArgs.push('--force');
+      if (command === 'index' && args.quiet === true) cliArgs.push('--quiet');
+      if (command === 'index' && args.verbose === true) cliArgs.push('--verbose');
     }
 
     const result = spawnSync(process.execPath, cliArgs, { encoding: 'utf8' });

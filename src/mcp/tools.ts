@@ -31,6 +31,7 @@ import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, C
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { scanDynamicDispatch } from './dynamic-boundaries';
 import { getUpdateNotice } from '../upgrade/update-check';
+import { spawnSync } from 'child_process';
 
 /**
  * An expected, recoverable "codegraph can't serve this" condition — most
@@ -534,6 +535,41 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
  * All tools support cross-project queries via the optional `projectPath` parameter.
  */
 export const tools: ToolDefinition[] = [
+  {
+    name: 'codegraph_index',
+    description: 'Rebuild a project index from scratch via the codegraph CLI. This write operation is idempotent and intentionally excluded from the default MCP tool surface.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project path to rebuild (default: the MCP server current working directory).',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Index even when the path looks like a home directory or filesystem root.',
+          default: false,
+        },
+        quiet: {
+          type: 'boolean',
+          description: 'Suppress progress output.',
+          default: false,
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'Enable verbose CLI output.',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
   {
     name: 'codegraph_search',
     description: 'Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.',
@@ -1399,6 +1435,10 @@ export class ToolHandler {
         return await this.handleStatus(args);
       }
 
+      if (toolName === 'codegraph_index') {
+        return this.executeMutatingTool('index', args);
+      }
+
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
       // is attached, healthy, AND has finished its first cold start (daemon
       // mode), so the daemon's single event loop stays free for the MCP
@@ -1485,6 +1525,28 @@ export class ToolHandler {
       case 'codegraph_files': return await this.handleFiles(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
+  }
+
+  /** Execute a lifecycle command through the built CLI and preserve its output and exit status. */
+  private executeMutatingTool(command: 'index', args: Record<string, unknown>): ToolResult {
+    const cliArgs = [resolvePath(__dirname, '../bin/codegraph.js'), command];
+    const target = (args.path ?? args.projectPath) as string | undefined;
+    if (target) cliArgs.push(target);
+    if (args.force === true) cliArgs.push('--force');
+    if (args.quiet === true) cliArgs.push('--quiet');
+    if (args.verbose === true) cliArgs.push('--verbose');
+
+    const result = spawnSync(process.execPath, cliArgs, {
+      cwd: typeof args.projectPath === 'string' ? args.projectPath : process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, CODEGRAPH_NO_DAEMON: '1' },
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+    if (result.error) return this.errorResult(`${output}${result.error.message}`.trim());
+    return {
+      content: [{ type: 'text', text: output }],
+      isError: result.status !== 0,
+    };
   }
 
   /**

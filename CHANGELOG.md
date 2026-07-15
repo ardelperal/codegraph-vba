@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.9.0] - 2026-07-15
+
 ### Added
 
 - Added `codegraph_uninit` MCP tool (CLI subprocess wrapper around `codegraph uninit`). Destructive; off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,uninit`.
@@ -17,7 +20,6 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Added `codegraph_affected` MCP tool (CLI subprocess wrapper around `codegraph affected`). Off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,affected`. (#127)
 - Added `codegraph_index` MCP tool (CLI subprocess wrapper around `codegraph index`). Idempotent rebuild; off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,index`. (#129)
-
 
 ## [1.8.0] - 2026-07-14
 
@@ -72,3 +74,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Closed ArkTS test database handles before removing temporary directories, preventing Windows `EBUSY`/`EPERM` teardown failures.
 [1.7.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.3
 [1.8.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.8.0
+[1.9.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.9.0

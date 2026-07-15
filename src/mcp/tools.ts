@@ -1070,7 +1070,7 @@ export class ToolHandler {
     if (allow) return allow.has(shortName);
     // Preserve backwards compatibility for direct read-only calls. Mutating
     // lifecycle tools must be explicitly enabled even when tools/list is bypassed.
-    return shortName !== 'init' && shortName !== 'sync';
+    return shortName !== 'init' && shortName !== 'sync' && shortName !== 'index';
   }
 
   /**

@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Code that reads or writes form controls via `Me.` now shows up in control impact analysis. (#140)
 - Form events that call a function directly (`=MyFunction()`) are now part of the graph, so those flows no longer dead-end. (#137)
 - Subforms now link to the forms they embed, so parent-to-subform flows and "who embeds this form" queries work. (#136)
 - Access form controls now link to the table columns they display, so column-rename impact reaches the control level. (#135)

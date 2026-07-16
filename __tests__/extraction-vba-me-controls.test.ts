@@ -48,12 +48,13 @@ End Sub`).extract();
     expect(refs.map((ref) => [ref.referenceName, ref.line, ref.referenceKind])).toEqual([
       ['txtNombre', 3, 'references'],
       ['chkOk', 4, 'references'],
+      ['Requery', 6, 'property-get'],
       ['Inexistente', 7, 'references'],
       ['txtNombre', 10, 'references'],
     ]);
     expect(refs.every((ref) => ref.metadata?.siblingPath === 'forms/Form_Prueba.form.txt')).toBe(true);
     expect(refs.find((ref) => ref.referenceName === 'txtNombre')?.metadata?.access).toBe('write');
-    expect(refs.some((ref) => ref.referenceName === 'Requery')).toBe(false);
+    expect(refs.find((ref) => ref.referenceName === 'Requery')?.metadata?.builtIn).toBe(true);
   });
 
   it('does not run the dot sweep for ordinary class modules', () => {

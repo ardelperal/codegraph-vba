@@ -93,7 +93,25 @@ export function scanMeControlReferences(
     // receiver requires block/data-flow tracking and is intentionally follow-up
     // work rather than a guessed edge.
     if (!isBang) {
-      if (!siblingPath || ACCESS_FORM_MEMBER_BLACKLIST.has(controlName.toLowerCase())) continue;
+      if (!siblingPath) continue;
+      if (ACCESS_FORM_MEMBER_BLACKLIST.has(controlName.toLowerCase())) {
+        // Keep issue #108's extraction-shape contract observable: built-in
+        // form properties such as Me.Name remain property-get/property-set
+        // unresolved refs. The dedicated resolver sees `builtIn: true` and
+        // always declines them, so they still create no node or graph edge.
+        const after = line.slice(m.index + 3 + controlName.length);
+        ctx.unresolvedReferences.push({
+          fromNodeId: ctx.findOrCreateFunctionNodeId(from),
+          referenceName: controlName,
+          referenceKind: after.includes('=') ? 'property-set' : 'property-get',
+          line: lineNum,
+          column: m.index + 3,
+          filePath: ctx.filePath,
+          language: 'vba',
+          metadata: { synthesizedBy: 'vba-me-control', siblingPath, builtIn: true },
+        });
+        continue;
+      }
       const fromNodeId = ctx.findOrCreateFunctionNodeId(from);
       const dedupeKey = `${fromNodeId}\0${controlName.toLowerCase()}`;
       let seen = seenMeControls.get(ctx);

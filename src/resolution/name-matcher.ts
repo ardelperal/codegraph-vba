@@ -14,6 +14,7 @@ export function matchVbaMeControl(
   context: ResolutionContext,
 ): ResolvedRef | null {
   if (ref.metadata?.synthesizedBy !== 'vba-me-control') return null;
+  if (ref.metadata.builtIn === true) return null;
   const siblingPath = ref.metadata.siblingPath;
   if (typeof siblingPath !== 'string' || siblingPath.length === 0) return null;
   const wanted = ref.referenceName.toLocaleLowerCase('en-US');

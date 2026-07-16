@@ -439,6 +439,7 @@ export class VbaFormExtractor {
         0,
       );
       const controlSource = frame.properties.get('controlsource');
+      const sourceObject = frame.properties.get('sourceobject');
       this.nodes.push({
         id: controlNodeId,
         kind: 'form-instance-control',
@@ -454,6 +455,7 @@ export class VbaFormExtractor {
           controlType,
           ...(frame.section ? { section: frame.section } : {}),
           ...(controlSource ? { controlSource: controlSource.value } : {}),
+          ...(sourceObject ? { sourceObject: sourceObject.value } : {}),
         },
         updatedAt: Date.now(),
       });
@@ -474,6 +476,14 @@ export class VbaFormExtractor {
         );
       }
 
+      if (sourceObject) {
+        this.emitSourceObjectReference(
+          controlNodeId,
+          sourceObject.value,
+          sourceObject.line,
+        );
+      }
+
       const rowSource = frame.properties.get('rowsource');
       const rowSourceType = frame.properties.get('rowsourcetype');
       if (
@@ -487,6 +497,44 @@ export class VbaFormExtractor {
           'vba-row-source',
         );
       }
+  }
+
+  private emitSourceObjectReference(
+    controlNodeId: string,
+    rawValue: string,
+    lineNum: number,
+  ): void {
+    const match = /^(?:(Form|Report|Table|Query)\.)?(.*)$/i.exec(rawValue.trim());
+    if (!match) return;
+    const prefix = match[1]?.toLowerCase();
+    const target = match[2]?.trim() ?? '';
+    if (!target) return;
+
+    if (prefix === 'table' || prefix === 'query') {
+      this.emitTableReference(
+        controlNodeId,
+        target,
+        lineNum,
+        'vba-source-object',
+        { sourceObjectType: prefix },
+      );
+      return;
+    }
+
+    this.unresolvedReferences.push({
+      fromNodeId: controlNodeId,
+      referenceName: target,
+      referenceKind: 'references',
+      line: lineNum,
+      column: 0,
+      filePath: this.filePath,
+      language: 'vba',
+      metadata: {
+        synthesizedBy: 'vba-source-object',
+        embeds: true,
+        accessObjectKind: prefix === 'report' ? 'report' : 'form',
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------

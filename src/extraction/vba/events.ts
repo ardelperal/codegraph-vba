@@ -44,3 +44,47 @@ export const ACCESS_EVENT_PROPERTIES = new Map<string, string>([
   ['onpage', 'Page'],
   ['onretreat', 'Retreat'],
 ]);
+
+/**
+ * Closed set of Access event procedure suffixes. Values from form/report
+ * event properties above are combined with control-specific events whose
+ * property is not necessarily present in an exported layout. VBA matching is
+ * case-insensitive; consumers should compare lower-cased names.
+ */
+export const ACCESS_EVENT_NAMES: ReadonlySet<string> = new Set([
+  ...ACCESS_EVENT_PROPERTIES.values(),
+  'Updated',
+  'DropButtonClick',
+  'BeforeDelConfirm',
+  'AfterDelConfirm',
+  'MouseWheel',
+  'BeforeDragOver',
+  'BeforeDropOrPaste',
+  'BeforePrint',
+  'BeforeRender',
+  'AfterRender',
+  'AfterLayout',
+  'AfterFinalRender',
+  'BeforeQuery',
+  'BeforeScreenTip',
+  'CommandBeforeExecute',
+  'CommandChecked',
+  'CommandEnabled',
+  'CommandExecute',
+  'DataChange',
+  'DataSetChange',
+  'OnConnect',
+  'OnDisconnect',
+  'PivotTableChange',
+  'Query',
+  'SelectionChange',
+  'ViewChange',
+]);
+
+const ACCESS_EVENT_NAMES_CASE_INSENSITIVE = new Set(
+  [...ACCESS_EVENT_NAMES].map((name) => name.toLowerCase()),
+);
+
+export function isAccessEventName(name: string): boolean {
+  return ACCESS_EVENT_NAMES_CASE_INSENSITIVE.has(name.toLowerCase());
+}

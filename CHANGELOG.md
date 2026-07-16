@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Access form controls now link to the table columns they display, so column-rename impact reaches the control level. (#135)
 - Access form and report controls now expose their section membership and direct layout containment, making UI structure available to graph queries. (#134)
 
 ### Fixes

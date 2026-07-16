@@ -51,6 +51,10 @@ const MOD_TEST_HELPER_BAS = path.join(FIXTURE_DIR, 'modTestHelper.bas');
 // keeping the same directory and basename.
 const TEST_REPORT_CLS = path.join(FIXTURE_DIR, 'Report_PayrollSummary.cls');
 const TEST_REPORT_TXT = path.join(FIXTURE_DIR, 'Report_PayrollSummary.report.txt');
+const CONTROL_SOURCE_FORM_TXT = path.join(
+  FIXTURE_DIR,
+  'Form_ControlSourceBindings.form.txt',
+);
 const TEST_REPORT_NO_SIBLING_CLS = path.join(
   FIXTURE_DIR,
   'Report_NoSibling.cls',
@@ -59,6 +63,56 @@ const TEST_REPORT_NO_SIBLING_CLS = path.join(
 function readFixture(relPath: string): string {
   return fs.readFileSync(relPath, 'utf8');
 }
+
+describe('issue-135: ControlSource per-control data bindings', () => {
+  it('stores exact values and links only bare fields to a single-table RecordSource', () => {
+    const r = new VbaFormExtractor(
+      CONTROL_SOURCE_FORM_TXT,
+      readFixture(CONTROL_SOURCE_FORM_TXT),
+    ).extract();
+    const control = (name: string) =>
+      r.nodes.find((n) => n.kind === 'form-instance-control' && n.name === name);
+
+    expect(control('txtMotivo')?.metadata?.controlSource).toBe('MotivoBorrado');
+    expect(control('txtImporte')?.metadata?.controlSource).toBe('[Importe Total]');
+    expect(control('txtSuma')?.metadata?.controlSource).toBe('=Sum([Importe])');
+    expect(control('txtCondicion')?.metadata?.controlSource).toBe(
+      '=IIf([A]>0,"si","no")',
+    );
+    expect(control('lblUnbound')?.metadata?.controlSource).toBeUndefined();
+
+    const table = r.nodes.find((n) => n.kind === 'class' && n.name === 'TbNC');
+    expect(table).toBeDefined();
+    const bindingEdges = r.edges.filter(
+      (e) => e.target === table?.id && e.metadata?.synthesizedBy === 'vba-control-source',
+    );
+    expect(bindingEdges).toHaveLength(3);
+    expect(bindingEdges).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: control('txtMotivo')?.id, metadata: expect.objectContaining({ column: 'MotivoBorrado', access: 'read' }) }),
+        expect.objectContaining({ source: control('txtImporte')?.id, metadata: expect.objectContaining({ column: 'Importe Total', access: 'read' }) }),
+        expect.objectContaining({ source: control('cboEstado')?.id, metadata: expect.objectContaining({ column: 'Estado', access: 'read' }) }),
+      ]),
+    );
+  });
+
+  it('keeps ControlSource metadata but emits no control binding for SQL RecordSource', () => {
+    const source = `Begin Form\n  RecordSource ="SELECT MotivoBorrado FROM TbNC"\n  Begin TextBox\n    Name ="txtMotivo"\n    ControlSource ="MotivoBorrado"\n  End\nEnd`;
+    const r = new VbaFormExtractor('Form_Sql.form.txt', source).extract();
+    const control = r.nodes.find((n) => n.name === 'txtMotivo');
+    expect(control?.metadata?.controlSource).toBe('MotivoBorrado');
+    expect(
+      r.edges.filter((e) => e.metadata?.synthesizedBy === 'vba-control-source'),
+    ).toHaveLength(0);
+  });
+
+  it('captures the existing report ControlSource values without guessing a table', () => {
+    const r = new VbaFormExtractor(TEST_REPORT_TXT, readFixture(TEST_REPORT_TXT)).extract();
+    expect(r.nodes.find((n) => n.name === 'txtTotal')?.metadata?.controlSource).toBe('Total');
+    expect(r.nodes.find((n) => n.name === 'txtCount')?.metadata?.controlSource).toBe('Count');
+    expect(r.edges.filter((e) => e.metadata?.synthesizedBy === 'vba-control-source')).toHaveLength(0);
+  });
+});
 
 // =============================================================================
 // HUECO 1 — `Me.<Control>` reference resolution
@@ -287,6 +341,42 @@ describe('huecos 3 & 5: VBA event-handler and Form_Load integration', () => {
       if (previousTools === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
       else process.env.CODEGRAPH_MCP_TOOLS = previousTools;
     }
+  });
+
+  it('graph queries traverse both ways between a bound control and its table', async () => {
+    if (!cg) return;
+    const table = cg
+      .searchNodes('TbNC', { languages: ['vba'] })
+      .find(
+        (hit) =>
+          hit.node.kind === 'class' &&
+          hit.node.filePath.endsWith('Form_ControlSourceBindings.form.txt'),
+      )?.node;
+    const control = cg
+      .searchNodes('txtMotivo', { languages: ['vba'] })
+      .find((hit) => hit.node.kind === 'form-instance-control')?.node;
+    expect(table).toBeDefined();
+    expect(control).toBeDefined();
+    if (!table || !control) return;
+
+    expect(cg.getCallers(table.id)).toContainEqual(
+      expect.objectContaining({
+        node: expect.objectContaining({ id: control.id }),
+        edge: expect.objectContaining({
+          kind: 'references',
+          metadata: expect.objectContaining({
+            synthesizedBy: 'vba-control-source',
+            column: 'MotivoBorrado',
+          }),
+        }),
+      }),
+    );
+    expect(cg.getCallees(control.id)).toContainEqual(
+      expect.objectContaining({
+        node: expect.objectContaining({ id: table.id }),
+        edge: expect.objectContaining({ kind: 'references' }),
+      }),
+    );
   });
 });
 

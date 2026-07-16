@@ -259,6 +259,7 @@ export class VbaFormExtractor {
   private walkBlocks(src: string, formLayoutNodeId: string): void {
     const lines = src.split('\n');
     const stack: FormBlockFrame[] = [];
+    let recordSource: string | undefined;
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
@@ -296,7 +297,7 @@ export class VbaFormExtractor {
 
       if (/^\s*End\s*$/i.test(line)) {
         const frame = stack.pop();
-        if (frame) this.emitBlock(frame, formLayoutNodeId);
+        if (frame) this.emitBlock(frame, formLayoutNodeId, recordSource);
         continue;
       }
 
@@ -333,6 +334,7 @@ export class VbaFormExtractor {
       // RecordSource is a layout-level binding even though SaveAsText places
       // it inside the root Form/Report block.
       if (key === 'recordsource') {
+        recordSource = value;
         this.emitBinding(
           formLayoutNodeId,
           value,
@@ -345,7 +347,7 @@ export class VbaFormExtractor {
     // Malformed/truncated exports still yield the facts from every complete
     // frame accumulated so far, matching the previous tolerant extractor.
     while (stack.length > 0) {
-      this.emitBlock(stack.pop()!, formLayoutNodeId);
+      this.emitBlock(stack.pop()!, formLayoutNodeId, recordSource);
     }
   }
 
@@ -359,7 +361,11 @@ export class VbaFormExtractor {
     return undefined;
   }
 
-  private emitBlock(frame: FormBlockFrame, formLayoutNodeId: string): void {
+  private emitBlock(
+    frame: FormBlockFrame,
+    formLayoutNodeId: string,
+    recordSource: string | undefined,
+  ): void {
     const { controlType, beginLine: lineNum } = frame;
     if (!controlType) {
       const rowSource = frame.properties.get('rowsource');
@@ -432,6 +438,7 @@ export class VbaFormExtractor {
         controlName,
         0,
       );
+      const controlSource = frame.properties.get('controlsource');
       this.nodes.push({
         id: controlNodeId,
         kind: 'form-instance-control',
@@ -446,6 +453,7 @@ export class VbaFormExtractor {
         metadata: {
           controlType,
           ...(frame.section ? { section: frame.section } : {}),
+          ...(controlSource ? { controlSource: controlSource.value } : {}),
         },
         updatedAt: Date.now(),
       });
@@ -456,6 +464,15 @@ export class VbaFormExtractor {
         kind: 'contains',
         provenance: 'parser',
       });
+
+      if (controlSource) {
+        this.emitControlSourceReference(
+          controlNodeId,
+          controlSource.value,
+          controlSource.line,
+          recordSource,
+        );
+      }
 
       const rowSource = frame.properties.get('rowsource');
       const rowSourceType = frame.properties.get('rowsourcetype');
@@ -527,6 +544,7 @@ export class VbaFormExtractor {
     tableName: string,
     lineNum: number,
     synthesizedBy: string,
+    extraMetadata: Record<string, unknown> = {},
   ): void {
     if (!tableName) return;
     const targetId = generateNodeId(this.filePath, 'class', tableName, 0);
@@ -556,10 +574,44 @@ export class VbaFormExtractor {
       // the metadata.access field uniformly present across every SQL-derived
       // table reference (the in-code SQL sweep classifies read vs write from
       // the statement verb; a binding is always a read).
-      metadata: { synthesizedBy, access: 'read' },
+      metadata: { synthesizedBy, access: 'read', ...extraMetadata },
       line: lineNum,
       column: 0,
     });
+  }
+
+  /**
+   * Link a bound control to its enclosing form/report's single bare table.
+   * Expressions and SQL/absent RecordSource values stay metadata-only: column
+   * lineage through expressions or SELECT projections cannot be inferred here
+   * without risking false graph edges.
+   */
+  private emitControlSourceReference(
+    controlNodeId: string,
+    controlSource: string,
+    lineNum: number,
+    recordSource: string | undefined,
+  ): void {
+    const rawField = controlSource.trim();
+    if (!rawField || rawField.startsWith('=') || !recordSource) return;
+
+    const bracketedField = /^\[([^\]]+)\]$/.exec(rawField);
+    const field = bracketedField?.[1] ?? rawField;
+    if (!bracketedField && !/^\p{L}[\p{L}\p{N}_]*$/u.test(rawField)) return;
+
+    const source = recordSource.trim();
+    if (!source || this.isLikelySql(source)) return;
+    const bracketedSource = /^\[([^\]]+)\]$/.exec(source);
+    const tableName = bracketedSource?.[1] ?? source;
+    if (!bracketedSource && !/^\p{L}[\p{L}\p{N}_]*$/u.test(source)) return;
+
+    this.emitTableReference(
+      controlNodeId,
+      tableName,
+      lineNum,
+      'vba-control-source',
+      { column: field },
+    );
   }
 
   /**

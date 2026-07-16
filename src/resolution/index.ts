@@ -16,7 +16,7 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
+import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -793,6 +793,13 @@ export class ReferenceResolver {
       return null;
     }
 
+    // Access SourceObject names intentionally differ from layout node names
+    // (`Child` versus `Form_Child`), so resolve them before the exact-name
+    // existence pre-filter. Unique real layouts only; never fabricate nodes.
+    if (ref.metadata?.synthesizedBy === 'vba-source-object') {
+      return matchVbaSourceObject(ref, this.context);
+    }
+
     // CFML component paths in inheritance (#1152): `extends="coldbox.system.web.
     // Controller"` names the supertype by its dot-separated path (or `extends=
     // "../base"` by relative file path) — the graph indexes the class under its
@@ -1020,6 +1027,9 @@ export class ReferenceResolver {
         source: ref.original.fromNodeId,
         target: ref.targetNodeId,
         kind,
+        ...(ref.original.metadata?.synthesizedBy === 'vba-source-object'
+          ? { provenance: 'heuristic' as const }
+          : {}),
         line: ref.original.line,
         column: ref.original.column,
         metadata: {
@@ -1068,6 +1078,13 @@ export class ReferenceResolver {
                 runnerPolicy: ref.original.metadata.runnerPolicy,
                 sequenceFile: ref.original.metadata.sequenceFile,
                 procedureIndex: ref.original.metadata.procedureIndex,
+              }
+            : {}),
+          ...(ref.original.metadata?.synthesizedBy === 'vba-source-object'
+            ? {
+                synthesizedBy: 'vba-source-object',
+                embeds: true,
+                accessObjectKind: ref.original.metadata.accessObjectKind,
               }
             : {}),
         },

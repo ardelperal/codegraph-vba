@@ -6,6 +6,29 @@
 
 import { Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
+import { normalizeAccessObjectName } from './vba-access-object-name';
+
+/** Resolve Access SourceObject embeddings only to a unique real layout node. */
+export function matchVbaSourceObject(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-source-object' || ref.metadata.embeds !== true) {
+    return null;
+  }
+  const kind = ref.metadata.accessObjectKind === 'report' ? 'report-layout' : 'form-layout';
+  const wanted = normalizeAccessObjectName(ref.referenceName);
+  const matches = context
+    .getNodesByKind(kind)
+    .filter((node) => node.language === 'vba' && normalizeAccessObjectName(node.name) === wanted);
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 0.95,
+    resolvedBy: 'exact-match',
+  };
+}
 
 /**
  * Ceiling on how many same-named definitions a FUZZY name-match strategy will

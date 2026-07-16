@@ -1,0 +1,7 @@
+Begin Form
+    Name ="Parent"
+    Begin Subform
+        Name ="subChild"
+        SourceObject ="Child"
+    End
+End

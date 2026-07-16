@@ -9,6 +9,14 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Access form and report controls now expose their section membership and direct layout containment, making UI structure available to graph queries. (#134)
+
+### Fixes
+
+- Access controls with long property blocks are now indexed reliably, and report layouts use the same dedicated kind as opened-report references. (#134)
+
 
 ## [1.9.0] - 2026-07-15
 

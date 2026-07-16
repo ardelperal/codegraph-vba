@@ -46,6 +46,7 @@ import {
 } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
 import { stripVbaComments } from './vba-preprocess';
+import { ACCESS_EVENT_PROPERTIES } from './vba/events';
 
 interface FormBlockFrame {
   controlType: string;
@@ -322,6 +323,7 @@ export class VbaFormExtractor {
             'vba-row-source',
           );
         }
+        this.emitExpressionHandler(formLayoutNodeId, key, value, lineNum);
         continue;
       }
 
@@ -377,6 +379,7 @@ export class VbaFormExtractor {
           'vba-row-source',
         );
       }
+      this.emitExpressionHandlers(formLayoutNodeId, frame.properties);
       return;
     }
 
@@ -391,6 +394,7 @@ export class VbaFormExtractor {
           'vba-row-source',
         );
       }
+      this.emitExpressionHandlers(formLayoutNodeId, frame.properties);
       return;
     }
 
@@ -467,6 +471,8 @@ export class VbaFormExtractor {
         provenance: 'parser',
       });
 
+      this.emitExpressionHandlers(controlNodeId, frame.properties);
+
       if (controlSource) {
         this.emitControlSourceReference(
           controlNodeId,
@@ -497,6 +503,62 @@ export class VbaFormExtractor {
           'vba-row-source',
         );
       }
+  }
+
+  private emitExpressionHandlers(
+    wiringSiteNodeId: string,
+    properties: ReadonlyMap<string, { value: string; line: number }>,
+  ): void {
+    for (const [propertyName, property] of properties) {
+      this.emitExpressionHandler(
+        wiringSiteNodeId,
+        propertyName,
+        property.value,
+        property.line,
+      );
+    }
+  }
+
+  private emitExpressionHandler(
+    wiringSiteNodeId: string,
+    propertyName: string,
+    rawValue: string,
+    lineNum: number,
+  ): void {
+    const eventName = ACCESS_EVENT_PROPERTIES.get(propertyName.toLowerCase());
+    if (!eventName) return;
+
+    // `[Event Procedure]` is handled by the existing code-behind naming path.
+    // Bare values name Access macros, which are not graph nodes; silent beats
+    // inventing a function edge for either form.
+    const expression = rawValue.trim();
+    const match = /^=\s*([\p{L}_][\p{L}\p{N}_]*)\s*\(/u.exec(expression);
+    if (!match) return;
+    let depth = 0;
+    let quoted = false;
+    let completeAt = -1;
+    for (let i = expression.indexOf('(', match.index); i < expression.length; i++) {
+      const char = expression[i];
+      if (char === '"') quoted = !quoted;
+      if (quoted) continue;
+      if (char === '(') depth++;
+      if (char === ')' && --depth === 0) { completeAt = i; break; }
+    }
+    if (completeAt < 0 || expression.slice(completeAt + 1).trim() !== '') return;
+
+    this.unresolvedReferences.push({
+      fromNodeId: wiringSiteNodeId,
+      referenceName: match[1]!,
+      referenceKind: 'event-handler',
+      line: lineNum,
+      column: 0,
+      filePath: this.filePath,
+      language: 'vba',
+      metadata: {
+        eventName,
+        synthesizedBy: 'vba-expression-handler',
+      },
+    });
   }
 
   private emitSourceObjectReference(

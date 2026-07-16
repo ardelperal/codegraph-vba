@@ -1023,11 +1023,18 @@ export class ReferenceResolver {
         }
       }
 
+      const expressionHandler =
+        ref.original.metadata?.synthesizedBy === 'vba-expression-handler';
+
       return {
-        source: ref.original.fromNodeId,
-        target: ref.targetNodeId,
+        // The form extractor only knows the wiring-site node. Resolution is
+        // the first point where the function node id exists, so expression
+        // handlers intentionally flip the usual unresolved-ref direction to
+        // match the established handler-function -> control/layout contract.
+        source: expressionHandler ? ref.targetNodeId : ref.original.fromNodeId,
+        target: expressionHandler ? ref.original.fromNodeId : ref.targetNodeId,
         kind,
-        ...(ref.original.metadata?.synthesizedBy === 'vba-source-object'
+        ...(ref.original.metadata?.synthesizedBy === 'vba-source-object' || expressionHandler
           ? { provenance: 'heuristic' as const }
           : {}),
         line: ref.original.line,
@@ -1045,8 +1052,14 @@ export class ReferenceResolver {
           // receiver/qualifier context (`h.greet` → `greet`) and risk a
           // wrong rebind; edges without refName (pre-#1240, synthesized) are
           // deliberately NOT resurrected for the same reason.
-          refName: ref.original.referenceName,
-          ...(ref.original.referenceKind !== kind ? { refKind: ref.original.referenceKind } : {}),
+          // A flipped expression-handler edge targets the wiring-site node,
+          // not the referenced function. If that target is re-indexed, the
+          // form extractor recreates the ref; generic target resurrection
+          // would otherwise reconstruct it backwards from the function.
+          ...(!expressionHandler ? { refName: ref.original.referenceName } : {}),
+          ...(!expressionHandler && ref.original.referenceKind !== kind
+            ? { refKind: ref.original.referenceKind }
+            : {}),
           // Uniform marker for function-as-value edges (#756), regardless of
           // which strategy resolved them (import vs matchFunctionRef) — lets
           // tooling label "callback registration" and lets validation diff
@@ -1087,6 +1100,12 @@ export class ReferenceResolver {
                 accessObjectKind: ref.original.metadata.accessObjectKind,
               }
             : {}),
+          ...(expressionHandler
+            ? {
+                synthesizedBy: 'vba-expression-handler',
+                eventName: ref.original.metadata?.eventName,
+              }
+            : {}),
         },
       };
     });
@@ -1112,11 +1131,13 @@ export class ReferenceResolver {
     // Clean up resolved refs from unresolved_refs table so metrics are accurate
     if (result.resolved.length > 0) {
       this.queries.deleteSpecificResolvedReferences(
-        result.resolved.map((r) => ({
+        result.resolved
+          .filter((r) => r.original.metadata?.synthesizedBy !== 'vba-expression-handler')
+          .map((r) => ({
           fromNodeId: r.original.fromNodeId,
           referenceName: r.original.referenceName,
           referenceKind: r.original.referenceKind,
-        }))
+          }))
       );
     }
 
@@ -1129,9 +1150,17 @@ export class ReferenceResolver {
     // invariant in status form: after a COMPLETED pass nothing it processed
     // is still 'pending', so any pending row at rest belongs to an
     // interrupted run and the sweep can key off the pending count.
-    if (result.unresolved.length > 0) {
+    if (
+      result.unresolved.length > 0 ||
+      result.resolved.some((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+    ) {
       this.queries.markReferencesFailed(
-        result.unresolved.map((r) => ({
+        [
+          ...result.unresolved,
+          ...result.resolved
+            .filter((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+            .map((r) => r.original),
+        ].map((r) => ({
           fromNodeId: r.fromNodeId,
           referenceName: r.referenceName,
           referenceKind: r.referenceKind,
@@ -1162,7 +1191,9 @@ export class ReferenceResolver {
       await maybeYield();
     }
 
-    const resolvedKeys = result.resolved.map((r) => ({
+    const resolvedKeys = result.resolved
+      .filter((r) => r.original.metadata?.synthesizedBy !== 'vba-expression-handler')
+      .map((r) => ({
       fromNodeId: r.original.fromNodeId,
       referenceName: r.original.referenceName,
       referenceKind: r.original.referenceKind,
@@ -1172,7 +1203,12 @@ export class ReferenceResolver {
       await maybeYield();
     }
 
-    const unresolvedKeys = result.unresolved.map((r) => ({
+    const unresolvedKeys = [
+      ...result.unresolved,
+      ...result.resolved
+        .filter((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+        .map((r) => r.original),
+    ].map((r) => ({
       fromNodeId: r.fromNodeId,
       referenceName: r.referenceName,
       referenceKind: r.referenceKind,
@@ -1348,7 +1384,9 @@ export class ReferenceResolver {
       }
 
       // Clean up resolved refs so they don't appear in the next batch
-      const resolvedKeys = result.resolved.map((r) => ({
+      const resolvedKeys = result.resolved
+        .filter((r) => r.original.metadata?.synthesizedBy !== 'vba-expression-handler')
+        .map((r) => ({
         fromNodeId: r.original.fromNodeId,
         referenceName: r.original.referenceName,
         referenceKind: r.original.referenceKind,
@@ -1362,7 +1400,12 @@ export class ReferenceResolver {
       // leave the pending set (the batch reader and non-progress guard below
       // only see pending rows) but stay retryable when a later sync adds a
       // symbol that could satisfy them (#1240).
-      const unresolvedKeys = result.unresolved.map((r) => ({
+      const unresolvedKeys = [
+        ...result.unresolved,
+        ...result.resolved
+          .filter((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+          .map((r) => r.original),
+      ].map((r) => ({
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,
         referenceKind: r.referenceKind,

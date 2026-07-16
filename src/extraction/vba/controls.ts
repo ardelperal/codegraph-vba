@@ -16,6 +16,28 @@ import { VbaExtractorContext, ProcInfo } from './context';
  */
 const ME_CONTROL_RE = /\bMe[.!](\p{L}[\p{L}\p{N}_]*)/gu;
 
+const ACCESS_FORM_MEMBER_BLACKLIST = new Set([
+  'requery', 'refresh', 'repaint', 'recalc', 'undo', 'dirty', 'newrecord',
+  'currentrecord', 'recordset', 'recordsetclone', 'recordsource', 'controls',
+  'name', 'caption', 'visible', 'filter', 'filteron', 'orderby', 'orderbyon',
+  'parent', 'activecontrol', 'section', 'bookmark', 'form', 'hwnd', 'painting',
+  'timerinterval',
+]);
+
+const seenMeControls = new WeakMap<VbaExtractorContext, Set<string>>();
+
+function siblingLayoutPath(filePath: string): string | null {
+  const normalized = filePath.replace(/\\/g, '/');
+  const basename = normalized.slice(normalized.lastIndexOf('/') + 1);
+  if (/^Form_.+\.cls$/i.test(basename)) {
+    return normalized.replace(/\.cls$/i, '.form.txt');
+  }
+  if (/^Report_.+\.cls$/i.test(basename)) {
+    return normalized.replace(/\.cls$/i, '.report.txt');
+  }
+  return null;
+}
+
 /**
  * Issue #44: `Forms!<FormName>` / `Forms("<FormName>")!<Ctl>` cross-form
  * reference capture — companion to `ME_CONTROL_RE`. `Forms` is in
@@ -62,6 +84,65 @@ export function scanMeControlReferences(
     // Both `.` and `!` are 1 char so the captured name starts at `m.index + 3`.
     const operator = line.charAt(m.index + 2); // '.' | '!'
     const isBang = operator === '!';
+    const siblingPath = siblingLayoutPath(ctx.filePath);
+
+    // Issue #140 is deliberately a separate, dot-only sweep for Access
+    // form/report code-behind. Keeping `Me` in the generic runtime receiver
+    // blacklist prevents runtime methods from becoming synthetic call nodes.
+    // `.Control` inside `With Me` is not handled here: resolving an implicit
+    // receiver requires block/data-flow tracking and is intentionally follow-up
+    // work rather than a guessed edge.
+    if (!isBang) {
+      if (!siblingPath) continue;
+      if (ACCESS_FORM_MEMBER_BLACKLIST.has(controlName.toLowerCase())) {
+        // Keep issue #108's extraction-shape contract observable: built-in
+        // form properties such as Me.Name remain property-get/property-set
+        // unresolved refs. The dedicated resolver sees `builtIn: true` and
+        // always declines them, so they still create no node or graph edge.
+        const after = line.slice(m.index + 3 + controlName.length);
+        ctx.unresolvedReferences.push({
+          fromNodeId: ctx.findOrCreateFunctionNodeId(from),
+          referenceName: controlName,
+          referenceKind: after.includes('=') ? 'property-set' : 'property-get',
+          line: lineNum,
+          column: m.index + 3,
+          filePath: ctx.filePath,
+          language: 'vba',
+          metadata: { synthesizedBy: 'vba-me-control', siblingPath, builtIn: true },
+        });
+        continue;
+      }
+      const fromNodeId = ctx.findOrCreateFunctionNodeId(from);
+      const dedupeKey = `${fromNodeId}\0${controlName.toLowerCase()}`;
+      let seen = seenMeControls.get(ctx);
+      if (!seen) {
+        seen = new Set<string>();
+        seenMeControls.set(ctx, seen);
+      }
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const after = line.slice(m.index + 3 + controlName.length);
+      const before = line.slice(0, m.index);
+      const isDirectAssignment = /^\s*$/.test(before) && /^\s*=/.test(after);
+      ctx.unresolvedReferences.push({
+        fromNodeId,
+        referenceName: controlName,
+        referenceKind: 'references',
+        line: lineNum,
+        column: m.index + 3,
+        filePath: ctx.filePath,
+        language: 'vba',
+        metadata: {
+          synthesizedBy: 'vba-me-control',
+          siblingPath,
+          access: isDirectAssignment ? 'write' : 'read',
+        },
+      });
+      continue;
+    }
+
+    // Preserve the existing Me! default-collection behavior from issue #44.
     // Same-line get vs set heuristic: anything past the captured control
     // name on this line. Cover the `=` form (`Me.Name = "X"`) and ignore
     // a previous-line `=`. The `= charAt(...)` short-circuits on the first

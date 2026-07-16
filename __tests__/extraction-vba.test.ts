@@ -1039,7 +1039,7 @@ End Sub`;
     expect(refs[0]?.referenceKind).toBe('bang-set');
   });
 
-  it('Me!txtFoo and Me.txtFoo produce same-family UnresolvedReferences (bang-* vs property-* parity)', () => {
+  it('keeps Me! shape metadata while Me. uses the scoped control reference kind', () => {
     const srcDot = `Public Sub X()
     Me.txtFoo = "Hello"
 End Sub`;
@@ -1057,10 +1057,9 @@ End Sub`;
     expect(bangRef.length).toBe(dotRef.length);
     expect(bangRef.length).toBe(1);
     expect(bangRef[0]?.referenceName).toBe(dotRef[0]?.referenceName);
-    // Round-3 shape-based classifier: dot→property-set, bang→bang-set.
-    // They classify into the same FAMILY (both are -set) but the
-    // operator-decided literal differs per FR-1.1/FR-1.2/FR-3.2.
-    expect(dotRef[0]?.referenceKind).toBe('property-set');
+    // Issue #140 gives dot access a sibling-layout-only resolver, while the
+    // legacy bang shorthand keeps its issue #44 shape classifier.
+    expect(dotRef[0]?.referenceKind).toBe('references');
     expect(bangRef[0]?.referenceKind).toBe('bang-set');
   });
 

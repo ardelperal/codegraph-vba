@@ -16,7 +16,7 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
+import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaMeControl, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -804,6 +804,11 @@ export class ReferenceResolver {
     if (ref.metadata?.synthesizedBy === 'vba-form-binding') {
       return matchVbaFormBinding(ref, this.context);
     }
+    // Me.<Control> is path-scoped: a miss must never fall through to global
+    // name matching, which could bind an unrelated same-named symbol.
+    if (ref.metadata?.synthesizedBy === 'vba-me-control' && ref.metadata?.siblingPath) {
+      return matchVbaMeControl(ref, this.context);
+    }
 
     // CFML component paths in inheritance (#1152): `extends="coldbox.system.web.
     // Controller"` names the supertype by its dot-separated path (or `extends=
@@ -1109,6 +1114,13 @@ export class ReferenceResolver {
             ? {
                 synthesizedBy: 'vba-expression-handler',
                 eventName: ref.original.metadata?.eventName,
+              }
+            : {}),
+          ...(ref.original.metadata?.synthesizedBy === 'vba-me-control'
+            ? {
+                synthesizedBy: 'vba-me-control',
+                siblingPath: ref.original.metadata.siblingPath,
+                access: ref.original.metadata.access,
               }
             : {}),
         },

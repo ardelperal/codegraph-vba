@@ -8,6 +8,32 @@ import { Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
 import { normalizeAccessObjectName } from './vba-access-object-name';
 
+/** Resolve Me.<Control> only inside the extractor-declared sibling layout. */
+export function matchVbaMeControl(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-me-control') return null;
+  if (ref.metadata.builtIn === true) return null;
+  const siblingPath = ref.metadata.siblingPath;
+  if (typeof siblingPath !== 'string' || siblingPath.length === 0) return null;
+  const wanted = ref.referenceName.toLocaleLowerCase('en-US');
+  const matches = context
+    .getNodesInFile(siblingPath)
+    .filter((node) =>
+      node.language === 'vba' &&
+      node.kind === 'form-instance-control' &&
+      node.name.toLocaleLowerCase('en-US') === wanted
+    );
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 1,
+    resolvedBy: 'exact-match',
+  };
+}
+
 /** Resolve Access SourceObject embeddings only to a unique real layout node. */
 export function matchVbaSourceObject(
   ref: UnresolvedRef,

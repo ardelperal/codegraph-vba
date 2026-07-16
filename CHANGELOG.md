@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.10.0] - 2026-07-16
+
 ### New Features
 
 - Code that reads or writes form controls via `Me.` now shows up in control impact analysis. (#140)
@@ -22,7 +25,6 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Helper Subs with underscores in form code-behind no longer appear as phantom form controls. (#139)
 - Following `DoCmd.OpenForm` now reaches the opened form's code instead of stopping at a placeholder. (#138)
 - Access controls with long property blocks are now indexed reliably, and report layouts use the same dedicated kind as opened-report references. (#134)
-
 
 ## [1.9.0] - 2026-07-15
 
@@ -89,3 +91,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.7.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.3
 [1.8.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.8.0
 [1.9.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.9.0
+[1.10.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.10.0

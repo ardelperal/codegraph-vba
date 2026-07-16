@@ -1923,6 +1923,23 @@ export function matchReference(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy === 'vba-expression-handler') {
+    const candidates = context
+      .getNodesByName(ref.referenceName)
+      .filter((node) => node.language === 'vba' && node.kind === 'function');
+    if (candidates.length === 0) return null;
+    const target = candidates.length === 1
+      ? candidates[0]!
+      : findBestMatch(ref, candidates, context);
+    if (!target) return null;
+    return {
+      original: ref,
+      targetNodeId: target.id,
+      confidence: candidates.length === 1 ? 0.9 : 0.7,
+      resolvedBy: 'exact-match',
+    };
+  }
+
   // Function-as-value refs (#756) resolve ONLY through the dedicated matcher —
   // never the fuzzy/qualified fallthrough below (a wrong callback edge is
   // worse than none).

@@ -4,6 +4,7 @@
  * out of `VbaExtractor` verbatim so each pass module can import what it needs
  * without pulling in the orchestrator.
  */
+import { isAccessEventName } from './events';
 
 /**
  * Fold a VBA visibility keyword to the canonical lowercase enum, matching
@@ -183,5 +184,6 @@ export function parseEventHandlerName(
   if (!controlName || !eventName) return null;
   // Form-level events live on the form, not on a control.
   if (controlName.toLowerCase() === 'form') return null;
+  if (!isAccessEventName(eventName)) return null;
   return { controlName, eventName };
 }

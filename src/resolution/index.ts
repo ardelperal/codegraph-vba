@@ -16,7 +16,7 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
+import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -28,6 +28,8 @@ import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { isRuntimeObject } from './vba-runtime-objects';
+import { normalizeAccessObjectName } from './vba-access-object-name';
+import { generateNodeId } from '../extraction/tree-sitter-helpers';
 
 /**
  * Outcome of resolving a single VBA call-stub (issue #110). Recorded on the
@@ -798,6 +800,9 @@ export class ReferenceResolver {
     // existence pre-filter. Unique real layouts only; never fabricate nodes.
     if (ref.metadata?.synthesizedBy === 'vba-source-object') {
       return matchVbaSourceObject(ref, this.context);
+    }
+    if (ref.metadata?.synthesizedBy === 'vba-form-binding') {
+      return matchVbaFormBinding(ref, this.context);
     }
 
     // CFML component paths in inheritance (#1152): `extends="coldbox.system.web.
@@ -2014,6 +2019,90 @@ export class ReferenceResolver {
     }
 
     return repointedCount;
+  }
+
+  /**
+   * Repoint DoCmd.OpenForm/OpenReport edges from extraction-time placeholders
+   * to real layouts after every project-wide indexing pass. Missing targets
+   * deliberately keep the existing placeholder behavior.
+   */
+  resolveVbaOpenedObjectStubs(): number {
+    const stubs = this.queries.getVbaOpenedObjectStubs();
+    let repointedCount = 0;
+
+    for (const stub of stubs) {
+      const expectedKind = stub.kind;
+      const edgeKind = expectedKind === 'form-layout' ? 'opens-form' : 'opens-report';
+      const identity = normalizeAccessObjectName(stub.name);
+      const candidates = this.queries
+        .getNodesByKind(expectedKind)
+        .filter(
+          (node) =>
+            node.id !== stub.id &&
+            node.language === 'vba' &&
+            node.metadata?.stub !== true &&
+            (normalizeAccessObjectName(node.name) === identity ||
+              normalizeAccessObjectName(node.qualifiedName) === identity),
+        );
+
+      // Silent ambiguity is safer than choosing the wrong Access object.
+      if (candidates.length !== 1) continue;
+      const target = candidates[0]!;
+      for (const edge of this.queries.getIncomingEdges(stub.id, [edgeKind])) {
+        if (edge.id === undefined) continue;
+        if (this.queries.edgeExists(edge.source, target.id, edgeKind)) {
+          this.queries.deleteEdgeById(edge.id);
+          continue;
+        }
+        this.queries.repointEdgeTarget(
+          edge.id,
+          target.id,
+          edge.metadata ? JSON.stringify(edge.metadata) : null,
+        );
+        repointedCount++;
+      }
+      this.queries.deleteNode(stub.id);
+    }
+
+    return repointedCount;
+  }
+
+  preserveVbaOpenedObjectEdges(): number {
+    let preserved = 0;
+    for (const kind of ['form-layout', 'report-layout'] as const) {
+      const edgeKind = kind === 'form-layout' ? 'opens-form' : 'opens-report';
+      const form = kind === 'form-layout';
+      for (const target of this.queries.getNodesByKind(kind)) {
+        if (target.language !== 'vba' || target.metadata?.stub === true) continue;
+        for (const edge of this.queries.getIncomingEdges(target.id, [edgeKind])) {
+          const targetName = edge.metadata?.[form ? 'targetFormName' : 'targetReportName'];
+          if (edge.id === undefined || typeof targetName !== 'string' || !targetName) continue;
+          const prefix = form ? 'synthetic:opensFormStub' : 'synthetic:opensReportStub';
+          const extension = form ? '.form.txt' : '.report.txt';
+          const syntheticFilePath = `${prefix}/${targetName}${extension}`;
+          const stubId = generateNodeId(syntheticFilePath, kind, targetName, 0);
+          this.queries.insertNode({
+            id: stubId,
+            kind,
+            name: targetName,
+            qualifiedName: `${form ? 'Form_' : 'Report_'}${targetName}`,
+            filePath: syntheticFilePath,
+            language: 'vba',
+            startLine: edge.line ?? 0, endLine: edge.line ?? 0,
+            startColumn: 0, endColumn: 0,
+            metadata: { stub: true },
+            updatedAt: Date.now(),
+          });
+          this.queries.repointEdgeTarget(
+            edge.id,
+            stubId,
+            edge.metadata ? JSON.stringify(edge.metadata) : null,
+          );
+          preserved++;
+        }
+      }
+    }
+    return preserved;
   }
 
   /**

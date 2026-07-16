@@ -1631,6 +1631,21 @@ export class QueryBuilder {
     return rows.map(rowToNode);
   }
 
+  /** OpenForm/OpenReport layout placeholders that may now have a real target. */
+  getVbaOpenedObjectStubs(): Node[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT n.* FROM nodes n
+         JOIN edges e ON e.target = n.id
+         WHERE n.language = 'vba'
+           AND n.kind IN ('form-layout', 'report-layout')
+           AND n.metadata LIKE '%"stub":true%'
+           AND e.kind IN ('opens-form', 'opens-report')`
+      )
+      .all() as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
   /**
    * Find VBA reference-stub candidate nodes for `resolveVbaReferenceStubs`
    * (issue #78).

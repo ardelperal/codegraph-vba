@@ -30,6 +30,24 @@ export function matchVbaSourceObject(
   };
 }
 
+/** Keep a layout's sibling-code binding from resolving back to the layout. */
+export function matchVbaFormBinding(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-form-binding') return null;
+  const matches = context
+    .getNodesByName(ref.referenceName)
+    .filter((node) => node.language === 'vba' && node.kind === 'class');
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 0.95,
+    resolvedBy: 'exact-match',
+  };
+}
+
 /**
  * Ceiling on how many same-named definitions a FUZZY name-match strategy will
  * score. A name defined more times than this is "ubiquitous" — a method/symbol

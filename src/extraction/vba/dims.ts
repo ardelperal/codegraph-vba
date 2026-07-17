@@ -180,7 +180,18 @@ export function createDimsClassifier(): VbaClassifier {
               variableName: weVarName,
             });
           }
-          ctx.emitReference(formType, lineNum, 0, 'vba-withevents');
+          // Stamp `variableName` onto the `references` edge's metadata so
+          // the post-extraction event-handler synthesis pass (#150) can
+          // locate the `m_<var>_<event>` handler Sub even after
+          // `resolveVbaReferenceStubs` repoints this edge to the real
+          // class node AND CASCADE-deletes the companion
+          // `subscribes-event` edge along with the synthetic class stub.
+          // Without this, the variable name would be lost once the
+          // resolver runs, and the synthesis pass would have no way to
+          // bind the `WithEvents` binding to its handler.
+          ctx.emitReference(formType, lineNum, 0, 'vba-withevents', undefined, {
+            ...(weVarName ? { variableName: weVarName } : {}),
+          });
           const targetId = generateNodeId(ctx.filePath, 'class', formType, 0);
           const subscriberEdge: Edge = {
             source: ctx.moduleOrClassNode?.id ?? '',

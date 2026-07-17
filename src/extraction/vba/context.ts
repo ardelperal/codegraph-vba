@@ -296,6 +296,16 @@ export class VbaExtractorContext {
    * TempVars sweep already emits (`emitTempVarReference`). Omitted for
    * structural references (Dim/WithEvents/Set-New) where the direction is not
    * meaningful.
+   *
+   * `extras` (optional): additional metadata fields to merge into the
+   * emitted edge's `metadata` object. Used by the WithEvents sweep to
+   * stamp `variableName` (issue #150) so the post-extraction
+   * event-handler synthesis pass can find the `m_<var>_<event>`
+   * handler Sub even after `resolveVbaReferenceStubs` CASCADE-deletes
+   * the companion `subscribes-event` edge along with the synthetic
+   * class stub. Fields here are merged AFTER the standard
+   * `{ synthesizedBy [, access] }` shape, so callers can override
+   * (rarely useful) but not accidentally drop the stamp.
    */
   public emitReference(
     targetName: string,
@@ -303,6 +313,7 @@ export class VbaExtractorContext {
     column: number,
     synthesizedBy: string,
     access?: 'read' | 'write',
+    extras?: Record<string, unknown>,
   ): void {
     if (!targetName) return;
     const targetId = generateNodeId(
@@ -329,12 +340,15 @@ export class VbaExtractorContext {
         updatedAt: Date.now(),
       });
     }
+    const metadata: Record<string, unknown> = access
+      ? { synthesizedBy, access, ...(extras ?? {}) }
+      : { synthesizedBy, ...(extras ?? {}) };
     const edge: Edge = {
       source: '', // rewritten after module node exists
       target: targetId,
       kind: 'references',
       provenance: 'heuristic',
-      metadata: access ? { synthesizedBy, access } : { synthesizedBy },
+      metadata,
       line: lineNum,
       column,
     };

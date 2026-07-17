@@ -29,6 +29,7 @@ import { expoModulesResolver } from './expo-modules';
 import { fabricViewResolver } from './fabric';
 import { cicsResolver } from './cics';
 import { terraformResolver } from './terraform';
+import { dysflowExportResolver } from '../../extraction/frameworks/dysflow-export';
 
 /**
  * All registered framework resolvers
@@ -76,6 +77,12 @@ const FRAMEWORK_RESOLVERS: FrameworkResolver[] = [
   cicsResolver,
   // Terraform / OpenTofu — disambiguate var/local/module/resource refs to same-dir module
   terraformResolver,
+  // Dysflow export (issue #154) — VBA form/report SaveAsText + test
+  // manifests + test sequences. The 3 Dysflow-specific extractors were
+  // lifted from a hard-coded ladder in `tree-sitter.ts` into a regular
+  // `FrameworkResolver`, opt-out-able via `codegraph.json`'s
+  // `vba.dysflowExport: false`.
+  dysflowExportResolver,
 ];
 
 /**

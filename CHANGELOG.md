@@ -12,6 +12,8 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### New Features
 
 - VBA event-handler relationships are now materialized in the graph at index time. A `WithEvents m_X As ClassName` binding in a form combined with a matching `m_X_<EventName>` handler Sub is now connected to the `RaiseEvent <EventName>` site via a single `event-handler` edge, so `codegraph_explore` reaches the handler in one call instead of the three-hop walk the vba-event-tracer skill used to repeat on every query. Projects with no WithEvents bindings are unaffected; the FORMS-* test suite reports zero new edges. (#150)
+- The Dysflow-specific VBA extractors — form/report SaveAsText, test manifests, and test sequences — are now opt-out-able. If your `.bas`/`.cls` files happen to live next to legacy `.form.txt`/`.report.txt` files (or test-manifest JSON from a different system) that you don't want expanded into the graph, set `vba.dysflowExport: false` in your project's `codegraph.json`; the Dysflow file types are then tracked as just a `file` node, while the rest of the VBA pipeline keeps behaving exactly as before. The Dysflow extractors also now live behind a `FrameworkResolver` you can discover alongside the other frameworks. (#154)
+
 
 ## [1.10.0] - 2026-07-16
 

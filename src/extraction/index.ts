@@ -24,7 +24,7 @@ import { extractFromSource } from './tree-sitter';
 import { readVbaSource, isVbaFamilyFile } from './vba-source';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes } from './grammars';
-import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadVbaConfig, loadIncludePatterns } from '../project-config';
+import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadVbaConfig, loadIncludePatterns, loadDysflowExportConfig } from '../project-config';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
 import { validatePathWithinRoot, normalizePath } from '../utils';
@@ -1606,6 +1606,11 @@ export class ExtractionOrchestrator {
     const vbaConfig = loadVbaConfig(this.rootDir);
     const vbaTargets = vbaConfig.targets;
     const maxRaiseFanout = vbaConfig.maxRaiseFanout;
+    // Issue #154 — gate the 3 Dysflow-specific VBA sub-extractors. `true`
+    // (the default) keeps the pre-refactor behavior; `false` opts out so
+    // form/report/manifest/sequence files are tracked as just a `file`
+    // node.
+    const dysflowExport = loadDysflowExportConfig(this.rootDir);
 
     const log = verbose
       ? (msg: string) => { console.log(`[worker] ${msg}`); }
@@ -1718,8 +1723,9 @@ export class ExtractionOrchestrator {
       // Issue #152: thread the optional `vba.maxRaiseFanout` knob through
       // the worker boundary (or the in-process fallback) so every VBA
       // file sees the same gate.
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout));
-      return pool.requestParse({ filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout });
+      // Issue #154: also thread the optional `vba.dysflowExport` flag.
+      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout, dysflowExport));
+      return pool.requestParse({ filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout, dysflowExport });
     };
 
     // --- Bounded rolling-window dispatch, ordered commit ---
@@ -2242,6 +2248,9 @@ export class ExtractionOrchestrator {
     // honours the same per-file fanout gate the full scan does.
     const frameworkNames = this.ensureDetectedFrameworks();
     const vbaReindexConfig = loadVbaConfig(this.rootDir);
+    // Issue #154: also thread the `vba.dysflowExport` flag so the
+    // single-file re-index path honours the same opt-out the full scan does.
+    const dysflowExport = loadDysflowExportConfig(this.rootDir);
     const result = extractFromSource(
       relativePath,
       content,
@@ -2249,6 +2258,7 @@ export class ExtractionOrchestrator {
       frameworkNames,
       vbaReindexConfig.targets,
       vbaReindexConfig.maxRaiseFanout,
+      dysflowExport,
     );
 
     // Store in database

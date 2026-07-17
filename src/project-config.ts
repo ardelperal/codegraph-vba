@@ -67,6 +67,16 @@ export interface ProjectConfig {
      * site, handler linkage via `subscribes-event`) is preserved.
      */
     maxRaiseFanout?: number;
+    /**
+     * Run the Dysflow-specific extractors (form/report SaveAsText, test
+     * manifests, test sequences) on top of the base VBA extractor. Set to
+     * `false` to opt out — useful for projects that carry legacy
+     * `.form.txt`/`.report.txt` files (or test-manifest JSON from a
+     * different system) and want them tracked as just a `file` node
+     * instead of being expanded into the graph (issue #154). Defaults to
+     * `true`.
+     */
+    dysflowExport?: boolean;
   };
   /**
    * Gitignore-style patterns for first-party source to force INTO the index even
@@ -92,6 +102,7 @@ interface ParsedConfig {
   vba?: {
     targets?: Record<string, boolean>;
     maxRaiseFanout?: number;
+    dysflowExport?: boolean;
   };
   include: string[];
 }
@@ -265,7 +276,7 @@ function extractExclude(parsed: object, file: string): string[] {
   return out;
 }
 
-function extractVbaTargets(parsed: object, file: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number } | undefined {
+function extractVbaTargets(parsed: object, file: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } | undefined {
   const vba = (parsed as any).vba;
   if (vba === undefined) return undefined;
   if (!vba || typeof vba !== 'object' || Array.isArray(vba)) {
@@ -273,7 +284,7 @@ function extractVbaTargets(parsed: object, file: string): { targets?: Record<str
     return undefined;
   }
 
-  const out: { targets?: Record<string, boolean>; maxRaiseFanout?: number } = {};
+  const out: { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } = {};
 
   const targets = vba.targets;
   if (targets !== undefined) {
@@ -301,7 +312,19 @@ function extractVbaTargets(parsed: object, file: string): { targets?: Record<str
     }
   }
 
-  return out.targets !== undefined || out.maxRaiseFanout !== undefined ? out : undefined;
+  // Issue #154 — Dysflow export opt-out. Boolean; anything else warns-and-skips
+  // so a typo'd value silently falls back to the default rather than
+  // breaking the index.
+  const dysflowExport = vba.dysflowExport;
+  if (dysflowExport !== undefined) {
+    if (typeof dysflowExport !== 'boolean') {
+      logWarn(`Ignoring "vba.dysflowExport" in ${PROJECT_CONFIG_FILENAME}: value must be a boolean`, { file });
+    } else {
+      out.dysflowExport = dysflowExport;
+    }
+  }
+
+  return out.targets !== undefined || out.maxRaiseFanout !== undefined || out.dysflowExport !== undefined ? out : undefined;
 }
 
 /**
@@ -373,24 +396,28 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   const exclude = [...new Set([...localConfig.exclude, ...fileConfig.exclude])];
   const include = [...new Set([...localConfig.include, ...fileConfig.include])];
 
-  let vba: { targets?: Record<string, boolean>; maxRaiseFanout?: number } | undefined;
-  if (localConfig.vba?.targets || fileConfig.vba?.targets || localConfig.vba?.maxRaiseFanout !== undefined || fileConfig.vba?.maxRaiseFanout !== undefined) {
-    vba = {
-      ...(localConfig.vba?.targets || fileConfig.vba?.targets
-        ? {
-            targets: {
-              ...localConfig.vba?.targets,
-              ...fileConfig.vba?.targets,
-            },
-          }
-        : {}),
-      // File overrides local; only fall through to local when file omitted it.
-      ...(fileConfig.vba?.maxRaiseFanout !== undefined
-        ? { maxRaiseFanout: fileConfig.vba.maxRaiseFanout }
-        : localConfig.vba?.maxRaiseFanout !== undefined
-          ? { maxRaiseFanout: localConfig.vba.maxRaiseFanout }
-          : {}),
-    };
+  let vba: { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } | undefined;
+  const mergedTargets = localConfig.vba?.targets || fileConfig.vba?.targets
+    ? {
+        ...localConfig.vba?.targets,
+        ...fileConfig.vba?.targets,
+      }
+    : undefined;
+  // The root codegraph.json wins over the local config.json for the boolean
+  // toggles (matches the project-wide pattern in this loader — fileConfig
+  // always overrides localConfig). Undefined when neither side sets it; the
+  // consumer's default kicks in.
+  const mergedMaxRaiseFanout = fileConfig.vba?.maxRaiseFanout !== undefined
+    ? fileConfig.vba?.maxRaiseFanout
+    : localConfig.vba?.maxRaiseFanout;
+  const mergedDysflowExport = fileConfig.vba?.dysflowExport !== undefined
+    ? fileConfig.vba?.dysflowExport
+    : localConfig.vba?.dysflowExport;
+  if (mergedTargets || mergedMaxRaiseFanout !== undefined || mergedDysflowExport !== undefined) {
+    vba = {};
+    if (mergedTargets) vba.targets = mergedTargets;
+    if (mergedMaxRaiseFanout !== undefined) vba.maxRaiseFanout = mergedMaxRaiseFanout;
+    if (mergedDysflowExport !== undefined) vba.dysflowExport = mergedDysflowExport;
   }
 
   const config: ParsedConfig = {
@@ -405,8 +432,20 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   return config;
 }
 
-export function loadVbaConfig(rootDir: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number } {
+export function loadVbaConfig(rootDir: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } {
   return loadParsedConfig(rootDir).vba || {};
+}
+
+/**
+ * Load the validated `vba.dysflowExport` flag for a project, mtime-cached
+ * (issue #154). Returns `true` when the flag is absent — the default keeps
+ * the legacy Dysflow-specific extractors running so existing users see no
+ * behavioral change. `false` opts out, so `.form.txt`/`.report.txt`/test
+ * manifest/sequence files are tracked as just a `file` node.
+ */
+export function loadDysflowExportConfig(rootDir: string): boolean {
+  const v = loadParsedConfig(rootDir).vba?.dysflowExport;
+  return v === undefined ? true : v;
 }
 
 /**

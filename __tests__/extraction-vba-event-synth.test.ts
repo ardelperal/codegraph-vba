@@ -74,7 +74,10 @@ afterAll(async () => {
     }
   }
   if (initialized && fs.existsSync(codeGraphDir)) {
-    fs.rmSync(codeGraphDir, { recursive: true, force: true });
+    // Windows sometimes holds the SQLite file handle briefly after
+    // `close()` returns. Use a small retry to avoid a flaky EBUSY
+    // when the OS hasn't fully released the file yet.
+    rmWithRetry(codeGraphDir, { recursive: true, force: true });
   }
 });
 
@@ -409,27 +412,60 @@ describe('issue-150 AC#5: vba-event-tracer backward compatibility', () => {
 
 // =============================================================================
 // AC #6 — No new false positives on the existing FORMS-* fixture suite.
-// We index the existing vba-control-modeling fixture, then verify that
-// the count of vba-event-handler edges stays at zero (none of those
-// fixtures use the WithEvents naming convention — they use Access's
-// `<Control>_<Event>` convention, which is a DIFFERENT synthesis
-// pipeline that the procedures.ts extract already handles).
+// We index a COPY of the existing vba-control-modeling fixtures (kept
+// under a test-local subdirectory so the .codegraph-vba database lives
+// in OUR directory, not in the shared source fixture) and verify the
+// count of vba-event-handler edges stays at zero.
+//
+// The copy is needed because the sibling
+// `__tests__/extraction-vba-control-modeling.test.ts` test owns the
+// real `vba-control-modeling/.codegraph-vba` directory. When vitest
+// runs both test files in the same worker (file parallelism), both
+// tests try to open the same SQLite file and Windows returns EBUSY on
+// the second opener's unlink/cleanup. Copying the fixtures into our
+// own subdirectory sidesteps the conflict completely and keeps the
+// AC#6 test self-contained.
+//
+// None of the FORMS fixtures use the WithEvents naming convention —
+// they use Access's `<Control>_<Event>` convention, which is a
+// DIFFERENT synthesis pipeline that the procedures.ts extract
+// already handles. So the new pass should emit zero edges.
 // =============================================================================
 describe('issue-150 AC#6: no false positives on the FORMS-* (vba-control-modeling) fixture suite', () => {
-  const FORMS_FIXTURE_DIR = path.join(
+  const SOURCE_FORMS_DIR = path.join(
     __dirname,
     'fixtures',
     'vba-control-modeling',
   );
-  const FORMS_CODEGRAPH_DIR = path.join(FORMS_FIXTURE_DIR, '.codegraph-vba');
+  // Test-local subdirectory. We copy the FORMS fixtures into here so
+  // our .codegraph-vba lives in OUR dir, not in the shared source
+  // dir. This is a subdirectory of the test workspace — kept under
+  // the worktree but outside the existing vba-control-modeling
+  // fixture so it doesn't conflict with sibling tests.
+  const LOCAL_FORMS_DIR = path.join(FIXTURE_DIR, '.forms-copy');
+  const LOCAL_FORMS_CODEGRAPH_DIR = path.join(LOCAL_FORMS_DIR, '.codegraph-vba');
   let formsCg: CodeGraph | null = null;
   let formsInit = false;
 
   beforeAll(async () => {
-    if (fs.existsSync(FORMS_CODEGRAPH_DIR)) {
-      fs.rmSync(FORMS_CODEGRAPH_DIR, { recursive: true, force: true });
-    }
-    formsCg = await CodeGraph.init(FORMS_FIXTURE_DIR, { index: false });
+    // Reset our local copy and clone the source FORMS fixtures into
+    // it. fs.cpSync with `recursive: true` is the idiomatic Node 16+
+    // way to deep-copy a directory; it's idempotent (we delete
+    // LOCAL_FORMS_DIR first if it exists). We also EXCLUDE any
+    // `.codegraph-vba` subdirectory the source might have — that
+    // subdirectory is owned by the sibling test
+    // (`extraction-vba-control-modeling.test.ts`) and may still
+    // exist on disk while that test's `afterAll` is still running in
+    // a parallel vitest worker. Copying it in would leave a stale
+    // `.codegraph-vba` in our local copy and `CodeGraph.init` would
+    // then refuse with "already initialized".
+    rmWithRetry(LOCAL_FORMS_DIR, { recursive: true, force: true });
+    fs.cpSync(SOURCE_FORMS_DIR, LOCAL_FORMS_DIR, {
+      recursive: true,
+      filter: (src) => !path.basename(src).startsWith('.codegraph'),
+    });
+
+    formsCg = await CodeGraph.init(LOCAL_FORMS_DIR, { index: false });
     formsInit = true;
     await formsCg.indexAll();
   }, 60_000);
@@ -442,8 +478,8 @@ describe('issue-150 AC#6: no false positives on the FORMS-* (vba-control-modelin
         /* ignore */
       }
     }
-    if (formsInit && fs.existsSync(FORMS_CODEGRAPH_DIR)) {
-      fs.rmSync(FORMS_CODEGRAPH_DIR, { recursive: true, force: true });
+    if (formsInit) {
+      rmWithRetry(LOCAL_FORMS_DIR, { recursive: true, force: true });
     }
   });
 
@@ -465,3 +501,36 @@ describe('issue-150 AC#6: no false positives on the FORMS-* (vba-control-modelin
     expect(all.length, 'expected zero vba-event-handler edges in FORMS-* suite').toBe(0);
   });
 });
+
+/**
+ * Best-effort recursive remove with a small retry loop. Windows
+ * sometimes reports `EBUSY` for a brief window after a SQLite
+ * connection is closed (the OS hasn't fully released the file
+ * handle) or while a watcher process is mid-syscall. Three retries
+ * with a 200ms backoff handles the typical case without making the
+ * test slow when the operation is going to fail for a real reason.
+ */
+function rmWithRetry(
+  target: string,
+  opts: fs.RmOptions,
+  attempts = 3,
+  delayMs = 200,
+): void {
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      fs.rmSync(target, opts);
+      return;
+    } catch (err) {
+      lastErr = err;
+      // Synchronous sleep — `beforeAll` accepts async but a small
+      // busy-wait here is simpler than juggling timers and keeps the
+      // test deterministic.
+      const until = Date.now() + delayMs;
+      while (Date.now() < until) { /* spin */ }
+    }
+  }
+  // Last attempt failed; surface the underlying error so a real
+  // failure doesn't get silently swallowed.
+  throw lastErr;
+}

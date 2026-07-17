@@ -195,8 +195,47 @@ export class VbaExtractorContext {
    */
   public functionReturnTypes = new Map<string, string>();
 
+  /**
+   * Issue #156: per-stage timings, lazily allocated ONLY when
+   * `CODEGRAPH_VBA_TIMING=1|2` is set. The default path (env var unset)
+   * keeps this `null` so `recordStage` is a single null-check and we
+   * pay zero Map-allocation cost in the hot path. Stage names are
+   * dot-separated: `preprocess.stripVbaComments`,
+   * `preprocess.cc.lexer+parser`, `walk.procedures`, `walk.main`,
+   * `classifier.<name>`. Counters are in milliseconds (float).
+   */
+  public timings: Map<string, number> | null = null;
+
+  /**
+   * Issue #156: how many times each classifier's `classifyLine` was
+   * invoked. Only allocated together with `timings` so the default path
+   * pays no cost.
+   */
+  public classifierInvokeCounts: Map<string, number> | null = null;
+
   constructor(filePath: string) {
     this.filePath = filePath;
+  }
+
+  /**
+   * Issue #156: ensure the timings Maps exist. Called once per
+   * `extract()` by the orchestrator right after it reads the env var.
+   * No-op when already allocated.
+   */
+  public ensureTimings(): void {
+    if (this.timings === null) {
+      this.timings = new Map<string, number>();
+      this.classifierInvokeCounts = new Map<string, number>();
+    }
+  }
+
+  /**
+   * Issue #156: add `ms` to the stage named `name`. No-op when
+   * `timings` is null (default path).
+   */
+  public recordStage(name: string, ms: number): void {
+    if (this.timings === null) return;
+    this.timings.set(name, (this.timings.get(name) ?? 0) + ms);
   }
 
   /**

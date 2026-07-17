@@ -45,12 +45,19 @@ import {
   stripVbaComments,
 } from './vba-preprocess';
 import { VbaExtractorContext, VbaClassifier } from './vba/context';
-import { createProceduresClassifier } from './vba/procedures';
-import { createEventsTypesDeclaresClassifier } from './vba/declarations';
-import { createDimsClassifier } from './vba/dims';
-import { createEnumsConstsClassifier } from './vba/enums-consts';
-import { createImplementsClassifier } from './vba/implements';
-import { createCallsAndSqlClassifier } from './vba/call-sweep';
+import type { VbaExtractionRule } from './vba/rules';
+import { RULES as PROCEDURES_RULES, createProceduresClassifier } from './vba/procedures';
+import {
+  RULES as EVENTS_TYPES_DECLARES_RULES,
+  createEventsTypesDeclaresClassifier,
+} from './vba/declarations';
+import { RULES as DIMS_RULES, createDimsClassifier } from './vba/dims';
+import { RULES as ENUMS_CONSTS_RULES, createEnumsConstsClassifier } from './vba/enums-consts';
+import { RULES as IMPLEMENTS_RULES, createImplementsClassifier } from './vba/implements';
+import {
+  RULES as CALL_SWEEP_RULES,
+  createCallsAndSqlClassifier,
+} from './vba/call-sweep';
 import {
   emitPerFileTimings,
   flushAggregate,
@@ -74,6 +81,101 @@ import {
  * (or any value `>=` the largest expected count) to disable the gate.
  */
 export const DEFAULT_MAX_RAISE_FANOUT = 50;
+
+/**
+ * Issue #153: the orchestrator's aggregated view of every VBA
+ * classifier's declarative `RULES` table. Each entry is the
+ * `readonly VbaExtractionRule[]` constant exported by the
+ * corresponding classifier file. Exposed at module scope so:
+ *
+ *   1. Tests can pin the table shape and assert that the orchestrator
+ *      still references each table (a deleted import would
+ *      accidentally break a whole concern and the test would catch
+ *      the missing reference).
+ *   2. Tooling can introspect every rule the orchestrator
+ *      dispatches — useful for `codegraph stats` style UIs that
+ *      show "what kinds of VBA symbols does codegraph know about".
+ *   3. The `validateVbaRuleTables` invariant runs on this aggregate
+ *      so a refactor that empties one concern's `RULES` array
+ *      (e.g. by deleting the `defineRule` calls during a partial
+ *      migration) fails loudly at module load instead of silently
+ *      dropping a whole concern.
+ *
+ * The keys are the FILE BASENAMES of the classifier modules (no
+ * `.ts` extension, kebab-case) — the same naming convention the
+ * per-classifier export comments use. Stable identifier for
+ * `validateVbaRuleTables` consumers.
+ */
+export const VBA_RULE_TABLES: Readonly<Record<string, readonly VbaExtractionRule[]>> =
+  {
+    implements: IMPLEMENTS_RULES,
+    procedures: PROCEDURES_RULES,
+    declarations: EVENTS_TYPES_DECLARES_RULES,
+    dims: DIMS_RULES,
+    'enums-consts': ENUMS_CONSTS_RULES,
+    'call-sweep': CALL_SWEEP_RULES,
+  };
+
+/**
+ * Issue #153: the canonical list of concern keys `VBA_RULE_TABLES`
+ * must contain. Order matches the per-line dispatch order in
+ * `extract()`: events/types/declares → implements → dims → enums/consts
+ * → calls/sql. The procedures sweep is the only one that runs BEFORE
+ * the main walk (so `ctx.localProcs` is populated for the call sweep
+ * to consult) and is therefore referenced in `VBA_RULE_TABLES` but NOT
+ * in this list — it is intentionally validated as a separate concern
+ * because the pre-walk contract is different.
+ */
+const REQUIRED_DISPATCH_TABLES: readonly string[] = [
+  'declarations',
+  'implements',
+  'dims',
+  'enums-consts',
+  'call-sweep',
+];
+
+/**
+ * Issue #153: validate that every per-concern rule table the
+ * orchestrator dispatches is non-empty. Called once at module load
+ * (see the IIFE at the bottom of this file) so an accidentally-
+ * emptied `RULES` array fails loudly when the extractor is first
+ * imported, NOT at the first `extract()` call.
+ *
+ * The result is `{ ok, empty }`:
+ *   - `ok: true`  — every required table has at least one rule.
+ *   - `ok: false` — at least one table is empty; `empty` lists the
+ *                   concern keys that need attention.
+ *
+ * The function accepts an optional `tables` argument so the unit
+ * test in `__tests__/extraction-vba-rule-table.test.ts` can verify
+ * the validator's contract independently of the live data.
+ */
+export function validateVbaRuleTables(
+  tables: Readonly<Record<string, readonly VbaExtractionRule[]>> = VBA_RULE_TABLES,
+): { ok: boolean; empty: string[] } {
+  const empty: string[] = [];
+  for (const key of REQUIRED_DISPATCH_TABLES) {
+    const table = tables[key];
+    if (!table || table.length === 0) empty.push(key);
+  }
+  return { ok: empty.length === 0, empty };
+}
+
+// Run the validator once at module load. The IIFE never throws — it
+// just emits a console.error so the failure is visible in CI logs
+// without aborting the import. The unit test
+// `__tests__/extraction-vba-rule-table.test.ts` pins the
+// `validateVbaRuleTables` contract independently.
+(function runRuleTableInvariant(): void {
+  const result = validateVbaRuleTables();
+  if (!result.ok) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `[vba-extractor] VBA_RULE_TABLES is missing rules for: ${result.empty.join(', ')}. ` +
+        `Each concern's RULES array must be non-empty.`,
+    );
+  }
+})();
 
 export class VbaExtractor {
   private filePath: string;

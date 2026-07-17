@@ -10,6 +10,7 @@ import { generateNodeId } from '../tree-sitter-helpers';
 import { PROC_RE, PRIMITIVE_TYPES } from './constants';
 import { parseEventHandlerName } from './text-utils';
 import { VbaExtractorContext, ProcInfo, VbaClassifier } from './context';
+import { defineRule, matchRule, VbaExtractionRule } from './rules';
 
 /**
  * Parse a `Function`/`Property Get` declaration's return type — the `As
@@ -29,21 +30,31 @@ function parseReturnType(line: string): string | null {
 }
 
 /**
- * Issue #83: factory for the procedures classifier. Closure state: none
- * beyond `count` (the per-concern accumulators live on `ctx`).
+ * Issue #153: the declarative rule table for the procedures concern.
+ * One rule — `procedure` — matches a `Sub` / `Function` /
+ * `Property Get|Let|Set` declaration and emits the function node,
+ * the `localProcs` / `functionNodeByName` / `functionNodeByStartLine`
+ * / `functionReturnTypes` registration, and (for form code-behind)
+ * the synthesized `event-handler` edge.
+ *
+ * The emit body is intentionally not split across multiple rules —
+ * these are 5+ small operations that all fire on the same declaration
+ * line. Splitting them would force the orchestrator to know they
+ * always co-occur, which is more coupling than the original cascade
+ * had. The pattern is the discriminating surface; everything past
+ * `match` is one emit.
  */
-export function createProceduresClassifier(): VbaClassifier {
-  return {
-    name: 'procedures',
-    count: 0,
-    classifyLine(line, i, ctx) {
-      const m = PROC_RE.exec(line);
-      if (!m) return;
+export const RULES: readonly VbaExtractionRule<unknown>[] = [
+  defineRule({
+    id: 'procedure',
+    description:
+      'Match a `Sub` / `Function` / `Property Get|Let|Set <Name>(...) [As <Type>]` declaration; emit a function node, register the proc in `localProcs` / `functionNodeByName` / `functionNodeByStartLine` / `functionReturnTypes`, and (for `Form_*.cls` / `Report_*.cls`) synthesize a `form-instance-control` stub + `event-handler` edge.',
+    pattern: PROC_RE,
+    emit: (m, ctx, line, lineNum) => {
       const visibilityRaw = (m[1] ?? '').trim();
       const kindRaw = (m[2] ?? '').trim().toLowerCase();
       const name = m[3] ?? '';
-      if (!name) return;
-      const lineNum = i + 1;
+      if (!name) return null;
 
       // Normalize the visibility. VBA's "Static" keyword is a storage
       // specifier, not visibility, so we treat bare-static declarations as
@@ -242,7 +253,32 @@ export function createProceduresClassifier(): VbaClassifier {
         ctx.edges.push(edge);
         ctx.pendingModuleOrClassSource.push(edge);
       }
-      this.count++;
+      return { name };
+    },
+  }),
+];
+
+/**
+ * Issue #83: factory for the procedures classifier. Closure state: none
+ * beyond `count` (the per-concern accumulators live on `ctx`).
+ *
+ * The body walks the declarative `RULES` table (Issue #153). The
+ * inline cascade that used to live here is now one entry in `RULES`.
+ */
+export function createProceduresClassifier(): VbaClassifier {
+  return {
+    name: 'procedures',
+    count: 0,
+    classifyLine(line, i, ctx) {
+      const lineNum = i + 1;
+      for (const rule of RULES) {
+        const m = matchRule(rule.pattern, line);
+        if (!m) continue;
+        const result = rule.emit(m, ctx, line, lineNum);
+        if (result !== null && result !== undefined) {
+          this.count += rule.count ? rule.count(result as never) : 1;
+        }
+      }
     },
   };
 }

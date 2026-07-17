@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- The VBA extraction pipeline now reports per-stage wall-clock timing on demand, gated by the `CODEGRAPH_VBA_TIMING` env var. Set `CODEGRAPH_VBA_TIMING=1` for a per-file block on stderr (preprocess / classifier / walk stages, plus the inner conditional-compilation lexer+parser), or `=2` to add a per-process aggregate across the whole index run. With the env var unset the default path stays at zero overhead — no Map allocations, no Map writes — so existing `codegraph index` runs are unaffected. Useful for diagnosing why a particular `.bas` or `.cls` is slow to extract, or for tuning the extraction budget on a large Access project. (#156)
 - VBA event-handler relationships are now materialized in the graph at index time. A `WithEvents m_X As ClassName` binding in a form combined with a matching `m_X_<EventName>` handler Sub is now connected to the `RaiseEvent <EventName>` site via a single `event-handler` edge, so `codegraph_explore` reaches the handler in one call instead of the three-hop walk the vba-event-tracer skill used to repeat on every query. Projects with no WithEvents bindings are unaffected; the FORMS-* test suite reports zero new edges. (#150)
 - The Dysflow-specific VBA extractors — form/report SaveAsText, test manifests, and test sequences — are now opt-out-able. If your `.bas`/`.cls` files happen to live next to legacy `.form.txt`/`.report.txt` files (or test-manifest JSON from a different system) that you don't want expanded into the graph, set `vba.dysflowExport: false` in your project's `codegraph.json`; the Dysflow file types are then tracked as just a `file` node, while the rest of the VBA pipeline keeps behaving exactly as before. The Dysflow extractors also now live behind a `FrameworkResolver` you can discover alongside the other frameworks. (#154)
 
@@ -51,7 +52,6 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added the opt-in, read-only `codegraph_query` MCP tool for structured CLI symbol queries. (#123)
 
 ## [1.7.3] - 2026-07-13
->>>>>>> origin/main
 
 ### Fixes
 

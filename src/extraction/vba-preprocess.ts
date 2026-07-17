@@ -219,7 +219,20 @@ const CONST_DIRECTIVE = /^\s*#Const\s+([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(.+?)\s*$/i
  * downstream extraction keeps source-line parity. Unsupported/unsafe
  * expressions evaluate to false rather than throwing.
  */
-export function preprocessConditionalCompilation(src: string, customTargets?: Record<string, boolean>): string {
+export function preprocessConditionalCompilation(
+  src: string,
+  customTargets?: Record<string, boolean>,
+  /**
+   * Issue #156: optional timing sink for the internal lexer+parser.
+   * When provided, the wall-clock spent inside `evaluateConditionalExpression`
+   * and `evaluateConstRhs` is accumulated under the key
+   * `preprocess.cc.lexer+parser` so the orchestrator can break the
+   * outer `preprocess.conditionalCompilation` stage into its outer +
+   * inner sub-totals. Undefined → no-op, zero cost (just the
+   * `if (timings)` null-check on every CC line).
+   */
+  timings?: Map<string, number> | null,
+): string {
   if (!src) return src;
   const lines = src.split('\n');
   const out: string[] = [];
@@ -231,6 +244,7 @@ export function preprocessConditionalCompilation(src: string, customTargets?: Re
   // simply misses and the conservative fallback (unknown identifier →
   // false) applies, exactly as for an unrecognised hardcoded constant.
   const constTable = new Map<string, string>();
+  const CC_STAGE = 'preprocess.cc.lexer+parser';
 
   for (const line of lines) {
     // Parse #Const BEFORE the other directives so the table is up-to-date
@@ -240,7 +254,7 @@ export function preprocessConditionalCompilation(src: string, customTargets?: Re
     if (constMatch) {
       const name = (constMatch[1] ?? '').trim();
       const rhs = (constMatch[2] ?? '').trim();
-      const value = evaluateConstRhs(rhs, constTable, customTargets);
+      const value = evaluateConstRhs(rhs, constTable, customTargets, timings, CC_STAGE);
       if (value !== null) {
         constTable.set(name, value);
       }
@@ -251,7 +265,7 @@ export function preprocessConditionalCompilation(src: string, customTargets?: Re
     const ifMatch = IF_DIRECTIVE.exec(line);
     if (ifMatch) {
       const parentActive = stack.every((frame) => frame.active);
-      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '', constTable, customTargets);
+      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '', constTable, customTargets, timings, CC_STAGE);
       stack.push({ parentActive, active, branchTaken: active });
       out.push('');
       continue;
@@ -264,7 +278,7 @@ export function preprocessConditionalCompilation(src: string, customTargets?: Re
         const active =
           frame.parentActive &&
           !frame.branchTaken &&
-          evaluateConditionalExpression(elseIfMatch[1] ?? '', constTable, customTargets);
+          evaluateConditionalExpression(elseIfMatch[1] ?? '', constTable, customTargets, timings, CC_STAGE);
         frame.active = active;
         if (active) frame.branchTaken = true;
       }
@@ -672,17 +686,21 @@ function evaluateConditionalExpression(
   expr: string,
   constTable: ReadonlyMap<string, string> = new Map(),
   customTargets?: Record<string, boolean>,
+  timings?: Map<string, number> | null,
+  stageName: string = 'preprocess.cc.lexer+parser',
 ): boolean {
   try {
     let exprClean = expr.trim();
     if (exprClean.toLowerCase().endsWith('then')) {
       exprClean = exprClean.slice(0, -4).trim();
     }
-    const tokens = tokenize(exprClean, constTable, customTargets);
-    const parser = new Parser(tokens);
-    const result = parser.parseExpression();
-    parser.ensureEOF();
-    return result !== 0;
+    return timeLexerParser(timings, stageName, () => {
+      const tokens = tokenize(exprClean, constTable, customTargets);
+      const parser = new Parser(tokens);
+      const result = parser.parseExpression();
+      parser.ensureEOF();
+      return result !== 0;
+    });
   } catch {
     return false;
   }
@@ -692,16 +710,38 @@ function evaluateConstRhs(
   rhs: string,
   constTable: ReadonlyMap<string, string>,
   customTargets?: Record<string, boolean>,
+  timings?: Map<string, number> | null,
+  stageName: string = 'preprocess.cc.lexer+parser',
 ): string | null {
   try {
-    const tokens = tokenize(rhs.trim(), constTable, customTargets);
-    const parser = new Parser(tokens);
-    const result = parser.parseExpression();
-    parser.ensureEOF();
-    return String(result);
+    return timeLexerParser(timings, stageName, () => {
+      const tokens = tokenize(rhs.trim(), constTable, customTargets);
+      const parser = new Parser(tokens);
+      const result = parser.parseExpression();
+      parser.ensureEOF();
+      return String(result);
+    });
   } catch {
     return null;
   }
+}
+
+/**
+ * Issue #156: timing wrapper used by `evaluateConditionalExpression`
+ * and `evaluateConstRhs` to record the lexer+parser portion of CC
+ * evaluation. When `timings` is null/undefined the call is a direct
+ * invocation — no `performance.now()` overhead.
+ */
+function timeLexerParser<T>(
+  timings: Map<string, number> | null | undefined,
+  stageName: string,
+  fn: () => T,
+): T {
+  if (!timings) return fn();
+  const t0 = performance.now();
+  const result = fn();
+  timings.set(stageName, (timings.get(stageName) ?? 0) + (performance.now() - t0));
+  return result;
 }
 
 /**

@@ -51,6 +51,15 @@ import { createDimsClassifier } from './vba/dims';
 import { createEnumsConstsClassifier } from './vba/enums-consts';
 import { createImplementsClassifier } from './vba/implements';
 import { createCallsAndSqlClassifier } from './vba/call-sweep';
+import {
+  emitPerFileTimings,
+  flushAggregate,
+  readTimingMode,
+  recordAggregateTimings,
+  withClassifier,
+  withStage,
+  type TimingMode,
+} from './vba-timing';
 
 /**
  * Issue #152: per-file fanout cap for `RaiseEvent <EventName>` edges. An
@@ -97,21 +106,55 @@ export class VbaExtractor {
   extract(): ExtractionResult {
     const startTime = Date.now();
 
+    // Issue #156: lazy-enable the timing instrumentation ONLY when the
+    // env var is set. The Maps stay `null` otherwise so the default path
+    // (every real user's `codegraph index` run) pays no Map-allocation
+    // cost and no `recordStage` call does any real work.
+    const timingMode = readTimingMode();
+    if (timingMode !== 'off') {
+      this.ctx.ensureTimings();
+    }
+
     try {
       // REQ-CODE-9: hand form/report files off to VbaFormExtractor. If
       // somehow routed here, emit just a file node and return.
       if (this.isFormOrReportFile()) {
         this.ctx.nodes.push(this.createFileNode());
-        return this.result(startTime);
+        const result = this.result(startTime);
+        this.maybeEmitTimings(result, timingMode);
+        return result;
       }
 
       // Pre-process pipeline (per design): strip comments first to prevent
       // comments from blocking or causing false line continuations, then join
       // continuations, and blank inactive conditional-compilation branches.
       // Line count is preserved by all stages.
-      const cleanComments = stripVbaComments(this.source);
-      const joined = joinLineContinuations(cleanComments);
-      const uncommented = preprocessConditionalCompilation(joined, this.vbaTargets);
+      //
+      // Issue #156: each stage is wrapped in a timing block that records
+      // into the context's `timings` Map. `preprocessConditionalCompilation`
+      // itself contains an internal lexer+parser pair; we sum that into a
+      // single `preprocess.cc.lexer+parser` stage via a thin wrapper that
+      // re-uses the same `withStage` helper.
+      const cleanComments = withStage(
+        this.ctx,
+        'preprocess.stripVbaComments',
+        () => stripVbaComments(this.source),
+      );
+      const joined = withStage(
+        this.ctx,
+        'preprocess.joinLineContinuations',
+        () => joinLineContinuations(cleanComments),
+      );
+      const uncommented = withStage(
+        this.ctx,
+        'preprocess.conditionalCompilation',
+        () =>
+          preprocessConditionalCompilation(
+            joined,
+            this.vbaTargets,
+            this.ctx.timings,
+          ),
+      );
 
       // Create the file node.
       this.ctx.nodes.push(this.createFileNode());
@@ -160,17 +203,21 @@ export class VbaExtractor {
       // Pre-walk: procedures only — populates the same-file function index
       // (legacy behaviour: `sweepProcedures` ran first so the call sweep
       // could look up call targets by name).
-      for (let i = 0; i < lines.length; i++) {
-        proceduresCls.classifyLine(lines[i] ?? '', i, this.ctx);
-      }
+      withStage(this.ctx, 'walk.procedures', () => {
+        for (let i = 0; i < lines.length; i++) {
+          withClassifier(this.ctx, proceduresCls, lines[i] ?? '', i);
+        }
+      });
 
       // Main walk: every other classifier sees every line in order.
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i] ?? '';
-        for (const c of classifiers) {
-          c.classifyLine(line, i, this.ctx);
+      withStage(this.ctx, 'walk.main', () => {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i] ?? '';
+          for (const c of classifiers) {
+            withClassifier(this.ctx, c, line, i);
+          }
         }
-      }
+      });
 
       // Finalize (calls-sql flushes proc-end line updates to function nodes).
       for (const c of classifiers) c.finalize?.(this.ctx);
@@ -226,12 +273,32 @@ export class VbaExtractor {
       });
     }
 
-    return this.result(startTime);
+    const result = this.result(startTime);
+    this.maybeEmitTimings(result, timingMode);
+    return result;
   }
 
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Issue #156: emit the per-file timing block (mode `1` or `2`) and
+   * — in mode `2` — append the running aggregate. No-op when
+   * `mode === 'off'`. In aggregate mode we flush after every extract()
+   * call so the line is visible per-file even without a graceful
+   * shutdown (crash-on-file-3 still shows files 1-3 in the aggregate).
+   */
+  private maybeEmitTimings(_result: ExtractionResult, mode: TimingMode): void {
+    if (mode === 'off') return;
+    if (mode === 'per-file' || mode === 'aggregate') {
+      emitPerFileTimings(this.ctx, this.filePath);
+    }
+    if (mode === 'aggregate') {
+      recordAggregateTimings(this.ctx, this.filePath);
+      flushAggregate();
+    }
+  }
 
   private result(startTime: number): ExtractionResult {
     return {

@@ -168,6 +168,42 @@ export class VbaExtractorContext {
    */
   public procStack: number[] = [];
 
+  /**
+   * Issue #153: per-extraction state for the events/types/declares
+   * classifier's `Type <Name> ... End Type` block tracking. The
+   * `currentTypeBlock` is set when a `type-start` rule fires and
+   * cleared when the matching `type-end` rule fires. Lives on `ctx`
+   * (instead of the factory's closure) so the declarative RULES
+   * table's `emit` functions can read/write it without taking a
+   * closure-captured mutable reference. `null` means "outside any
+   * type block right now". Reset implicitly per-extraction (a fresh
+   * `VbaExtractorContext` is constructed every `extract()` call).
+   */
+  public vbaDeclTypeBlock: { id: string; name: string } | null = null;
+
+  /**
+   * Issue #153: per-extraction state for the enum/consts classifier's
+   * `Enum <Name> ... End Enum` block tracking. Same shape and
+   * rationale as `vbaDeclTypeBlock`: lives on `ctx` so the
+   * declarative RULES table's `emit` functions can read/write it
+   * without taking a closure-captured mutable reference.
+   * `null` means "outside any enum block right now".
+   */
+  public vbaEnumBlock: { id: string; name: string } | null = null;
+
+  /**
+   * Issue #153: per-extraction state for the calls/SQL classifier's
+   * `With <receiver> ... End With` block tracking. The with-receiver
+   * stack mirrors the textual nesting of `With` blocks inside a
+   * procedure body — the top of the stack is the active receiver
+   * for `.Member` and `.Member(args)` statement-form calls. Reset
+   * implicitly per-extraction (a fresh `VbaExtractorContext` is
+   * constructed every `extract()` call). Replaces the per-factory
+   * closure variable that lived in `sweepCallsAndSql` before the
+   * Issue #153 RULES-table refactor.
+   */
+  public vbaWithStack: string[] = [];
+
   /** Local event name (lowercase) → event node for `RaiseEvent` edge emission. */
   public localEvents = new Map<string, Node>();
 

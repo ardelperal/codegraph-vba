@@ -8,6 +8,7 @@
 import { PROC_RE, PROCEDURE_END_RE, PRIMITIVE_TYPES } from './constants';
 import { maskStringContent } from './text-utils';
 import { VbaExtractorContext, ProcInfo, VbaClassifier } from './context';
+import { defineRule, matchRule, VbaExtractionRule } from './rules';
 import {
   scanRaiseEvents,
   scanCallSites,
@@ -50,10 +51,135 @@ const WITH_START_RE = /^\s*With\b\s+(.+?)\s*$/iu;
 const WITH_END_RE = /^\s*End\s+With\b/iu;
 
 /**
+ * Issue #153: the declarative rule table for the calls/SQL concern.
+ *
+ * Of the call-sweep's full machinery, only the per-line *patterns*
+ * fit the declarative shape. The procedural scanners
+ * (`scanRaiseEvents`, `scanCallSites`, `scanMeControlReferences`,
+ * `scanSqlInLine`, `scanDoCmdOpenCalls`, `scanDoCmdOpenQuery`,
+ * `scanFormsBang`, `sweepTempVars`, statement/qualified call
+ * detection) walk the masked line scanning for call shapes that
+ * don't reduce to a single regex — they stay inside the factory's
+ * `classifyLine` (acknowledged in the Issue #153 spec: "The
+ * inter-line state machines (procedure stack, with stack,
+ * sqlVariables) NEED a class, not a pure rule.").
+ *
+ * Four rules, all driven by the masked line (the call site / Set
+ * patterns must not match inside string literals):
+ *
+ *  - `set-new`    — `Set <var> = New <Type>[.<Inner>]`; registers the
+ *                   receiver in `localVarTypeMap` and emits a
+ *                   `vba-set-new` `references` edge.
+ *  - `set-call`   — `Set <var> = <Factory>(...)`; types the receiver
+ *                   from a same-file function's project-class return
+ *                   type so a later `x.Method` resolves to the
+ *                   factory's class. Emits a `vba-factory-return`
+ *                   `references` edge.
+ *  - `with-start` — `With <receiver>`; normalizes the receiver and
+ *                   pushes it onto `ctx.vbaWithStack` (replaces the
+ *                   pre-#153 per-factory closure variable).
+ *  - `with-end`   — `End With`; pops the matching `ctx.vbaWithStack`
+ *                   entry.
+ *
+ * The `set-new` rule's emit function is a "pure" (match, ctx, line)
+ * consumer — it reads/writes only `ctx` and the unmasked/ masked
+ * line, with no closure references. Same for the other three.
+ */
+export const RULES: readonly VbaExtractionRule<unknown>[] = [
+  defineRule({
+    id: 'set-new',
+    description:
+      'Match `Set <var> = New <Type>[.<Inner>]` (masked line, inside-procedure); register the receiver in `localVarTypeMap` and emit a `vba-set-new` `references` edge to the outer type.',
+    pattern: SET_NEW_RE,
+    scan: 'masked',
+    requires: 'inside-procedure',
+    emit: (m, ctx, _line, lineNum) => {
+      const varName = m[1] ?? '';
+      const outerType = m[2] ?? '';
+      const innerType = m[3] ?? '';
+      if (!varName || !outerType) return null;
+      // Skip primitives defensively — consistent with the Dim sweep guard.
+      if (PRIMITIVE_TYPES.has(outerType.toLowerCase())) return null;
+      ctx.localVarTypeMap.set(varName.toLowerCase(), {
+        outer: outerType,
+        // Mirror `Dim x As Foo.Bar`: qualified `Set rs = New
+        // DAO.Recordset` registers `qualified: true` so the PR #61
+        // gate keeps downstream `rs.Method` calls silent.
+        qualified: !!innerType,
+        assignedWithSet: true,
+        variableName: varName,
+      });
+      ctx.emitReference(outerType, lineNum, 0, 'vba-set-new');
+      return { varName, outerType };
+    },
+  }),
+  defineRule({
+    id: 'set-call',
+    description:
+      'Match `Set <var> = <Factory>(...)` (masked line, inside-procedure); type the receiver from a same-file function\'s project-class return type (looked up in `ctx.functionReturnTypes`) so a later `x.Method` resolves to the factory\'s class. Yields to an explicit `Dim x As <ProjectClass>` — the declaration is the authoritative type.',
+    pattern: SET_CALL_RE,
+    scan: 'masked',
+    requires: 'inside-procedure',
+    emit: (m, ctx, _line, lineNum) => {
+      const varName = m[1] ?? '';
+      const factory = (m[2] ?? '').toLowerCase();
+      const retType = factory ? ctx.functionReturnTypes.get(factory) : undefined;
+      if (!varName || !retType) return null;
+      const existing = ctx.localVarTypeMap.get(varName.toLowerCase());
+      const existingIsProjectClass =
+        !!existing &&
+        !existing.qualified &&
+        !PRIMITIVE_TYPES.has(existing.outer.toLowerCase());
+      if (existingIsProjectClass) return null;
+      ctx.localVarTypeMap.set(varName.toLowerCase(), {
+        outer: retType,
+        qualified: false,
+        assignedWithSet: true,
+        variableName: varName,
+      });
+      ctx.emitReference(retType, lineNum, 0, 'vba-factory-return');
+      return { varName, retType };
+    },
+  }),
+  defineRule({
+    id: 'with-start',
+    description:
+      'Match `With <receiver>` (masked line, inside-procedure); normalize the receiver expression and push it onto `ctx.vbaWithStack` so a subsequent `.Member` statement-form call routes through the With-member path.',
+    pattern: WITH_START_RE,
+    scan: 'masked',
+    requires: 'inside-procedure',
+    emit: (m, ctx) => {
+      const receiver = normalizeWithReceiver(m[1] ?? '');
+      if (!receiver) return null;
+      ctx.vbaWithStack.push(receiver);
+      return { receiver };
+    },
+  }),
+  defineRule({
+    id: 'with-end',
+    description:
+      'Match `End With` (inside-procedure); pop the matching entry from `ctx.vbaWithStack`.',
+    pattern: WITH_END_RE,
+    scan: 'masked',
+    requires: 'inside-procedure',
+    emit: (_m, ctx) => {
+      ctx.vbaWithStack.pop();
+      return { kind: 'with-end' as const };
+    },
+  }),
+];
+
+/**
  * Issue #83: factory for the calls/SQL classifier. The factory takes the
  * pre-split `lines` array (so `trackSqlVariableAssignment` can do its
  * multi-line look-ahead for `&`-accumulate semantics) and closes over the
  * per-file state the legacy `sweepCallsAndSql` declared locally.
+ *
+ * Issue #153: the per-line pattern matching has been extracted into
+ * the `RULES` table. The factory body is now a thin shell that
+ * dispatches `RULES` and runs the procedural scanners (call sites,
+ * raise events, SQL, DoCmd, TempVars, etc.) that don't reduce to a
+ * single regex.
  */
 export function createCallsAndSqlClassifier(
   lines: readonly string[],
@@ -63,7 +189,6 @@ export function createCallsAndSqlClassifier(
   // Walk the source once, emitting call edges and SQL edges per line and
   // tracking the current procedure stack.
   const stack: ProcInfo[] = [];
-  const withReceiverStack: string[] = [];
   const sqlVariables = new Map<string, string>();
   // C2 fix: track each procedure's `endLine` (the line containing the
   // matching `End Sub`/`End Function`/`End Property`) keyed by its
@@ -122,18 +247,27 @@ export function createCallsAndSqlClassifier(
       // line because SQL lives INSIDE string literals.
       const callScanLine = maskStringContent(line);
 
-      if (stack.length > 0 && WITH_END_RE.test(callScanLine)) {
-        withReceiverStack.pop();
-        return;
-      }
-
-      if (stack.length > 0 && !procedureStartLines.has(lineNum)) {
-        const withStart = WITH_START_RE.exec(callScanLine);
-        if (withStart) {
-          const receiver = normalizeWithReceiver(withStart[1] ?? '');
-          if (receiver) withReceiverStack.push(receiver);
-          return;
+      // Issue #153: dispatch the declarative RULES table on the
+      // masked line. The four per-line patterns (set-new, set-call,
+      // with-start, with-end) all need the masked line because their
+      // match shapes (`Set`, `With`) are noise inside string
+      // literals. The dispatcher walks `RULES` and calls each rule's
+      // `emit` when its `pattern.exec` matches. Each rule's
+      // `requires` precondition is honoured here — `inside-procedure`
+      // rules only fire when the call-sweep's per-instance proc stack
+      // is non-empty (matching the legacy cascade's `if (stack.length
+      // > 0)` gate).
+      for (const rule of RULES) {
+        if (rule.requires === 'inside-procedure' && stack.length === 0) continue;
+        const m = matchRule(rule.pattern, callScanLine);
+        if (!m) continue;
+        const result = rule.emit(m, ctx, callScanLine, lineNum);
+        if (result !== null && result !== undefined) {
+          this.count += rule.count ? rule.count(result as never) : 1;
         }
+        // `with-end` is short-circuited: a line that's `End With` is
+        // not also a `Set x = New ...`, so break the loop.
+        if (rule.id === 'with-end') break;
       }
 
       // Don't scan call sites on the line that declares the procedure — it
@@ -162,60 +296,10 @@ export function createCallsAndSqlClassifier(
       // actual call after `Then`/`Else`/`:` is not shadowed by the leading
       // keyword.
       if (stack.length > 0 && !procedureStartLines.has(lineNum)) {
-        // Issue #46: `Set x = New <Type>[.<Inner>]` late-instantiation.
-        // Run BEFORE the call-site scan so a later `<x>.Member ...` line
-        // finds `x` already registered in `localVarTypeMap`.
-        const setNew = SET_NEW_RE.exec(callScanLine);
-        if (setNew) {
-          const varName = setNew[1] ?? '';
-          const outerType = setNew[2] ?? '';
-          const innerType = setNew[3] ?? '';
-          if (varName && outerType) {
-            // Skip primitives defensively — consistent with the Dim sweep guard.
-            if (!PRIMITIVE_TYPES.has(outerType.toLowerCase())) {
-              ctx.localVarTypeMap.set(varName.toLowerCase(), {
-                outer: outerType,
-                // Mirror `Dim x As Foo.Bar`: qualified `Set rs = New
-                // DAO.Recordset` registers `qualified: true` so the PR #61
-                // gate keeps downstream `rs.Method` calls silent.
-                qualified: !!innerType,
-                assignedWithSet: true,
-                variableName: varName,
-              });
-              ctx.emitReference(outerType, lineNum, 0, 'vba-set-new');
-            }
-          }
-        } else {
-          // Factory-return inference: `Set x = <Factory>(...)`. Type x from a
-          // same-file function's project-class return type so a later
-          // `x.Method` resolves to the factory's class. Overrides a generic
-          // `Dim x As Object/Variant` (or an untyped x), but yields to an
-          // explicit `Dim x As <ProjectClass>` — the declaration is the
-          // authoritative type. Runs after SET_NEW (which owns the `New` form).
-          const setCall = SET_CALL_RE.exec(callScanLine);
-          if (setCall) {
-            const varName = setCall[1] ?? '';
-            const factory = (setCall[2] ?? '').toLowerCase();
-            const retType = factory ? ctx.functionReturnTypes.get(factory) : undefined;
-            if (varName && retType) {
-              const existing = ctx.localVarTypeMap.get(varName.toLowerCase());
-              const existingIsProjectClass =
-                !!existing &&
-                !existing.qualified &&
-                !PRIMITIVE_TYPES.has(existing.outer.toLowerCase());
-              if (!existingIsProjectClass) {
-                ctx.localVarTypeMap.set(varName.toLowerCase(), {
-                  outer: retType,
-                  qualified: false,
-                  assignedWithSet: true,
-                  variableName: varName,
-                });
-                ctx.emitReference(retType, lineNum, 0, 'vba-factory-return');
-              }
-            }
-          }
-        }
-
+        // Note: `Set x = New ...` and `Set x = <Factory>(...)` are now
+        // dispatched by the RULES table above. The factory body below
+        // focuses on the procedural call-site scans that don't
+        // reduce to a single regex.
         const clauseLines = splitSingleLineIfClauses(callScanLine);
         for (const clauseLine of clauseLines) {
           const stmtCall = detectStatementCall(clauseLine);
@@ -270,7 +354,7 @@ export function createCallsAndSqlClassifier(
             }
           }
 
-          const withReceiver = withReceiverStack[withReceiverStack.length - 1];
+          const withReceiver = ctx.vbaWithStack[ctx.vbaWithStack.length - 1];
           if (withReceiver) {
             const withCall = detectWithMemberCall(clauseLine);
             if (withCall && ctx.isLocalProjectClassVar(withReceiver)) {
@@ -341,6 +425,7 @@ export function createCallsAndSqlClassifier(
     if (!initialized) {
       ctx.procStack.length = 0;
       ctx.currentProcKey = 'module';
+      ctx.vbaWithStack.length = 0;
       initialized = true;
     }
     return originalClassify.call(this, line, i, ctx);

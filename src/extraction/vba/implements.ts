@@ -6,29 +6,29 @@
 import { Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { VbaExtractorContext, VbaClassifier } from './context';
+import { defineRule, matchRule, VbaExtractionRule } from './rules';
 
 /** Implements regex. */
 const IMPLEMENTS_RE = /^\s*Implements\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
 /**
- * Issue #83: factory for the `Implements` classifier. Stateless per-line.
+ * Issue #153: the declarative rule table for the implements concern.
+ * One rule — `implements` — matching a leading `Implements <Name>`
+ * declaration. The body has no inter-line state to track, so the
+ * orchestrator walks the table and bumps `this.count` on every
+ * non-null emit. Keeps the inline `classifyLine` below honest: any
+ * branch not represented in this table is dead code.
  */
-export function createImplementsClassifier(): VbaClassifier {
-  return {
-    name: 'implements',
-    count: 0,
-    classifyLine(line, i, ctx) {
-      const m = IMPLEMENTS_RE.exec(line);
-      if (!m) return;
+export const RULES: readonly VbaExtractionRule<unknown>[] = [
+  defineRule({
+    id: 'implements',
+    description:
+      'Match a leading `Implements <Name>` declaration; emit an `interface` node + a pending `implements` edge.',
+    pattern: IMPLEMENTS_RE,
+    emit: (m, ctx, line, lineNum) => {
       const name = m[1] ?? '';
-      if (!name) return;
-      const lineNum = i + 1;
-      const targetId = generateNodeId(
-        ctx.filePath,
-        'interface',
-        name,
-        lineNum,
-      );
+      if (!name) return null;
+      const targetId = generateNodeId(ctx.filePath, 'interface', name, lineNum);
       ctx.nodes.push({
         id: targetId,
         kind: 'interface',
@@ -57,7 +57,34 @@ export function createImplementsClassifier(): VbaClassifier {
       };
       ctx.edges.push(edge);
       ctx.pendingModuleOrClassSource.push(edge);
-      this.count++;
+      return { name };
+    },
+  }),
+];
+
+/**
+ * Issue #83: factory for the `Implements` classifier. Stateless per-line.
+ *
+ * The body walks the declarative `RULES` table — the inline regex
+ * match that lived here before #153 is now a single entry in
+ * `RULES`. This is the canonical pattern every classifier will
+ * converge on as part of the refactor; the legacy "one giant
+ * if/else cascade" is gone.
+ */
+export function createImplementsClassifier(): VbaClassifier {
+  return {
+    name: 'implements',
+    count: 0,
+    classifyLine(line, i, ctx) {
+      const lineNum = i + 1;
+      for (const rule of RULES) {
+        const m = matchRule(rule.pattern, line);
+        if (!m) continue;
+        const result = rule.emit(m, ctx, line, lineNum);
+        if (result !== null && result !== undefined) {
+          this.count += rule.count ? rule.count(result as never) : 1;
+        }
+      }
     },
   };
 }

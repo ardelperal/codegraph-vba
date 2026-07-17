@@ -86,6 +86,15 @@ export function createDimsClassifier(): VbaClassifier {
     classifyLine(line, i, ctx) {
       const lineNum = i + 1;
 
+      // Issue #151: tag every `localVarTypeMap` entry written by this
+      // classifier with the procedure scope that owns it, so the call
+      // sweep can clear proc-local entries at `End Sub` /
+      // `End Function` / `End Property` and a `Dim x As MyClassA` in
+      // `Sub First()` does not leak into `Sub Second()`.
+      const dimsProcScope: 'module' | string = ctx.procStack.length > 0
+        ? String(ctx.procStack[ctx.procStack.length - 1]!)
+        : 'module';
+
       // Fix 1 + Fix 3 (Issues #1, #3): replace the old single-match
       // DIM_QUAL_RE / DIM_UNQUAL_RE pair with a global scan that handles
       // `As New <Type>`, multi-variable `Dim a As Foo, b As Bar`, and
@@ -110,6 +119,7 @@ export function createDimsClassifier(): VbaClassifier {
             ctx.localVarTypeMap.set(varName.toLowerCase(), {
               outer: outerType,
               qualified: !!innerType,
+              procScope: dimsProcScope,
             });
           }
 
@@ -157,6 +167,7 @@ export function createDimsClassifier(): VbaClassifier {
               ctx.localVarTypeMap.set(key, {
                 outer,
                 qualified: false,
+                procScope: dimsProcScope,
               });
             }
           }
@@ -178,6 +189,7 @@ export function createDimsClassifier(): VbaClassifier {
               qualified: false,
               withEvents: true,
               variableName: weVarName,
+              procScope: dimsProcScope,
             });
           }
           ctx.emitReference(formType, lineNum, 0, 'vba-withevents');

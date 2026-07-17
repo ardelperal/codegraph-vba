@@ -18,6 +18,7 @@ import {
   emitQualifiedStatementCallEdge,
   normalizeWithReceiver,
   detectWithMemberCall,
+  DeferQualifiedCallFn,
 } from './calls';
 import { scanMeControlReferences, scanFormsBang } from './controls';
 import { scanDoCmdOpenCalls, scanDoCmdOpenQuery } from './docmd';
@@ -113,6 +114,10 @@ export function createCallsAndSqlClassifier(
             ? String(ctx.procStack[ctx.procStack.length - 1])
             : 'module';
         procEndLines.set(ending.startLine, lineNum);
+        // Issue #151: the orchestrator already fired `onProcedureEnd`
+        // for `ending.startLine` BEFORE this line was classified, so
+        // the deferred list for this procedure has already been
+        // drained (or was empty). Nothing more to do here.
         return;
       }
 
@@ -141,7 +146,33 @@ export function createCallsAndSqlClassifier(
       if (!procedureStartLines.has(lineNum) && stack.length > 0) {
         const currentProc = stack[stack.length - 1]!;
         scanRaiseEvents(ctx, callScanLine, currentProc, lineNum);
-        scanCallSites(ctx, callScanLine, currentProc, lineNum);
+        // Issue #151: pass a per-procedure deferral callback so the
+        // paren-form call scanner routes qualified calls whose receiver
+        // is undeclared at this line into the procedure's deferred
+        // list, to be re-resolved at `End Sub` / `End Function` /
+        // `End Property`. The `onProcedureEnd` hook (defined at the
+        // bottom of this factory) drains that list.
+        const deferQualified: DeferQualifiedCallFn = (
+          receiver,
+          member,
+          lnum,
+          col,
+          from,
+          kind,
+        ) => {
+          ctx.pushDeferredQualifiedCall(
+            String(from.startLine),
+            {
+              caller: from,
+              receiver,
+              member,
+              lineNum: lnum,
+              column: col,
+              kind,
+            },
+          );
+        };
+        scanCallSites(ctx, callScanLine, currentProc, lineNum, deferQualified);
       }
 
       // Hueco 1: capture `Me.<Control>` references. Only inside procedures
@@ -181,6 +212,10 @@ export function createCallsAndSqlClassifier(
                 qualified: !!innerType,
                 assignedWithSet: true,
                 variableName: varName,
+                // Issue #151: tag the entry with the enclosing procedure
+                // scope so a `Set x = New Y` inside `Sub First()` does
+                // not leak into `Sub Second()`.
+                procScope: ctx.currentProcKey,
               });
               ctx.emitReference(outerType, lineNum, 0, 'vba-set-new');
             }
@@ -209,6 +244,9 @@ export function createCallsAndSqlClassifier(
                   qualified: false,
                   assignedWithSet: true,
                   variableName: varName,
+                  // Issue #151: see SET_NEW above — tag with the
+                  // enclosing procedure scope.
+                  procScope: ctx.currentProcKey,
                 });
                 ctx.emitReference(retType, lineNum, 0, 'vba-factory-return');
               }
@@ -246,27 +284,52 @@ export function createCallsAndSqlClassifier(
             }
           }
 
-          // Fix 7 + Fix 2 + Issue #40: qualified statement-form calls
-          // (`Receiver.Member args`) — the dominant cross-object call shape.
+          // Fix 7 + Fix 2 + Issue #40 + Issue #151: qualified statement-form
+          // calls (`Receiver.Member args`) — the dominant cross-object call
+          // shape. Issue #151: when the receiver is undeclared at the call
+          // line, the legacy code would emit a raw `Receiver.Member` stub
+          // (a dead-end shape no resolver could repoint if a later
+          // `Dim`/`Set`/`Set=Factory()` line in the same procedure would
+          // have classified the receiver as a project class). Defer those
+          // calls into the per-procedure list so the `onProcedureEnd` hook
+          // can re-resolve them against the full `localVarTypeMap` for the
+          // procedure scope.
           const qualStmt = detectQualifiedStatementCall(clauseLine);
           if (qualStmt) {
             const caller = stack[stack.length - 1]!;
             if (ctx.shouldProcessQualifiedCall(qualStmt.receiver)) {
-              // Returns true when a `calls` edge was emitted to a synthetic
-              // stub node; false when the receiver is not eligible
-              // (primitive / DAO-qualified / runtime). Round-3 (issue
-              // #108): when the synthetic-stub path skips, the parent
-              // caller still needs to see an `unresolved_refs` row so the
-              // SQL filter `WHERE reference_kind = 'qualified-call'`
-              // surfaces these from `(caller, qualified, line)` tuples the
-              // resolver couldn't bind.
-              emitQualifiedStatementCallEdge(
-                ctx,
-                caller,
-                qualStmt.receiver,
-                qualStmt.member,
-                lineNum,
-              );
+              if (!ctx.localVarTypeMap.has(qualStmt.receiver.toLowerCase())) {
+                // Undeclared receiver — defer for re-resolution at end
+                // of procedure. Cross-module candidate names like
+                // `modUtils.Foo` (where `modUtils` is not a local) are
+                // not in `localVarTypeMap` either, so this branch
+                // handles BOTH the forward-reference case (Dim/Set
+                // later in the same procedure) AND the
+                // module-candidate case (no Dim/Set anywhere). The
+                // end-of-procedure hook will drop the call silently if
+                // the receiver is still untyped at that point.
+                ctx.pushDeferredQualifiedCall(
+                  String(caller.startLine),
+                  {
+                    caller,
+                    receiver: qualStmt.receiver,
+                    member: qualStmt.member,
+                    lineNum,
+                    column: 0,
+                    kind: 'statement',
+                  },
+                );
+              } else {
+                // Already typed in `localVarTypeMap` — resolve
+                // immediately with the resolved class name.
+                emitQualifiedStatementCallEdge(
+                  ctx,
+                  caller,
+                  qualStmt.receiver,
+                  qualStmt.member,
+                  lineNum,
+                );
+              }
             }
           }
 
@@ -325,6 +388,94 @@ export function createCallsAndSqlClassifier(
         const end = procEndLines.get(n.startLine);
         if (end !== undefined) n.endLine = end;
       }
+      // Issue #151: drain any deferred-list entries that did NOT get an
+      // `onProcedureEnd` callback — happens when the file ends inside a
+      // procedure (no `End Sub` matched) or the procedure-end detection
+      // in the orchestrator missed a `End`. The drain is a no-op for
+      // callers that already fired the hook.
+      for (const scopeKey of Array.from(ctx.deferredQualifiedCalls.keys())) {
+        ctx.drainDeferredQualifiedCalls(scopeKey);
+      }
+    },
+    // Issue #151: per-procedure deferred-list drain. Fired by the
+    // orchestrator (`vba-extractor.ts`) BEFORE this classifier's own
+    // `classifyLine` runs on the matching `End Sub`/`End Function`/
+    // `End Property` line, so the procedure is still on the local
+    // `stack` and `localVarTypeMap` carries every `Dim`/`Set`/
+    // `Set=Factory()` line in scope.
+    onProcedureEnd(procStartLine, ctx) {
+      const scopeKey = String(procStartLine);
+      const deferred = ctx.drainDeferredQualifiedCalls(scopeKey);
+      if (deferred.length > 0) {
+        // Locate the procedure's `ProcInfo` from the local stack so we
+        // can populate the source-of-truth `caller` for emitted edges.
+        // Fall back to the first entry's `caller` if the stack has been
+        // popped by a nested proc-end (defensive — the orchestrator
+        // fires the hook before `classifyLine` so the proc should be
+        // on top of the stack).
+        const caller =
+          stack.find((p) => p.startLine === procStartLine) ??
+          deferred[0]!.caller;
+        for (const entry of deferred) {
+          // Re-check the receiver against the NOW-complete
+          // `localVarTypeMap`. Three cases:
+          //   1. Receiver is a project-class local (typed by a
+          //      later `Dim` / `Set` / `Set=Factory()` line in this
+          //      procedure) → emit a resolved edge to
+          //      `<Class>.<Member>`.
+          //   2. Receiver is a declared primitive / external type
+          //      (e.g. `Long`, `DAO.Database`) → silently skip —
+          //      same behaviour as the in-line gate, just delayed.
+          //   3. Receiver is still undeclared at end of procedure
+          //      → emit a raw `Receiver.Member` synthetic stub
+          //      (preserves the cross-module resolution path: the
+          //      resolver repoints `modUtils.Foo` to the real
+          //      module's function when `modUtils` is a known
+          //      module in another file).
+          if (ctx.isLocalProjectClassVar(entry.receiver)) {
+            // Case 1: emit a resolved heuristic edge. Reuse the
+            // same `emitQualifiedStatementCallEdge` shape the
+            // in-line path uses — it derives the class name from
+            // `localVarTypeMap`, the dedup keys, and the
+            // synthetic stub set. The two call shapes (paren /
+            // statement) share the emission path so dedup is
+            // uniform.
+            emitQualifiedStatementCallEdge(
+              ctx,
+              caller,
+              entry.receiver,
+              entry.member,
+              entry.lineNum,
+            );
+            continue;
+          }
+          // Case 2: declared primitive / external type — silently
+          // skip. The receiver is in `localVarTypeMap` but the
+          // outer type is a primitive or qualified-external.
+          if (ctx.localVarTypeMap.has(entry.receiver.toLowerCase())) {
+            continue;
+          }
+          // Case 3: still undeclared at end of procedure — emit
+          // a raw `Receiver.Member` synthetic stub so the resolver
+          // can repoint it for cross-module calls like
+          // `modUtils.Foo arg`. The dedup set and the synthetic
+          // node set ensure we never emit a duplicate.
+          emitQualifiedStatementCallEdge(
+            ctx,
+            caller,
+            entry.receiver,
+            entry.member,
+            entry.lineNum,
+          );
+        }
+      }
+      // Issue #151: clear procedure-scoped `localVarTypeMap` entries
+      // at the matching `End`. A `Dim x As MyClassA` inside
+      // `Sub First()` must NOT leak into `Sub Second()`'s view of
+      // `x`. Module-level entries (`procScope === 'module'`) are
+      // preserved. Done AFTER the deferred-list drain so the drain
+      // itself can see the full procedure scope.
+      ctx.clearLocalVarsInScope(scopeKey);
     },
   };
 

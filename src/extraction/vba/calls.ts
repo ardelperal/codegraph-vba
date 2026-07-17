@@ -50,11 +50,31 @@ export function scanRaiseEvents(
   }
 }
 
+/**
+ * Issue #151: optional callback the call sweep uses to defer a qualified
+ * call that cannot be resolved on the first walk. The callback receives
+ * the same `receiver`/`member`/`line`/`col`/`from` shape the scan would
+ * have emitted and is invoked ONLY when the current `localVarTypeMap`
+ * state would have produced a wrong-class raw-receiver stub. When the
+ * callback is omitted, the legacy "emit raw-receiver stub immediately"
+ * behaviour is preserved (so callers that don't want the deferred pass
+ * keep the old graph shape).
+ */
+export type DeferQualifiedCallFn = (
+  receiver: string,
+  member: string,
+  lineNum: number,
+  column: number,
+  from: ProcInfo,
+  kind: 'paren' | 'statement',
+) => void;
+
 export function scanCallSites(
   ctx: VbaExtractorContext,
   line: string,
   from: ProcInfo,
   lineNum: number,
+  deferQualifiedCall?: DeferQualifiedCallFn,
 ): void {
   CALL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -150,6 +170,19 @@ export function scanCallSites(
           language: 'vba',
           metadata: { synthesizedBy: 'vba-qualified-call-unresolved' },
         });
+        continue;
+      }
+      // Issue #151: when the receiver is a project-class local var we can
+      // resolve it immediately (it was registered before this line in
+      // `localVarTypeMap`). When the receiver is UNDECLARED, the legacy
+      // behaviour was to emit a raw-receiver stub named `<receiver>.<member>`
+      // — a dead-end shape no resolver could ever repoint if a later
+      // `Dim x As <ProjectClass>` or `Set x = New <Type>` line in the same
+      // procedure would have classified the receiver. Defer those calls
+      // so the on-procedure-end hook can re-resolve them against the
+      // full `localVarTypeMap` for the procedure's scope.
+      if (deferQualifiedCall && !ctx.localVarTypeMap.has(receiver.toLowerCase())) {
+        deferQualifiedCall(receiver, member, lineNum, col, from, 'paren');
         continue;
       }
       const receiverType = ctx.resolveReceiverType(receiver);

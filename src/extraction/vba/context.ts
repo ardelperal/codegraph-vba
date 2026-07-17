@@ -29,6 +29,30 @@ export interface ProcInfo {
 }
 
 /**
+ * Issue #151: a qualified call site that the first walk could not resolve
+ * because the receiver's declared type was not yet known — the receiver
+ * was either (a) a `Dim`-declared variable on a LATER line in the same
+ * procedure, or (b) a `Set x = New <Type>` / `Set x = <Factory>(...)`
+ * assigned on a LATER line. The call is held until the procedure ends so
+ * the full `localVarTypeMap` for that procedure scope is available, then
+ * re-resolved and emitted (or dropped silently if it still cannot bind).
+ */
+export interface DeferredQualifiedCall {
+  /** The enclosing procedure's `ProcInfo` (startLine is the map key). */
+  caller: ProcInfo;
+  /** Original receiver text from the call site (e.g. `x`). */
+  receiver: string;
+  /** Member identifier on the receiver (e.g. `Foo`). */
+  member: string;
+  /** Source line number (1-based, matches `Node.startLine` shape). */
+  lineNum: number;
+  /** Match column (0-based; 0 for statement-form, real index for paren). */
+  column: number;
+  /** Distinguishes the paren-form from the statement-form call shape. */
+  kind: 'paren' | 'statement';
+}
+
+/**
  * Issue #83: the per-concern classifier shape. The single walker in
  * `vba-extractor.ts` calls `classifyLine(line, index, ctx)` once per
  * pre-split line, in a stable order across all six concerns. No internal
@@ -50,6 +74,18 @@ export interface VbaClassifier {
    * flush `procEndLines` → function node `endLine`.
    */
   finalize?(ctx: VbaExtractorContext): void;
+  /**
+   * Issue #151: optional per-procedure end hook. Called once per procedure
+   * that this classifier saw open, when the walk hits the matching
+   * `End Sub` / `End Function` / `End Property` line. The default
+   * `VbaWalker` in `vba-extractor.ts` invokes this BEFORE the line
+   * itself is classified (so the proc-stack pop inside `classifyLine`
+   * happens after the hook runs). This gives a classifier a chance to
+   * drain per-procedure state (e.g. the deferred qualified-call list)
+   * while the procedure is still on the stack and `localVarTypeMap` is
+   * fully populated for that procedure scope.
+   */
+  onProcedureEnd?(procStartLine: number, ctx: VbaExtractorContext): void;
 }
 
 export class VbaExtractorContext {
@@ -134,6 +170,14 @@ export class VbaExtractorContext {
    * gate (`shouldProcessQualifiedCall`) so declared project-class locals emit
    * edges, declared primitive/external locals stay silent, and undeclared
    * receivers remain module-name candidates for the resolver (Fix 2 / Issue #2).
+   *
+   * Issue #151: each entry now carries an OPTIONAL `procScope` (the procedure
+   * `startLine` as a string) for proc-local declarations. The call sweep
+   * deletes those entries at the matching `End Sub` / `End Function` /
+   * `End Property` so a `Dim x As MyClassA` inside `Sub First()` does NOT
+   * leak into `Sub Second()`'s view of `x`. Module-level declarations
+   * (`Dim x As Y` at file top level) keep `procScope === 'module'` and
+   * persist across procedures, mirroring VBA's actual scoping rules.
    */
   public localVarTypeMap = new Map<string, {
     outer: string;
@@ -141,6 +185,7 @@ export class VbaExtractorContext {
     withEvents?: boolean;
     variableName?: string;
     assignedWithSet?: boolean;
+    procScope?: 'module' | string;
   }>();
 
   /**
@@ -182,6 +227,22 @@ export class VbaExtractorContext {
    * time) — that stays the resolver's frontier.
    */
   public functionReturnTypes = new Map<string, string>();
+
+  /**
+   * Issue #151: per-procedure list of qualified calls the first walk could
+   * not resolve because the receiver's declared type was unknown at the
+   * call line (forward `Dim` / `Set` / `Set = Factory()` reference). Keyed
+   * by the procedure's `startLine` (string) so the call sweep can pop and
+   * reprocess the list exactly once at the matching `End Sub` /
+   * `End Function` / `End Property` — no cross-procedure leaking.
+   *
+   * The deferred list is consumed by the calls-and-sql classifier's
+   * `onProcedureEnd` hook, which sees the procedure's `procStartLine`
+   * (numeric) as the key. The string form is used here because the rest
+   * of the per-procedure scoping (`localConstants`) already uses string
+   * keys, keeping the persistence shape consistent.
+   */
+  public deferredQualifiedCalls: Map<string, DeferredQualifiedCall[]> = new Map();
 
   constructor(filePath: string) {
     this.filePath = filePath;
@@ -376,5 +437,61 @@ export class VbaExtractorContext {
     }
     bucket.set(name.toLowerCase(), value);
     return bucket;
+  }
+
+  /**
+   * Issue #151: push a deferred qualified call onto the per-procedure
+   * list. `scopeKey` is the procedure's `startLine` as a string
+   * (matching `currentProcKey` shape — never the literal `'module'`
+   * string, because module-level code has no procedure to defer until).
+   * The bucket is created lazily and returned.
+   */
+  public pushDeferredQualifiedCall(
+    scopeKey: string,
+    entry: DeferredQualifiedCall,
+  ): DeferredQualifiedCall[] {
+    let bucket = this.deferredQualifiedCalls.get(scopeKey);
+    if (!bucket) {
+      bucket = [];
+      this.deferredQualifiedCalls.set(scopeKey, bucket);
+    }
+    bucket.push(entry);
+    return bucket;
+  }
+
+  /**
+   * Issue #151: drain the deferred list for one procedure, returning
+   * the calls in registration order. The bucket is deleted from the
+   * map so a re-walk of the same procedure scope never replays them.
+   * Returns `[]` when the procedure has no deferred calls.
+   */
+  public drainDeferredQualifiedCalls(
+    scopeKey: string,
+  ): DeferredQualifiedCall[] {
+    const bucket = this.deferredQualifiedCalls.get(scopeKey);
+    if (!bucket) return [];
+    this.deferredQualifiedCalls.delete(scopeKey);
+    return bucket;
+  }
+
+  /**
+   * Issue #151: clear the procedure-scoped entries from
+   * `localVarTypeMap` at `End Sub` / `End Function` / `End Property`.
+   * A `Dim x As MyClassA` inside `Sub First()` does NOT leak into
+   * `Sub Second()`'s call-site resolution — VBA's actual scoping
+   * rule, and the explicit acceptance criterion from the issue
+   * ("no leak into the next procedure"). Module-level entries
+   * (`procScope === 'module'`) are kept. Returns the number of
+   * entries cleared (useful for tests + future metrics).
+   */
+  public clearLocalVarsInScope(scopeKey: string): number {
+    let cleared = 0;
+    for (const [key, entry] of this.localVarTypeMap) {
+      if (entry.procScope === scopeKey) {
+        this.localVarTypeMap.delete(key);
+        cleared++;
+      }
+    }
+    return cleared;
   }
 }

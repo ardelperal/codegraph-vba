@@ -136,8 +136,42 @@ export class VbaExtractor {
       }
 
       // Main walk: every other classifier sees every line in order.
+      // Issue #151: when a line matches `End Sub` / `End Function` /
+      // `End Property`, fire each classifier's optional `onProcedureEnd`
+      // hook BEFORE `classifyLine` runs on the same line. The hook sees
+      // the closing procedure's `startLine` as the key so the deferred
+      // qualified-call list (and any other per-procedure state) can be
+      // drained while the procedure is still on the call sweep's stack
+      // — `localVarTypeMap` is at its full procedure scope at that
+      // point. The proc-stack pop inside `classifyLine` happens right
+      // after, restoring the parent scope.
+      const procedureEndRe = /^\s*End\s+(?:Sub|Function|Property)\b/i;
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i] ?? '';
+        if (procedureEndRe.test(line)) {
+          // Find the most recent `Sub|Function|Property` opener above
+          // this line. The procedures classifier is a single
+          // pass over the same `lines` array, so the most recent
+          // opening line for the closing `End` is the startLine of
+          // the procedure that owns this `End`. We re-derive it here
+          // (rather than threading a second stack through the
+          // orchestrator) because the procedures classifier's local
+          // state is private.
+          let openLine = -1;
+          for (let j = i - 1; j >= 0; j--) {
+            const prev = lines[j] ?? '';
+            if (/^\s*End\s+(?:Sub|Function|Property)\b/i.test(prev)) break;
+            if (/^\s*(?:(?:Public|Private|Friend)\s+)?(?:Static\s+)?(?:Sub|Function|Property(?:\s+(?:Get|Let|Set))?)\s+\p{L}[\p{L}\p{N}_]*/iu.test(prev)) {
+              openLine = j + 1; // 1-based
+              break;
+            }
+          }
+          if (openLine > 0) {
+            for (const c of classifiers) {
+              c.onProcedureEnd?.(openLine, this.ctx);
+            }
+          }
+        }
         for (const c of classifiers) {
           c.classifyLine(line, i, this.ctx);
         }

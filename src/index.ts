@@ -50,6 +50,7 @@ import { ContextBuilder, createContextBuilder } from './context';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
 import { EXTRACTION_VERSION } from './extraction/extraction-version';
+import { synthesizeVbaEventHandlerEdges } from './extraction/vba/event-synth';
 import { getCodeGraphDir } from './directory';
 import { deriveProjectNameTokens } from './search/query-utils';
 import { CodeGraphPackageVersion } from './mcp/version';
@@ -538,6 +539,26 @@ export class CodeGraph {
           // (created by the extractor for `Dim x As Type`) to the real type
           // node, so blast-radius can find test-file callers of enums/classes.
           this.resolver.resolveVbaReferenceStubs();
+          // VBA #150: synthesize `event-handler` edges from `RaiseEvent`
+          // sites to their `m_<var>_<EventName>` handler Subs in
+          // WithEvents subscribers. Reads `variableName` from the
+          // repointed `vba-withevents` `references` edge metadata (the
+          // resolver preserves it across the repoint), and the
+          // event's file from the real class node's `filePath`. Safe
+          // to run AFTER `resolveVbaReferenceStubs` because the
+          // `references` edge is what survives the resolver pass — the
+          // `subscribes-event` companion edge (and its synthetic
+          // class stub target) are CASCADE-deleted along with the
+          // stub, but the new dims.ts change stamps `variableName`
+          // onto the durable `references` edge so the synthesis pass
+          // can still find the binding.
+          if (process.env.CODEGRAPH_SYNTH_TIMINGS) {
+            const tEvt = Date.now();
+            const evCount = synthesizeVbaEventHandlerEdges(this.queries);
+            console.error(`[synth-timing] vbaEventHandler: ${Date.now() - tEvt}ms (${evCount} edges)`);
+          } else {
+            synthesizeVbaEventHandlerEdges(this.queries);
+          }
         }
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.

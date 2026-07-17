@@ -1718,6 +1718,69 @@ export class QueryBuilder {
   }
 
   /**
+   * Issue #150 — return every `references` edge whose metadata was
+   * stamped by the given `synthesizedBy` key. Used by the
+   * event-handler synthesis pass to find every `WithEvents` binding
+   * in the project. The `metadata LIKE` filter is a cheap index-free
+   * pre-filter (a `synthesizedBy` value can appear as a substring of
+   * another); callers must still exact-check the parsed JSON
+   * `metadata.synthesizedBy` field.
+   *
+   * Returns the raw rows (id, source, target, metadata JSON). Callers
+   * join against `getNodeById` to materialize the source/target Node
+   * values. The `references` edges this returns are the
+   * `resolveVbaReferenceStubs`-repointed ones (target is the real
+   * class node, not the synthetic stub), so the binding lookup
+   * survives the resolver.
+   */
+  getReferencesBySynthesizedBy(synthesizedBy: string): Array<{
+    id: number;
+    source: string;
+    target: string;
+    metadata: string | null;
+  }> {
+    const stmt = this.db.prepare(
+      `SELECT id, source, target, metadata FROM edges
+       WHERE kind = 'references' AND metadata LIKE ?`,
+    );
+    return stmt.all(`%"synthesizedBy":"${synthesizedBy}"%`) as Array<{
+      id: number;
+      source: string;
+      target: string;
+      metadata: string | null;
+    }>;
+  }
+
+  /**
+   * Issue #150 — return every `raises-event` edge in the DB. Used by
+   * the event-handler synthesis pass to walk every `RaiseEvent`
+   * statement and connect it to its `m_<var>_<EventName>` handler
+   * Sub. Returns the raw rows; callers parse the metadata to pull
+   * the `eventName` for downstream edge construction.
+   */
+  getRaisesEventEdges(): Array<{
+    id: number;
+    source: string;
+    target: string;
+    line: number | null;
+    col: number | null;
+    metadata: string | null;
+  }> {
+    const stmt = this.db.prepare(
+      `SELECT id, source, target, line, col, metadata FROM edges
+       WHERE kind = 'raises-event'`,
+    );
+    return stmt.all() as Array<{
+      id: number;
+      source: string;
+      target: string;
+      line: number | null;
+      col: number | null;
+      metadata: string | null;
+    }>;
+  }
+
+  /**
    * Find all edges where both source and target are in the given node set.
    * Useful for recovering inter-node connectivity after BFS.
    */

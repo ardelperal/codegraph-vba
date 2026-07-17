@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- VBA event-handler relationships are now materialized in the graph at index time. A `WithEvents m_X As ClassName` binding in a form combined with a matching `m_X_<EventName>` handler Sub is now connected to the `RaiseEvent <EventName>` site via a single `event-handler` edge, so `codegraph_explore` reaches the handler in one call instead of the three-hop walk the vba-event-tracer skill used to repeat on every query. Projects with no WithEvents bindings are unaffected; the FORMS-* test suite reports zero new edges. (#150)
 
 ## [1.10.0] - 2026-07-16
 
@@ -46,6 +49,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Added the opt-in, read-only `codegraph_query` MCP tool for structured CLI symbol queries. (#123)
 
 ## [1.7.3] - 2026-07-13
+>>>>>>> origin/main
 
 ### Fixes
 

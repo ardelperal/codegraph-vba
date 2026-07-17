@@ -55,14 +55,14 @@ import type { Language, ExtractionResult } from '../types';
 const PARSER_RESET_INTERVAL = 5000;
 const parseCounts = new Map<Language, number>();
 
-parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language; vbaTargets?: Record<string, boolean>; maxRaiseFanout?: number; grammarBuffers?: Record<string, Uint8Array> }) => {
+parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: string; content?: string; languages?: Language[]; frameworkNames?: string[]; language?: Language; vbaTargets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean; grammarBuffers?: Record<string, Uint8Array> }) => {
   if (msg.type === 'load-grammars') {
     // Grammar WASM bytes pre-read by the main thread (when provided) make this
     // a memory load instead of a per-spawn disk read — see issue #1231.
     await loadGrammarsForLanguages(msg.languages!, msg.grammarBuffers);
     parentPort!.postMessage({ type: 'grammars-loaded' });
   } else if (msg.type === 'parse') {
-    const { id, filePath, content, frameworkNames, vbaTargets, maxRaiseFanout } = msg;
+    const { id, filePath, content, frameworkNames, vbaTargets, maxRaiseFanout, dysflowExport } = msg;
     // Worker-side parse clock: reported back with the result so the pool can
     // tell a genuinely slow parse from a result whose delivery was delayed by
     // a stalled main thread (issue #1231 false timeouts).
@@ -75,7 +75,8 @@ parentPort!.on('message', async (msg: { type: string; id?: number; filePath?: st
       // Issue #152: `maxRaiseFanout` threads the per-file `RaiseEvent`
       // fanout gate from the project's `codegraph.json` → `vba.maxRaiseFanout`
       // through the worker boundary to the VBA extractor.
-      const result: ExtractionResult = extractFromSource(filePath!, content!, language, frameworkNames, vbaTargets, maxRaiseFanout);
+      // Issue #154: also thread the `vba.dysflowExport` opt-out flag.
+      const result: ExtractionResult = extractFromSource(filePath!, content!, language, frameworkNames, vbaTargets, maxRaiseFanout, dysflowExport);
 
       // Periodic parser reset to reclaim WASM heap memory
       const count = (parseCounts.get(language) ?? 0) + 1;

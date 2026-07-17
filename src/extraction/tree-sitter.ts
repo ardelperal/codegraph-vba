@@ -6521,6 +6521,14 @@ export class TreeSitterExtractor {
  * If `frameworkNames` is provided, framework-specific extractors matching
  * those names and the file's language are run after the tree-sitter pass.
  * Their nodes/references/errors are merged into the returned result.
+ *
+ * `dysflowExport` (issue #154) gates the 3 Dysflow-specific VBA
+ * sub-extractors (form/report SaveAsText, test manifests, test sequences).
+ * `true` (the default) preserves the pre-refactor behavior; `false` opts
+ * out so `.form.txt`/`.report.txt`/manifest/sequence files are tracked as
+ * just a `file` node. Read from `codegraph.json` via
+ * `loadDysflowExportConfig(rootDir)` at the call site and threaded in here
+ * so this function stays project-config-agnostic.
  */
 export function extractFromSource(
   filePath: string,
@@ -6528,7 +6536,8 @@ export function extractFromSource(
   language?: Language,
   frameworkNames?: string[],
   vbaTargets?: Record<string, boolean>,
-  maxRaiseFanout?: number
+  maxRaiseFanout?: number,
+  dysflowExport: boolean = true
 ): ExtractionResult {
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();
@@ -6583,7 +6592,48 @@ export function extractFromSource(
     // Use custom extractor for DFM/FMX form files
     const extractor = new DfmExtractor(filePath, source);
     result = extractor.extract();
-  } else if (detectedLanguage === 'vba' && detectVbaFormFile(filePath)) {
+  } else if (
+    detectedLanguage === 'vba' &&
+    !dysflowExport &&
+    (detectVbaFormFile(filePath) ||
+      isVbaTestSequenceFile(filePath) ||
+      isVbaTestManifestFile(filePath))
+  ) {
+    // Issue #154 — `vba.dysflowExport: false` opt-out. The 3 Dysflow
+    // extractors (form, test manifest, test sequence) are skipped, so the
+    // file is tracked as a `file`-only node. We emit it here directly
+    // (vs. falling through to `VbaExtractor`) because the base extractor
+    // would otherwise produce nothing for `.json` files — its regex
+    // pipeline expects VBA token shapes, and a JSON body yields zero
+    // declarations. For `.form.txt`/`.report.txt` the base would also
+    // produce a file node via its `isFormOrReportFile` check, so the
+    // shape matches either way; we centralize the opt-out emission here
+    // so the behavior is identical for all 3 Dysflow file shapes.
+    const fileNode: Node = {
+      id: generateNodeId(filePath, 'file', filePath, 1),
+      kind: 'file',
+      name: path.basename(filePath),
+      qualifiedName: filePath,
+      filePath,
+      language: 'vba',
+      startLine: 1,
+      endLine: source.split('\n').length,
+      startColumn: 0,
+      endColumn: source.split('\n').pop()?.length ?? 0,
+      updatedAt: Date.now(),
+    };
+    result = {
+      nodes: [fileNode],
+      edges: [],
+      unresolvedReferences: [],
+      errors: [],
+      durationMs: 0,
+    };
+  } else if (
+    detectedLanguage === 'vba' &&
+    dysflowExport &&
+    detectVbaFormFile(filePath)
+  ) {
     // VBA form/report UI — Dysflow SaveAsText format. Two-segment
     // extensions (`.form.txt`/`.report.txt`) collapse to `.txt` under
     // `path.extname()`, so the dispatch uses `detectVbaFormFile()` rather
@@ -6592,7 +6642,11 @@ export function extractFromSource(
     // `vba-form-ui-extraction` spec (REQ-FORM-1..4).
     const extractor = new VbaFormExtractor(filePath, source);
     result = extractor.extract();
-  } else if (detectedLanguage === 'vba' && isVbaTestSequenceFile(filePath)) {
+  } else if (
+    detectedLanguage === 'vba' &&
+    dysflowExport &&
+    isVbaTestSequenceFile(filePath)
+  ) {
     // Dysflow VBA test sequences — `<root>/sequences/*.json` (SUB-6 of #91,
     // #97). Classified `vba` by `detectLanguage`, narrowed here by the
     // `sequences/`-directory path gate. Guarded JSON parse + content-shape
@@ -6605,7 +6659,11 @@ export function extractFromSource(
     // rejected by the content-shape gate — see tasks.md Phase 6.
     const extractor = new VbaTestSequenceExtractor(filePath, source);
     result = extractor.extract();
-  } else if (detectedLanguage === 'vba' && isVbaTestManifestFile(filePath)) {
+  } else if (
+    detectedLanguage === 'vba' &&
+    dysflowExport &&
+    isVbaTestManifestFile(filePath)
+  ) {
     // Dysflow VBA test manifests — `tests(.<slice>)*.json`. Classified `vba`
     // by `detectLanguage`, narrowed here by basename. Guarded JSON parse +
     // content-shape gate; emits a `file` node (SUB-2 adds the per-entry

@@ -54,6 +54,14 @@ export interface ParseTask {
   vbaTargets?: Record<string, boolean>;
   /** Issue #152: per-file fanout cap for `RaiseEvent` edges (VBA only). */
   maxRaiseFanout?: number;
+  /**
+   * Issue #154 — gate the 3 Dysflow-specific VBA sub-extractors. `true`
+   * (the default) keeps the pre-refactor behavior; `false` opts out so
+   * form/report/manifest/sequence files are tracked as just a `file`
+   * node. Threaded through the worker so the same flag is honored on
+   * either side of the pool boundary.
+   */
+  dysflowExport?: boolean;
 }
 
 /** Default upper bound on the pool size derived from the core count. */
@@ -345,6 +353,7 @@ export class ParseWorkerPool {
       language: job.task.language,
       vbaTargets: job.task.vbaTargets,
       maxRaiseFanout: job.task.maxRaiseFanout,
+      dysflowExport: job.task.dysflowExport,
     });
   }
 

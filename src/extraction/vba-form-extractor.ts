@@ -8,12 +8,10 @@
  *    not here. Dysflow overwrites `.form.txt`'s embedded `CodeBehindForm`
  *    block on the next import, so any code emitted from this file would be
  *    wrong AND ephemeral.
- *  - It emits one `form-layout` node per file (named per `Attribute VB_Name`
- *    when present, otherwise the file basename). The `form-layout` kind
- *    (B2 hueco 4) replaces what was historically emitted as `kind: 'module'`
- *    so consumers can dispatch on a UI-specific kind and avoid confusing
- *    form/report UI files with `.bas` modules. `module` remains the kind
- *    for `.bas` standard modules emitted by `VbaExtractor`.
+ *  - It emits one layout node per file (named per `Attribute VB_Name` when
+ *    present, otherwise the file basename): `form-layout` for forms and
+ *    `report-layout` for reports. `module` remains the kind for `.bas`
+ *    standard modules emitted by `VbaExtractor`.
  *  - It emits one `property` node per Access control declaration with
  *    `metadata.controlType` set to the control type (e.g. `'TextBox'`,
  *    `'CommandButton'`).
@@ -48,6 +46,17 @@ import {
 } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
 import { stripVbaComments } from './vba-preprocess';
+import { ACCESS_EVENT_PROPERTIES } from './vba/events';
+
+interface FormBlockFrame {
+  controlType: string;
+  beginLine: number;
+  beginColumnLength: number;
+  name: string;
+  nameLine: number;
+  section?: string;
+  properties: Map<string, { value: string; line: number }>;
+}
 
 export class VbaFormExtractor {
   private filePath: string;
@@ -117,16 +126,9 @@ export class VbaFormExtractor {
         metadata: { synthesizedBy: 'vba-form-binding' },
       });
 
-      // Control declarations → property nodes (REQ-FORM-2).
-      this.sweepControls(cleaned);
-
-      // Issue #49: RecordSource/RowSource bindings → references edges to
-      // placeholder class nodes (one per table/query). Swept AFTER
-      // sweepControls so the `form-instance-control` nodes for any
-      // enclosing controls are already in `this.nodes` and
-      // `sweepRowSources` can attribute each edge to its source node.
-      this.sweepRecordSources(cleaned, formLayoutNode.id);
-      this.sweepRowSources(cleaned, formLayoutNode.id);
+      // A SaveAsText document is a recursive Begin/End block tree. Walk it
+      // once so names, bindings, and section membership share one scope model.
+      this.walkBlocks(cleaned, formLayoutNode.id);
     } catch (error) {
       this.errors.push({
         message: `VBA form extraction error: ${error instanceof Error ? error.message : String(error)}`,
@@ -202,21 +204,23 @@ export class VbaFormExtractor {
 
   /**
    * Build the per-file node for a `.form.txt` / `.report.txt` source.
-   * Emits `kind: 'form-layout'` (B2 hueco 4), replacing the historical
-   * `kind: 'module'` so consumers can dispatch on a UI-specific kind.
+   * Emits `form-layout` for forms and `report-layout` for reports, replacing
+   * the historical `module` kind with a UI-specific layout kind.
    *
-   * The deterministic id formula `generateNodeId(filePath, 'form-layout',
-   * name, 1)` is preserved so cross-extractor stubs (e.g. event-handler
-   * synthesis on the `.cls` side) can produce a matching id when needed
-   * — though the immediate use case is the `module` → `form-layout`
-   * rename. `metadata.containerKind` keeps the historical `'module'`
-   * label as a back-compat marker; consumers should prefer `node.kind`.
+   * The deterministic id formula remains
+   * `generateNodeId(filePath, layoutKind, name, 1)`. Report ids intentionally
+   * use `report-layout` so real reports agree with DoCmd.OpenReport stubs.
+   * `metadata.containerKind` keeps the historical `module` label as a
+   * back-compat marker; consumers should prefer `node.kind`.
    */
   private createFormLayoutNode(name: string): Node {
     const lines = this.source.split('\n');
+    const kind = /\.report\.txt$/i.test(this.filePath)
+      ? 'report-layout'
+      : 'form-layout';
     return {
-      id: generateNodeId(this.filePath, 'form-layout', name, 1),
-      kind: 'form-layout',
+      id: generateNodeId(this.filePath, kind, name, 1),
+      kind,
       name,
       qualifiedName: name,
       filePath: this.filePath,
@@ -239,62 +243,160 @@ export class VbaFormExtractor {
    *       Name = "txtFoo"
    *   End
    *
-   * We do not try to balance `Begin`/`End` blocks — each `Begin <Type>` on
-   * its own line is a control. Form/report files are shallow enough that
-   * the extra `Begin`/`End` for the form's root block are matched but
-   * filtered by the control-type blacklist (see below).
+   * The block walker balances every `Begin`/`End` pair, including untyped
+   * root blocks and non-control Form/Report/Section containers.
    */
-  private static readonly BEGIN_RE = /^\s*Begin\s+(\p{L}[\p{L}\p{N}_]*)\s*$/u;
+  private static readonly BEGIN_RE =
+    /^\s*Begin(?:\s+(.+?))?\s*$/i;
 
-  /**
-   * `Name = "..."` attribute line — emits the Access control instance name
-   * (e.g. `lblTitulo`, `ComandoAltaPM`). Capture group 1 is the name.
-   * The Dysflow SaveAsText format always wraps the value in double quotes
-   * — even when the name is a simple identifier — so we anchor on `"…"`
-   * without trying to handle unquoted forms.
-   */
-  private static readonly NAME_RE = /^\s*Name\s*=\s*"([^"]+)"\s*$/u;
+  /** Access also serializes binary/GUID values as `Property = Begin ... End`. */
+  private static readonly PROPERTY_BLOCK_BEGIN_RE =
+    /^\s*\p{L}[\p{L}\p{N}_]*\s*=\s*Begin\s*$/iu;
 
-  /**
-   * Control type tokens that are NOT user-visible Access controls and must be
-   * filtered out so they don't appear as `property` nodes.
-   *
-   * - `Form`    — the form's own root `Begin Form` / `End` container.
-   * - `Section` — Access section containers (Header / Detail / Footer).
-   *
-   * `Rectangle` and `Image` are real Access controls and must NOT appear here.
-   */
-  private static readonly NON_CONTROL_TYPES = new Set<string>([
-    'Form',
-    'Section',
-  ]);
+  /** Quoted SaveAsText property captured inside the current block frame. */
+  private static readonly QUOTED_PROPERTY_RE =
+    /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*"((?:[^"]|"")*)"/u;
 
-  /**
-   * Maximum scan window for the `Name = "..."` attribute after a
-   * `Begin <Type>` line. Real Dysflow exports have at most a handful of
-   * whitespace-only lines and the `Name` line within the first 3–6 lines
-   * of the block. 16 is a generous bound; if `Name` is missing within
-   * that window, the control is treated as a nameless container and only
-   * the legacy `property` node is emitted (preserves REQ-FORM-2 for
-   * pre-Name `.form.txt` files exported by older Dysflow versions).
-   */
-  private static readonly NAME_SCAN_WINDOW = 16;
-
-  private sweepControls(src: string): void {
+  private walkBlocks(src: string, formLayoutNodeId: string): void {
     const lines = src.split('\n');
+    const stack: FormBlockFrame[] = [];
+    let recordSource: string | undefined;
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
-      const m = VbaFormExtractor.BEGIN_RE.exec(line);
-      if (!m) continue;
-      const controlType = m[1] ?? '';
-      if (!controlType) continue;
-      if (VbaFormExtractor.NON_CONTROL_TYPES.has(controlType)) continue;
-      // Skip lines whose captured token is the GUID-prefix form of the root
-      // Begin (some Dysflow exports write `Begin {XXXXXXXX-XXXX-...}` with
-      // a CLSID, not a control type). The GUID pattern won't match
-      // [A-Za-z_]\w* — it starts with `{`, so the regex naturally rejects
-      // it.
       const lineNum = i + 1;
+      const begin = VbaFormExtractor.BEGIN_RE.exec(line);
+      if (begin) {
+        const rawType = (begin[1] ?? '').trim();
+        const controlType = /^\p{L}[\p{L}\p{N}_]*$/u.test(rawType)
+          ? rawType
+          : '';
+        stack.push({
+          controlType,
+          beginLine: lineNum,
+          beginColumnLength: line.length,
+          name: '',
+          nameLine: lineNum,
+          section: this.enclosingSection(stack),
+          properties: new Map(),
+        });
+        continue;
+      }
+
+      if (VbaFormExtractor.PROPERTY_BLOCK_BEGIN_RE.test(line)) {
+        stack.push({
+          controlType: '',
+          beginLine: lineNum,
+          beginColumnLength: line.length,
+          name: '',
+          nameLine: lineNum,
+          section: this.enclosingSection(stack),
+          properties: new Map(),
+        });
+        continue;
+      }
+
+      if (/^\s*End\s*$/i.test(line)) {
+        const frame = stack.pop();
+        if (frame) this.emitBlock(frame, formLayoutNodeId, recordSource);
+        continue;
+      }
+
+      const property = VbaFormExtractor.QUOTED_PROPERTY_RE.exec(line);
+      if (!property) continue;
+      const key = (property[1] ?? '').toLowerCase();
+      const value = (property[2] ?? '').replace(/""/g, '"');
+      const frame = stack[stack.length - 1];
+      if (!frame) {
+        if (key === 'recordsource') {
+          this.emitBinding(
+            formLayoutNodeId,
+            value,
+            lineNum,
+            'vba-record-source',
+          );
+        } else if (key === 'rowsource') {
+          this.emitBinding(
+            formLayoutNodeId,
+            value,
+            lineNum,
+            'vba-row-source',
+          );
+        }
+        this.emitExpressionHandler(formLayoutNodeId, key, value, lineNum);
+        continue;
+      }
+
+      frame.properties.set(key, { value, line: lineNum });
+      if (key === 'name') {
+        frame.name = value;
+        frame.nameLine = lineNum;
+      }
+
+      // RecordSource is a layout-level binding even though SaveAsText places
+      // it inside the root Form/Report block.
+      if (key === 'recordsource') {
+        recordSource = value;
+        this.emitBinding(
+          formLayoutNodeId,
+          value,
+          lineNum,
+          'vba-record-source',
+        );
+      }
+    }
+
+    // Malformed/truncated exports still yield the facts from every complete
+    // frame accumulated so far, matching the previous tolerant extractor.
+    while (stack.length > 0) {
+      this.emitBlock(stack.pop()!, formLayoutNodeId, recordSource);
+    }
+  }
+
+  private enclosingSection(stack: readonly FormBlockFrame[]): string | undefined {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const frame = stack[i];
+      if (frame?.controlType.toLowerCase() === 'section' && frame.name) {
+        return frame.name;
+      }
+    }
+    return undefined;
+  }
+
+  private emitBlock(
+    frame: FormBlockFrame,
+    formLayoutNodeId: string,
+    recordSource: string | undefined,
+  ): void {
+    const { controlType, beginLine: lineNum } = frame;
+    if (!controlType) {
+      const rowSource = frame.properties.get('rowsource');
+      if (rowSource) {
+        this.emitBinding(
+          formLayoutNodeId,
+          rowSource.value,
+          rowSource.line,
+          'vba-row-source',
+        );
+      }
+      this.emitExpressionHandlers(formLayoutNodeId, frame.properties);
+      return;
+    }
+
+    if (controlType.toLowerCase() === 'section') return;
+    if (/^(form|report)$/i.test(controlType)) {
+      const rowSource = frame.properties.get('rowsource');
+      if (rowSource) {
+        this.emitBinding(
+          formLayoutNodeId,
+          rowSource.value,
+          rowSource.line,
+          'vba-row-source',
+        );
+      }
+      this.emitExpressionHandlers(formLayoutNodeId, frame.properties);
+      return;
+    }
 
       // ---- Legacy `property` node (REQ-FORM-2, unchanged). ---------------
       // This node's `name` is the control TYPE (e.g. "CommandButton"). Kept
@@ -316,14 +418,14 @@ export class VbaFormExtractor {
         startLine: lineNum,
         endLine: lineNum,
         startColumn: 0,
-        endColumn: line.length,
+        endColumn: frame.beginColumnLength,
         metadata: { controlType },
         updatedAt: Date.now(),
       });
 
       // ---- Hueco 2: emit a `form-instance-control` node per NAME. -------
-      // Scan ahead up to NAME_SCAN_WINDOW lines for the first
-      // `Name = "..."` attribute. The control's `Name` (e.g. "lblTitulo",
+      // The block-scoped walk records the Name property at any distance.
+      // The control's `Name` (e.g. "lblTitulo",
       // "ComandoAltaPM") is what the .cls side references via
       // `Me.<ControlName>` (hueco 1) and what event handlers are wired to
       // via the `<ControlName>_<Event>` naming convention (hueco 3).
@@ -331,12 +433,8 @@ export class VbaFormExtractor {
       // of the same control — the VbaExtractor side synthesizes the
       // matching event-handler edge using the same id formula (see
       // vba-extractor.ts: synthesizeEventHandlerEdge).
-      const { name: controlName, nameLine } = this.findControlName(
-        lines,
-        i,
-        lineNum,
-      );
-      if (!controlName) continue;
+      const controlName = frame.name;
+      if (!controlName) return;
 
       const controlNodeId = generateNodeId(
         this.filePath,
@@ -344,6 +442,8 @@ export class VbaFormExtractor {
         controlName,
         0,
       );
+      const controlSource = frame.properties.get('controlsource');
+      const sourceObject = frame.properties.get('sourceobject');
       this.nodes.push({
         id: controlNodeId,
         kind: 'form-instance-control',
@@ -352,84 +452,156 @@ export class VbaFormExtractor {
         filePath: this.filePath,
         language: 'vba',
         startLine: lineNum,
-        endLine: nameLine, // spans from Begin to the Name attribute line
+        endLine: frame.nameLine, // spans from Begin to the Name attribute line
         startColumn: 0,
         endColumn: 0,
-        metadata: { controlType },
+        metadata: {
+          controlType,
+          ...(frame.section ? { section: frame.section } : {}),
+          ...(controlSource ? { controlSource: controlSource.value } : {}),
+          ...(sourceObject ? { sourceObject: sourceObject.value } : {}),
+        },
         updatedAt: Date.now(),
       });
+
+      this.edges.push({
+        source: formLayoutNodeId,
+        target: controlNodeId,
+        kind: 'contains',
+        provenance: 'parser',
+      });
+
+      this.emitExpressionHandlers(controlNodeId, frame.properties);
+
+      if (controlSource) {
+        this.emitControlSourceReference(
+          controlNodeId,
+          controlSource.value,
+          controlSource.line,
+          recordSource,
+        );
+      }
+
+      if (sourceObject) {
+        this.emitSourceObjectReference(
+          controlNodeId,
+          sourceObject.value,
+          sourceObject.line,
+        );
+      }
+
+      const rowSource = frame.properties.get('rowsource');
+      const rowSourceType = frame.properties.get('rowsourcetype');
+      if (
+        rowSource &&
+        rowSourceType?.value.toLowerCase() !== 'value list'
+      ) {
+        this.emitBinding(
+          controlNodeId,
+          rowSource.value,
+          rowSource.line,
+          'vba-row-source',
+        );
+      }
+  }
+
+  private emitExpressionHandlers(
+    wiringSiteNodeId: string,
+    properties: ReadonlyMap<string, { value: string; line: number }>,
+  ): void {
+    for (const [propertyName, property] of properties) {
+      this.emitExpressionHandler(
+        wiringSiteNodeId,
+        propertyName,
+        property.value,
+        property.line,
+      );
     }
   }
 
-  /**
-   * Scan ahead from a `Begin <Type>` line for the first `Name = "…"`
-   * attribute. Returns the captured name and the line number where it
-   * was found, or `{ name: '', nameLine: 0 }` when no Name is present
-   * within the scan window (e.g. the `Begin Form` root block which has
-   * `Caption = "..."` but no `Name`, or pre-Name legacy exports).
-   *
-   * Stops at the next `Begin` or `End` boundary so a misaligned scan
-   * never crosses into a sibling control's attribute block.
-   */
-  private findControlName(
-    lines: string[],
-    beginLineIndex: number,
-    beginLineNum: number,
-  ): { name: string; nameLine: number } {
-    const end = Math.min(
-      lines.length,
-      beginLineIndex + 1 + VbaFormExtractor.NAME_SCAN_WINDOW,
-    );
-    for (let j = beginLineIndex + 1; j < end; j++) {
-      const line = lines[j] ?? '';
-      // Boundary check: a sibling Begin or End closes this block. Don't
-      // look past it (a missing Name line is the common case for the
-      // root `Begin Form` block — its `Caption` is the visible label,
-      // not a `Name`).
-      if (/^\s*(Begin|End)\b/i.test(line)) break;
-      const m = VbaFormExtractor.NAME_RE.exec(line);
-      if (m) {
-        const name = m[1] ?? '';
-        if (name) {
-          return { name, nameLine: j + 1 };
-        }
-      }
+  private emitExpressionHandler(
+    wiringSiteNodeId: string,
+    propertyName: string,
+    rawValue: string,
+    lineNum: number,
+  ): void {
+    const eventName = ACCESS_EVENT_PROPERTIES.get(propertyName.toLowerCase());
+    if (!eventName) return;
+
+    // `[Event Procedure]` is handled by the existing code-behind naming path.
+    // Bare values name Access macros, which are not graph nodes; silent beats
+    // inventing a function edge for either form.
+    const expression = rawValue.trim();
+    const match = /^=\s*([\p{L}_][\p{L}\p{N}_]*)\s*\(/u.exec(expression);
+    if (!match) return;
+    let depth = 0;
+    let quoted = false;
+    let completeAt = -1;
+    for (let i = expression.indexOf('(', match.index); i < expression.length; i++) {
+      const char = expression[i];
+      if (char === '"') quoted = !quoted;
+      if (quoted) continue;
+      if (char === '(') depth++;
+      if (char === ')' && --depth === 0) { completeAt = i; break; }
     }
-    // No Name within the window — that's the case for the `Begin Form`
-    // root block (which has `Caption`, not `Name`) and for the
-    // `Begin Section` Access section blocks (which group controls but
-    // carry no Name of their own). The legacy `property` node was
-    // already emitted above; we simply skip the form-instance-control
-    // emission so hueco-4 stays RED for the .form.txt module node
-    // transition (a separate B2 task).
-    return { name: '', nameLine: beginLineNum };
+    if (completeAt < 0 || expression.slice(completeAt + 1).trim() !== '') return;
+
+    this.unresolvedReferences.push({
+      fromNodeId: wiringSiteNodeId,
+      referenceName: match[1]!,
+      referenceKind: 'event-handler',
+      line: lineNum,
+      column: 0,
+      filePath: this.filePath,
+      language: 'vba',
+      metadata: {
+        eventName,
+        synthesizedBy: 'vba-expression-handler',
+      },
+    });
+  }
+
+  private emitSourceObjectReference(
+    controlNodeId: string,
+    rawValue: string,
+    lineNum: number,
+  ): void {
+    const match = /^(?:(Form|Report|Table|Query)\.)?(.*)$/i.exec(rawValue.trim());
+    if (!match) return;
+    const prefix = match[1]?.toLowerCase();
+    const target = match[2]?.trim() ?? '';
+    if (!target) return;
+
+    if (prefix === 'table' || prefix === 'query') {
+      this.emitTableReference(
+        controlNodeId,
+        target,
+        lineNum,
+        'vba-source-object',
+        { sourceObjectType: prefix },
+      );
+      return;
+    }
+
+    this.unresolvedReferences.push({
+      fromNodeId: controlNodeId,
+      referenceName: target,
+      referenceKind: 'references',
+      line: lineNum,
+      column: 0,
+      filePath: this.filePath,
+      language: 'vba',
+      metadata: {
+        synthesizedBy: 'vba-source-object',
+        embeds: true,
+        accessObjectKind: prefix === 'report' ? 'report' : 'form',
+      },
+    });
   }
 
   // ---------------------------------------------------------------------------
   // RecordSource / RowSource edge emission (Issue #49)
   // ---------------------------------------------------------------------------
-
-  /**
-   * Issue #49 — `RecordSource = "..."` line regex. The Dysflow SaveAsText
-   * format always wraps the value in double quotes; the inner `(?:[^"]|"")*`
-   * body tolerates the doubled-quote escape (`""` → `"`) so the captured
-   * group carries the literal text exactly as Access stores it.
-   *
-   * Anchored at the start of the line — properties in the SaveAsText
-   * format are always indented but the attribute name is unambiguous, so
-   * a leading whitespace-tolerant anchor is enough.
-   */
-  private static readonly RECORD_SOURCE_RE =
-    /^\s*RecordSource\s*=\s*"((?:[^"]|"")*)"/iu;
-
-  /** Issue #49 — `RowSource = "..."` line regex. Mirrors `RECORD_SOURCE_RE`. */
-  private static readonly ROW_SOURCE_RE =
-    /^\s*RowSource\s*=\s*"((?:[^"]|"")*)"/iu;
-
-  /** Issue #49 — `RowSourceType = "..."` line regex. Used by the control-block
-   * scan to detect value-list controls whose RowSource is a literal list. */
-  private static readonly ROW_SOURCE_TYPE_RE =
-    /^\s*RowSourceType\s*=\s*"([^"]*)"/iu;
 
   /**
    * Issue #49 — copy of `VbaExtractor.SQL_TABLE_RE`. Same source / flags:
@@ -482,6 +654,7 @@ export class VbaFormExtractor {
     tableName: string,
     lineNum: number,
     synthesizedBy: string,
+    extraMetadata: Record<string, unknown> = {},
   ): void {
     if (!tableName) return;
     const targetId = generateNodeId(this.filePath, 'class', tableName, 0);
@@ -511,10 +684,44 @@ export class VbaFormExtractor {
       // the metadata.access field uniformly present across every SQL-derived
       // table reference (the in-code SQL sweep classifies read vs write from
       // the statement verb; a binding is always a read).
-      metadata: { synthesizedBy, access: 'read' },
+      metadata: { synthesizedBy, access: 'read', ...extraMetadata },
       line: lineNum,
       column: 0,
     });
+  }
+
+  /**
+   * Link a bound control to its enclosing form/report's single bare table.
+   * Expressions and SQL/absent RecordSource values stay metadata-only: column
+   * lineage through expressions or SELECT projections cannot be inferred here
+   * without risking false graph edges.
+   */
+  private emitControlSourceReference(
+    controlNodeId: string,
+    controlSource: string,
+    lineNum: number,
+    recordSource: string | undefined,
+  ): void {
+    const rawField = controlSource.trim();
+    if (!rawField || rawField.startsWith('=') || !recordSource) return;
+
+    const bracketedField = /^\[([^\]]+)\]$/.exec(rawField);
+    const field = bracketedField?.[1] ?? rawField;
+    if (!bracketedField && !/^\p{L}[\p{L}\p{N}_]*$/u.test(rawField)) return;
+
+    const source = recordSource.trim();
+    if (!source || this.isLikelySql(source)) return;
+    const bracketedSource = /^\[([^\]]+)\]$/.exec(source);
+    const tableName = bracketedSource?.[1] ?? source;
+    if (!bracketedSource && !/^\p{L}[\p{L}\p{N}_]*$/u.test(source)) return;
+
+    this.emitTableReference(
+      controlNodeId,
+      tableName,
+      lineNum,
+      'vba-control-source',
+      { column: field },
+    );
   }
 
   /**
@@ -556,151 +763,5 @@ export class VbaFormExtractor {
     const name = value.trim();
     if (!name) return;
     this.emitTableReference(sourceNodeId, name, lineNum, synthesizedBy);
-  }
-
-  /**
-   * Issue #49 — sweep for the form-level `RecordSource` line. RecordSource
-   * always attributes to the form-layout node (even if the line is
-   * written inside a control's Begin block — defensive: in real
-   * SaveAsText exports the form's RecordSource sits at the root, but
-   * the agent's spec says "emit from the form-layout node" regardless).
-   *
-   * The sweep intentionally matches ONLY `RecordSource` here;
-   * `RowSource` is handled by `sweepRowSources` so the per-binding
-   * attribution logic (control vs. form-layout) stays in one place.
-   */
-  private sweepRecordSources(src: string, formLayoutNodeId: string): void {
-    const lines = src.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      const m = VbaFormExtractor.RECORD_SOURCE_RE.exec(line);
-      if (!m) continue;
-      const rawValue = m[1] ?? '';
-      const lineNum = i + 1;
-      this.emitBinding(formLayoutNodeId, rawValue, lineNum, 'vba-record-source');
-    }
-  }
-
-  /**
-   * Issue #49 — sweep for per-control `RowSource` lines. RowSource
-   * attributes to the enclosing control's `form-instance-control` node
-   * when one is in scope; if the line is found outside any control
-   * Begin block (defensive — unusual in real exports), it falls back to
-   * the form-layout node. The tag is always `'vba-row-source'` so
-   * consumers can distinguish a control-level data binding from the
-   * form-level RecordSource even when both happen to share the same
-   * source node.
-   *
-   * Control-block tracking: a stack of `{ controlName, rowSourceType }`
-   * entries mirrors the current scope as the sweep walks lines in order.
-   * `Begin <Type>` pushes; `End` pops. `Begin Form` / `Begin Section`
-   * push a non-control entry so a RowSource written at the form root
-   * correctly falls through to the form-layout fallback.
-   *
-   * Value-list skip: when the CURRENT TOP scope's `RowSourceType` is
-   * `"Value List"` (captured by the same scan-window as the control's
-   * `Name`), the control's RowSource is a literal list and we skip the
-   * emission — the data is in code, not a table.
-   */
-  private sweepRowSources(src: string, formLayoutNodeId: string): void {
-    const lines = src.split('\n');
-    type Scope = { controlName: string; rowSourceType: string };
-    const stack: Scope[] = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      const lineNum = i + 1;
-
-      const beginM = VbaFormExtractor.BEGIN_RE.exec(line);
-      if (beginM) {
-        const controlType = beginM[1] ?? '';
-        if (VbaFormExtractor.NON_CONTROL_TYPES.has(controlType)) {
-          stack.push({ controlName: '', rowSourceType: '' });
-        } else {
-          // Reuse findControlName so the control-name attribution stays
-          // in lockstep with the form-instance-control node id we
-          // already produced in sweepControls. Issue #41's event-handler
-          // edges and Issue #49's references edges then point at the
-          // same id consistently.
-          const { name: controlName } = this.findControlName(
-            lines,
-            i,
-            lineNum,
-          );
-          const rowSourceType = this.findRowSourceType(lines, i);
-          stack.push({ controlName, rowSourceType });
-        }
-        continue;
-      }
-
-      if (/^\s*End\s*$/i.test(line)) {
-        if (stack.length > 0) stack.pop();
-        continue;
-      }
-
-      const rowM = VbaFormExtractor.ROW_SOURCE_RE.exec(line);
-      if (!rowM) continue;
-
-      // Find the nearest enclosing control scope. We don't just look at
-      // the stack top because a row could conceivably be written inside
-      // a `Begin Section` (controlName='' entry on top) — in that case
-      // the section entry hides the actual control below it. Walk the
-      // stack from top to bottom and pick the first controlName we see.
-      let currentControl = '';
-      for (let j = stack.length - 1; j >= 0; j--) {
-        if (stack[j]?.controlName) {
-          currentControl = stack[j]!.controlName;
-          break;
-        }
-      }
-
-      // Skip value-list controls. The check is on the TOP scope's
-      // rowSourceType, which is the most-recent control's type — even
-      // if a nested Begin/End hid it from the stack-walk above, the
-      // RowSource line we're matching was written inside that scope so
-      // the top of stack carries the right value.
-      const top = stack[stack.length - 1];
-      if (top && top.rowSourceType === 'Value List') continue;
-
-      const rawValue = rowM[1] ?? '';
-      const sourceId = currentControl
-        ? generateNodeId(
-            this.filePath,
-            'form-instance-control',
-            currentControl,
-            0,
-          )
-        : formLayoutNodeId;
-      this.emitBinding(sourceId, rawValue, lineNum, 'vba-row-source');
-    }
-  }
-
-  /**
-   * Issue #49 — companion helper to `findControlName`: scan ahead from a
-   * `Begin <Type>` line for the first `RowSourceType = "..."` attribute
-   * within the same `NAME_SCAN_WINDOW` (so a missing attribute gracefully
-   * no-ops instead of mis-attributing). Returns the captured value (e.g.
-   * `"Value List"`, `"Table/Query"`) or `''` when absent.
-   *
-   * Stops at the next `Begin` or `End` boundary — same scan-window
-   * discipline as `findControlName`, so a misaligned scan never crosses
-   * into a sibling control's attribute block.
-   */
-  private findRowSourceType(
-    lines: string[],
-    beginLineIndex: number,
-  ): string {
-    const end = Math.min(
-      lines.length,
-      beginLineIndex + 1 + VbaFormExtractor.NAME_SCAN_WINDOW,
-    );
-    for (let j = beginLineIndex + 1; j < end; j++) {
-      const line = lines[j] ?? '';
-      if (/^\s*(Begin|End)\b/i.test(line)) break;
-      const m = VbaFormExtractor.ROW_SOURCE_TYPE_RE.exec(line);
-      if (m) {
-        return m[1] ?? '';
-      }
-    }
-    return '';
   }
 }

@@ -19,6 +19,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CodeGraph } from '../src';
+import { Node } from '../src/types';
 
 const FIXTURES_DIR = path.join(__dirname, 'fixtures', 'vba');
 const FORM_BASENAME = 'Form_FormNCAuditoriaMotivoEliminado';
@@ -60,6 +61,25 @@ describe('E2E - real VBA fixtures from a Dysflow-managed project', () => {
     // modCallerDemo.bas (vba-graph-connectivity-fixes fixture) adds a 3rd
     // .bas file exercising the class-typed + .bas-qualified stub repoint.
     expect(vbaFiles).toBe(7);
+  });
+
+  it('has no phantom controls and preserves both real control-handler edges', () => {
+    if (!cg) return;
+    const queries = (
+      cg as unknown as { queries: { getAllNodes(): Node[] } }
+    ).queries;
+    const controls = queries.getAllNodes().filter(
+      (node) => node.kind === 'form-instance-control',
+    );
+    const ghosts = controls.filter((node) => !node.metadata?.controlType);
+    const handlerEdges = controls.flatMap((control) =>
+      cg!
+        .getIncomingEdges(control.id)
+        .filter((edge) => edge.kind === 'event-handler'),
+    );
+
+    expect(ghosts).toHaveLength(0);
+    expect(handlerEdges).toHaveLength(2);
   });
 
   it('emits a module node + function nodes for a .bas with Subs/Functions (mdlCursor.bas)', () => {

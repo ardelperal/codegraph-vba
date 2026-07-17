@@ -534,6 +534,7 @@ export class CodeGraph {
           // cross-file target now that the whole project has been indexed
           // (needs every file's nodes/edges to be resolvable candidates).
           this.resolver.resolveVbaCallStubs();
+          this.resolver.resolveVbaOpenedObjectStubs();
           // VBA #78: repoint `references` edges from synthetic class stubs
           // (created by the extractor for `Dim x As Type`) to the real type
           // node, so blast-radius can find test-file callers of enums/classes.
@@ -685,6 +686,7 @@ export class CodeGraph {
           try { return this.queries.isNameSegmentVocabEmpty(); } catch { return false; }
         })();
 
+        this.resolver.preserveVbaOpenedObjectEdges();
         const result = await this.orchestrator.sync(options.onProgress);
 
         // Cross-file finalization (e.g. NestJS RouterModule prefixes). Run on
@@ -815,10 +817,12 @@ export class CodeGraph {
           // VBA #12b: same lifecycle — repoint any newly-emitted qualified
           // call-stub edges to their real cross-file target (#12).
           this.resolver.resolveVbaCallStubs();
+          this.resolver.resolveVbaOpenedObjectStubs();
           // VBA #78: same lifecycle — repoint `references` edges from
           // synthetic class stubs to real type nodes (#78).
           this.resolver.resolveVbaReferenceStubs();
         }
+        this.resolver.resolveVbaOpenedObjectStubs();
 
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         // Off-thread — see indexAll's call site.

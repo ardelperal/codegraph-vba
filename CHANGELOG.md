@@ -13,9 +13,48 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - VBA event-handler relationships are now materialized in the graph at index time. A `WithEvents m_X As ClassName` binding in a form combined with a matching `m_X_<EventName>` handler Sub is now connected to the `RaiseEvent <EventName>` site via a single `event-handler` edge, so `codegraph_explore` reaches the handler in one call instead of the three-hop walk the vba-event-tracer skill used to repeat on every query. Projects with no WithEvents bindings are unaffected; the FORMS-* test suite reports zero new edges. (#150)
 
+## [1.10.0] - 2026-07-16
+
+### New Features
+
+- Code that reads or writes form controls via `Me.` now shows up in control impact analysis. (#140)
+- Form events that call a function directly (`=MyFunction()`) are now part of the graph, so those flows no longer dead-end. (#137)
+- Subforms now link to the forms they embed, so parent-to-subform flows and "who embeds this form" queries work. (#136)
+- Access form controls now link to the table columns they display, so column-rename impact reaches the control level. (#135)
+- Access form and report controls now expose their section membership and direct layout containment, making UI structure available to graph queries. (#134)
+
+### Fixes
+
+- Helper Subs with underscores in form code-behind no longer appear as phantom form controls. (#139)
+- Following `DoCmd.OpenForm` now reaches the opened form's code instead of stopping at a placeholder. (#138)
+- Access controls with long property blocks are now indexed reliably, and report layouts use the same dedicated kind as opened-report references. (#134)
+
+## [1.9.0] - 2026-07-15
+
+### Added
+
+- Added `codegraph_uninit` MCP tool (CLI subprocess wrapper around `codegraph uninit`). Destructive; off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,uninit`.
+
+### New Features
+
+- Added `codegraph_affected` MCP tool (CLI subprocess wrapper around `codegraph affected`). Off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,affected`. (#127)
+- Added `codegraph_index` MCP tool (CLI subprocess wrapper around `codegraph index`). Idempotent rebuild; off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,index`. (#129)
+
+## [1.8.0] - 2026-07-14
+
+### New Features
+
+- Added the opt-in `codegraph_init` MCP lifecycle tool (CLI subprocess wrapper around `codegraph init`). Off by default; enable via `CODEGRAPH_MCP_TOOLS=explore,init`. (#121)
+- Added the opt-in `codegraph_sync` MCP lifecycle tool for synchronizing a project's full index, including project selection, quiet mode, process output, and exit-code reporting. (#122)
+- Added the opt-in, read-only `codegraph_query` MCP tool for structured CLI symbol queries. (#123)
+
+## [1.7.3] - 2026-07-13
+>>>>>>> origin/main
+
 ### Fixes
 
 - Orphan npm staging dirs from any previous `npm install -g` failure (including pre-fix-era upgrades) are now cleaned automatically on every install via a `postinstall` script. No more EPERM noise on the next upgrade; no more manual cleanup of `.codegraph-vba-<HASH>` leftovers.
+- VBA `RaiseEvent` sites are no longer graphed for events with too many raise sites in the same file. Events with names like `AfterUpdate`, `Click`, or `Open` can be raised from hundreds of sites in a single form, producing edges that drown out the meaningful ones; the graph now stamps those event nodes with `metadata.highFanout` and a count, and drops the noisy edges, so the event itself (and its handler linkage) stays reachable while the noise is suppressed. The threshold defaults to 50 and is configurable via `vba.maxRaiseFanout` in `codegraph.json`. (#152)
 
 ## [1.7.1] - 2026-07-13
 
@@ -54,3 +93,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Closed ArkTS test database handles before removing temporary directories, preventing Windows `EBUSY`/`EPERM` teardown failures.
+[1.7.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.3
+[1.8.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.8.0
+[1.9.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.9.0
+[1.10.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.10.0

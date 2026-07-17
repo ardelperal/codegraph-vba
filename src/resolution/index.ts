@@ -16,7 +16,7 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
+import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaMeControl, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -28,6 +28,8 @@ import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
 import { isRuntimeObject } from './vba-runtime-objects';
+import { normalizeAccessObjectName } from './vba-access-object-name';
+import { generateNodeId } from '../extraction/tree-sitter-helpers';
 
 /**
  * Outcome of resolving a single VBA call-stub (issue #110). Recorded on the
@@ -793,6 +795,21 @@ export class ReferenceResolver {
       return null;
     }
 
+    // Access SourceObject names intentionally differ from layout node names
+    // (`Child` versus `Form_Child`), so resolve them before the exact-name
+    // existence pre-filter. Unique real layouts only; never fabricate nodes.
+    if (ref.metadata?.synthesizedBy === 'vba-source-object') {
+      return matchVbaSourceObject(ref, this.context);
+    }
+    if (ref.metadata?.synthesizedBy === 'vba-form-binding') {
+      return matchVbaFormBinding(ref, this.context);
+    }
+    // Me.<Control> is path-scoped: a miss must never fall through to global
+    // name matching, which could bind an unrelated same-named symbol.
+    if (ref.metadata?.synthesizedBy === 'vba-me-control' && ref.metadata?.siblingPath) {
+      return matchVbaMeControl(ref, this.context);
+    }
+
     // CFML component paths in inheritance (#1152): `extends="coldbox.system.web.
     // Controller"` names the supertype by its dot-separated path (or `extends=
     // "../base"` by relative file path) — the graph indexes the class under its
@@ -1016,10 +1033,20 @@ export class ReferenceResolver {
         }
       }
 
+      const expressionHandler =
+        ref.original.metadata?.synthesizedBy === 'vba-expression-handler';
+
       return {
-        source: ref.original.fromNodeId,
-        target: ref.targetNodeId,
+        // The form extractor only knows the wiring-site node. Resolution is
+        // the first point where the function node id exists, so expression
+        // handlers intentionally flip the usual unresolved-ref direction to
+        // match the established handler-function -> control/layout contract.
+        source: expressionHandler ? ref.targetNodeId : ref.original.fromNodeId,
+        target: expressionHandler ? ref.original.fromNodeId : ref.targetNodeId,
         kind,
+        ...(ref.original.metadata?.synthesizedBy === 'vba-source-object' || expressionHandler
+          ? { provenance: 'heuristic' as const }
+          : {}),
         line: ref.original.line,
         column: ref.original.column,
         metadata: {
@@ -1035,8 +1062,14 @@ export class ReferenceResolver {
           // receiver/qualifier context (`h.greet` → `greet`) and risk a
           // wrong rebind; edges without refName (pre-#1240, synthesized) are
           // deliberately NOT resurrected for the same reason.
-          refName: ref.original.referenceName,
-          ...(ref.original.referenceKind !== kind ? { refKind: ref.original.referenceKind } : {}),
+          // A flipped expression-handler edge targets the wiring-site node,
+          // not the referenced function. If that target is re-indexed, the
+          // form extractor recreates the ref; generic target resurrection
+          // would otherwise reconstruct it backwards from the function.
+          ...(!expressionHandler ? { refName: ref.original.referenceName } : {}),
+          ...(!expressionHandler && ref.original.referenceKind !== kind
+            ? { refKind: ref.original.referenceKind }
+            : {}),
           // Uniform marker for function-as-value edges (#756), regardless of
           // which strategy resolved them (import vs matchFunctionRef) — lets
           // tooling label "callback registration" and lets validation diff
@@ -1070,6 +1103,26 @@ export class ReferenceResolver {
                 procedureIndex: ref.original.metadata.procedureIndex,
               }
             : {}),
+          ...(ref.original.metadata?.synthesizedBy === 'vba-source-object'
+            ? {
+                synthesizedBy: 'vba-source-object',
+                embeds: true,
+                accessObjectKind: ref.original.metadata.accessObjectKind,
+              }
+            : {}),
+          ...(expressionHandler
+            ? {
+                synthesizedBy: 'vba-expression-handler',
+                eventName: ref.original.metadata?.eventName,
+              }
+            : {}),
+          ...(ref.original.metadata?.synthesizedBy === 'vba-me-control'
+            ? {
+                synthesizedBy: 'vba-me-control',
+                siblingPath: ref.original.metadata.siblingPath,
+                access: ref.original.metadata.access,
+              }
+            : {}),
         },
       };
     });
@@ -1095,11 +1148,13 @@ export class ReferenceResolver {
     // Clean up resolved refs from unresolved_refs table so metrics are accurate
     if (result.resolved.length > 0) {
       this.queries.deleteSpecificResolvedReferences(
-        result.resolved.map((r) => ({
+        result.resolved
+          .filter((r) => r.original.metadata?.synthesizedBy !== 'vba-expression-handler')
+          .map((r) => ({
           fromNodeId: r.original.fromNodeId,
           referenceName: r.original.referenceName,
           referenceKind: r.original.referenceKind,
-        }))
+          }))
       );
     }
 
@@ -1112,9 +1167,17 @@ export class ReferenceResolver {
     // invariant in status form: after a COMPLETED pass nothing it processed
     // is still 'pending', so any pending row at rest belongs to an
     // interrupted run and the sweep can key off the pending count.
-    if (result.unresolved.length > 0) {
+    if (
+      result.unresolved.length > 0 ||
+      result.resolved.some((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+    ) {
       this.queries.markReferencesFailed(
-        result.unresolved.map((r) => ({
+        [
+          ...result.unresolved,
+          ...result.resolved
+            .filter((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+            .map((r) => r.original),
+        ].map((r) => ({
           fromNodeId: r.fromNodeId,
           referenceName: r.referenceName,
           referenceKind: r.referenceKind,
@@ -1145,7 +1208,9 @@ export class ReferenceResolver {
       await maybeYield();
     }
 
-    const resolvedKeys = result.resolved.map((r) => ({
+    const resolvedKeys = result.resolved
+      .filter((r) => r.original.metadata?.synthesizedBy !== 'vba-expression-handler')
+      .map((r) => ({
       fromNodeId: r.original.fromNodeId,
       referenceName: r.original.referenceName,
       referenceKind: r.original.referenceKind,
@@ -1155,7 +1220,12 @@ export class ReferenceResolver {
       await maybeYield();
     }
 
-    const unresolvedKeys = result.unresolved.map((r) => ({
+    const unresolvedKeys = [
+      ...result.unresolved,
+      ...result.resolved
+        .filter((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+        .map((r) => r.original),
+    ].map((r) => ({
       fromNodeId: r.fromNodeId,
       referenceName: r.referenceName,
       referenceKind: r.referenceKind,
@@ -1331,7 +1401,9 @@ export class ReferenceResolver {
       }
 
       // Clean up resolved refs so they don't appear in the next batch
-      const resolvedKeys = result.resolved.map((r) => ({
+      const resolvedKeys = result.resolved
+        .filter((r) => r.original.metadata?.synthesizedBy !== 'vba-expression-handler')
+        .map((r) => ({
         fromNodeId: r.original.fromNodeId,
         referenceName: r.original.referenceName,
         referenceKind: r.original.referenceKind,
@@ -1345,7 +1417,12 @@ export class ReferenceResolver {
       // leave the pending set (the batch reader and non-progress guard below
       // only see pending rows) but stay retryable when a later sync adds a
       // symbol that could satisfy them (#1240).
-      const unresolvedKeys = result.unresolved.map((r) => ({
+      const unresolvedKeys = [
+        ...result.unresolved,
+        ...result.resolved
+          .filter((r) => r.original.metadata?.synthesizedBy === 'vba-expression-handler')
+          .map((r) => r.original),
+      ].map((r) => ({
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,
         referenceKind: r.referenceKind,
@@ -1954,6 +2031,90 @@ export class ReferenceResolver {
     }
 
     return repointedCount;
+  }
+
+  /**
+   * Repoint DoCmd.OpenForm/OpenReport edges from extraction-time placeholders
+   * to real layouts after every project-wide indexing pass. Missing targets
+   * deliberately keep the existing placeholder behavior.
+   */
+  resolveVbaOpenedObjectStubs(): number {
+    const stubs = this.queries.getVbaOpenedObjectStubs();
+    let repointedCount = 0;
+
+    for (const stub of stubs) {
+      const expectedKind = stub.kind;
+      const edgeKind = expectedKind === 'form-layout' ? 'opens-form' : 'opens-report';
+      const identity = normalizeAccessObjectName(stub.name);
+      const candidates = this.queries
+        .getNodesByKind(expectedKind)
+        .filter(
+          (node) =>
+            node.id !== stub.id &&
+            node.language === 'vba' &&
+            node.metadata?.stub !== true &&
+            (normalizeAccessObjectName(node.name) === identity ||
+              normalizeAccessObjectName(node.qualifiedName) === identity),
+        );
+
+      // Silent ambiguity is safer than choosing the wrong Access object.
+      if (candidates.length !== 1) continue;
+      const target = candidates[0]!;
+      for (const edge of this.queries.getIncomingEdges(stub.id, [edgeKind])) {
+        if (edge.id === undefined) continue;
+        if (this.queries.edgeExists(edge.source, target.id, edgeKind)) {
+          this.queries.deleteEdgeById(edge.id);
+          continue;
+        }
+        this.queries.repointEdgeTarget(
+          edge.id,
+          target.id,
+          edge.metadata ? JSON.stringify(edge.metadata) : null,
+        );
+        repointedCount++;
+      }
+      this.queries.deleteNode(stub.id);
+    }
+
+    return repointedCount;
+  }
+
+  preserveVbaOpenedObjectEdges(): number {
+    let preserved = 0;
+    for (const kind of ['form-layout', 'report-layout'] as const) {
+      const edgeKind = kind === 'form-layout' ? 'opens-form' : 'opens-report';
+      const form = kind === 'form-layout';
+      for (const target of this.queries.getNodesByKind(kind)) {
+        if (target.language !== 'vba' || target.metadata?.stub === true) continue;
+        for (const edge of this.queries.getIncomingEdges(target.id, [edgeKind])) {
+          const targetName = edge.metadata?.[form ? 'targetFormName' : 'targetReportName'];
+          if (edge.id === undefined || typeof targetName !== 'string' || !targetName) continue;
+          const prefix = form ? 'synthetic:opensFormStub' : 'synthetic:opensReportStub';
+          const extension = form ? '.form.txt' : '.report.txt';
+          const syntheticFilePath = `${prefix}/${targetName}${extension}`;
+          const stubId = generateNodeId(syntheticFilePath, kind, targetName, 0);
+          this.queries.insertNode({
+            id: stubId,
+            kind,
+            name: targetName,
+            qualifiedName: `${form ? 'Form_' : 'Report_'}${targetName}`,
+            filePath: syntheticFilePath,
+            language: 'vba',
+            startLine: edge.line ?? 0, endLine: edge.line ?? 0,
+            startColumn: 0, endColumn: 0,
+            metadata: { stub: true },
+            updatedAt: Date.now(),
+          });
+          this.queries.repointEdgeTarget(
+            edge.id,
+            stubId,
+            edge.metadata ? JSON.stringify(edge.metadata) : null,
+          );
+          preserved++;
+        }
+      }
+    }
+    return preserved;
   }
 
   /**

@@ -11,11 +11,196 @@
  *                                                  (also covers the empty form case)
  */
 import { describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { VbaFormExtractor } from '../src/extraction/vba-form-extractor';
+import { generateNodeId } from '../src/extraction/tree-sitter-helpers';
 
 function extract(filePath: string, source: string) {
   return new VbaFormExtractor(filePath, source).extract();
 }
+
+describe('issue-134: block-scoped form and report walk', () => {
+  it('indexes a control whose Name follows more than 20 properties', () => {
+    const properties = Array.from(
+      { length: 24 },
+      (_, index) => `        Property${index} = "value"`,
+    ).join('\n');
+    const filePath = 'src/forms/Form_Long.form.txt';
+    const r = extract(filePath, `Begin Form
+    Begin TextBox
+${properties}
+        Name = "txtAfterLongPropertyBlock"
+    End
+End`);
+
+    const control = r.nodes.find(
+      (node) =>
+        node.kind === 'form-instance-control' &&
+        node.name === 'txtAfterLongPropertyBlock',
+    );
+    expect(control).toBeDefined();
+    expect(control?.id).toBe(
+      generateNodeId(
+        filePath,
+        'form-instance-control',
+        'txtAfterLongPropertyBlock',
+        0,
+      ),
+    );
+  });
+
+  it('does not attribute a sibling Name across a block boundary', () => {
+    const r = extract('src/forms/Form_Siblings.form.txt', `Begin Form
+    Begin TextBox
+        Caption = "Nameless"
+    End
+    Begin CommandButton
+        Name = "btnSibling"
+    End
+End`);
+
+    const controls = r.nodes.filter(
+      (node) => node.kind === 'form-instance-control',
+    );
+    expect(controls.map((node) => node.name)).toEqual(['btnSibling']);
+    expect(controls[0]?.metadata?.controlType).toBe('CommandButton');
+  });
+
+  it('uses report-layout for reports and form-layout for forms', () => {
+    const reportPath = 'src/reports/Report_Orders.report.txt';
+    const report = extract(reportPath, 'Begin Report\nEnd');
+    const reportRoot = report.nodes.find(
+      (node) => node.kind === 'report-layout',
+    );
+    expect(reportRoot).toBeDefined();
+    expect(reportRoot?.id).toBe(
+      generateNodeId(reportPath, 'report-layout', 'Report_Orders', 1),
+    );
+    expect(report.nodes.some((node) => node.kind === 'form-layout')).toBe(false);
+
+    const form = extract('src/forms/Form_Orders.form.txt', 'Begin Form\nEnd');
+    expect(form.nodes.some((node) => node.kind === 'form-layout')).toBe(true);
+    expect(form.nodes.some((node) => node.kind === 'report-layout')).toBe(false);
+  });
+
+  it('emits contains edges and section metadata without section nodes', () => {
+    const r = extract('src/forms/Form_Sections.form.txt', `Begin Form
+    Begin Section
+        Name = "Detail"
+        Begin TextBox
+            Name = "txtInside"
+        End
+    End
+    Begin CommandButton
+        Name = "btnOutside"
+    End
+End`);
+    const root = r.nodes.find((node) => node.kind === 'form-layout');
+    const inside = r.nodes.find((node) => node.name === 'txtInside');
+    const outside = r.nodes.find((node) => node.name === 'btnOutside');
+
+    expect(inside?.metadata?.section).toBe('Detail');
+    expect(outside?.metadata?.section).toBeUndefined();
+    expect(r.nodes.some((node) => node.name === 'Detail')).toBe(false);
+    expect(
+      r.edges.filter(
+        (edge) =>
+          edge.kind === 'contains' &&
+          edge.source === root?.id &&
+          (edge.target === inside?.id || edge.target === outside?.id),
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('balances GUID container blocks without losing the enclosing section', () => {
+    const r = extract('src/forms/Form_Guid.form.txt', `Begin Form
+    Begin Section
+        Name = "Detail"
+        Begin {01234567-89AB-CDEF-0123-456789ABCDEF}
+            Caption = "Layout metadata"
+        End
+        Begin TextBox
+            Name = "txtAfterGuid"
+        End
+    End
+End`);
+    const control = r.nodes.find((node) => node.name === 'txtAfterGuid');
+    expect(control?.metadata?.section).toBe('Detail');
+    expect(
+      r.nodes.some(
+        (node) => node.metadata?.controlType === '{01234567-89AB-CDEF-0123-456789ABCDEF}',
+      ),
+    ).toBe(false);
+  });
+
+  it('balances property-valued GUID blocks without closing the control', () => {
+    const r = extract('src/forms/Form_GuidProperty.form.txt', `Begin Form
+    Begin Section
+        Name = "Detail"
+        Begin ComboBox
+            Name = "cboCustomer"
+            GUID = Begin
+                0x00112233445566778899aabbccddeeff
+            End
+            RowSource = "Customers"
+        End
+    End
+End`);
+    const control = r.nodes.find((node) => node.name === 'cboCustomer');
+    const binding = r.edges.find(
+      (edge) => edge.metadata?.synthesizedBy === 'vba-row-source',
+    );
+    const bindingTarget = r.nodes.find((node) => node.id === binding?.target);
+
+    expect(control?.metadata?.section).toBe('Detail');
+    expect(binding?.source).toBe(control?.id);
+    expect(bindingTarget?.name).toBe('Customers');
+  });
+
+  it('adds one root contains edge for every named control in the real fixture', () => {
+    const fixturePath = path.join(
+      '__tests__',
+      'fixtures',
+      'vba',
+      'src',
+      'forms',
+      'Form_FormNCAuditoriaMotivoEliminado.form.txt',
+    );
+    const r = extract(fixturePath, fs.readFileSync(fixturePath, 'utf8'));
+    const root = r.nodes.find((node) => node.kind === 'form-layout');
+    const controls = r.nodes.filter(
+      (node) => node.kind === 'form-instance-control',
+    );
+    const contains = r.edges.filter(
+      (edge) => edge.kind === 'contains' && edge.source === root?.id,
+    );
+    expect(contains).toHaveLength(controls.length);
+    expect(new Set(contains.map((edge) => edge.target)).size).toBe(
+      controls.length,
+    );
+  });
+
+  it('preserves the no-code-node guardrail', () => {
+    const r = extract('src/forms/Form_Guard.form.txt', `Begin Form
+    Begin Section
+        Name = "Detail"
+        Begin TextBox
+            Name = "txtSafe"
+            Caption = "Sub Fake(): End Sub"
+        End
+    End
+End`);
+    const allowedKinds = new Set([
+      'file',
+      'form-layout',
+      'report-layout',
+      'property',
+      'form-instance-control',
+    ]);
+    expect(r.nodes.every((node) => allowedKinds.has(node.kind))).toBe(true);
+  });
+});
 
 describe('VbaFormExtractor — form module with class binding (REQ-FORM-1)', () => {
   it('Form module named from VB_Name', () => {
@@ -96,9 +281,9 @@ Begin
     End
 End`;
     const r = extract('src/reports/Report_Orders.report.txt', src);
-    // B2 (hueco 4): the file-level node is now `kind: 'form-layout'`,
-    // not `module`. The `.report.txt` path shares the same rename.
-    const formNode = r.nodes.find((n) => n.kind === 'form-layout');
+    // Reports use their dedicated layout kind so real report nodes converge
+    // with DoCmd.OpenReport stubs.
+    const formNode = r.nodes.find((n) => n.kind === 'report-layout');
     expect(formNode).toBeDefined();
     expect(formNode?.name).toBe('Report_Orders');
     const binding = r.unresolvedReferences.find(

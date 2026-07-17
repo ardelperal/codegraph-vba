@@ -52,6 +52,8 @@ export interface ParseTask {
   language: Language;
   frameworkNames?: string[];
   vbaTargets?: Record<string, boolean>;
+  /** Issue #152: per-file fanout cap for `RaiseEvent` edges (VBA only). */
+  maxRaiseFanout?: number;
 }
 
 /** Default upper bound on the pool size derived from the core count. */
@@ -342,6 +344,7 @@ export class ParseWorkerPool {
       frameworkNames: job.task.frameworkNames,
       language: job.task.language,
       vbaTargets: job.task.vbaTargets,
+      maxRaiseFanout: job.task.maxRaiseFanout,
     });
   }
 

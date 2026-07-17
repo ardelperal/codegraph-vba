@@ -172,6 +172,18 @@ export class VbaExtractorContext {
   public localEvents = new Map<string, Node>();
 
   /**
+   * Issue #152: per-event counter for `RaiseEvent <EventName>` sites. Keyed
+   * by event node id (so two different events that share a name across
+   * files don't collide — the gate is per-file). The count is incremented
+   * in `scanRaiseEvents` BEFORE the edge is pushed, so the count equals
+   * the number of raise sites regardless of the gate decision downstream.
+   * The orchestrator's fanout-gate pass reads this map to decide which
+   * event nodes to flag `metadata.highFanout: true` and which `raises-event`
+   * edges to drop.
+   */
+  public raiseEventCounts = new Map<string, number>();
+
+  /**
    * Same-file function/property return types, keyed by lowercase proc name →
    * declared return type. ONLY non-primitive (project-class) return types are
    * stored. Populated by `sweepProcedures` (which runs before the call sweep);
@@ -281,6 +293,65 @@ export class VbaExtractorContext {
     // O(1) via the cache populated as function nodes are emitted in
     // `sweepProcedures` (audit S2 — replaced an O(n) linear scan per call site).
     return this.functionNodeByName.get(name);
+  }
+
+  /**
+   * Issue #152: apply the per-file `RaiseEvent` fanout gate. For every
+   * event whose `raiseEventCounts` value exceeds `maxFanout`:
+   *   1. Stamp the event node's `metadata.highFanout = true` and
+   *      `metadata.raiseCount = <count>` so consumers (codegraph_explore,
+   *      vba-event-tracer) can recognize a high-fanout event.
+   *   2. Drop every `raises-event` edge targeting that event id from
+   *      `edges`. The event node itself stays — declaration site, handler
+   *      linkage via `subscribes-event`, and metadata are all preserved.
+   *
+   * Events with `<= maxFanout` raise sites are untouched (no flag, edges
+   * stay). When `maxFanout` is undefined, the gate is disabled and the
+   * method is a no-op. Mirrors the upstream `EVENT_FANOUT_CAP` discipline
+   * in `src/resolution/callback-synthesizer.ts:43` (this side suppresses
+   * the producer side, the upstream side suppresses the synthesized
+   * cross-file dispatcher/handler edges).
+   *
+   * Returns the number of `raises-event` edges dropped (zero when the
+   * gate is disabled or no event exceeds the cap — useful for tests).
+   */
+  public applyRaiseFanoutGate(maxFanout: number | undefined): number {
+    if (maxFanout === undefined) return 0;
+    if (maxFanout < 0) return 0;
+
+    // 1. Build the set of event node ids that exceed the cap.
+    const overThreshold = new Set<string>();
+    for (const [eventId, count] of this.raiseEventCounts) {
+      if (count > maxFanout) overThreshold.add(eventId);
+    }
+    if (overThreshold.size === 0) return 0;
+
+    // 2. Stamp the metadata on the event nodes.
+    for (const eventId of overThreshold) {
+      const eventNode = this.nodes.find(
+        (n) => n.id === eventId && n.kind === 'event',
+      );
+      if (!eventNode) continue;
+      const md = (eventNode.metadata ?? {}) as Record<string, unknown>;
+      md.highFanout = true;
+      md.raiseCount = this.raiseEventCounts.get(eventId) ?? 0;
+      eventNode.metadata = md;
+    }
+
+    // 3. Drop every `raises-event` edge targeting an over-threshold event.
+    // Re-build the edges array so the dropped edges vanish without
+    // disturbing the other edges' order. `edges.length` is the only
+    // property kept; this matches how every other sweep mutates `edges`
+    // (push-only, never splice).
+    const before = this.edges.length;
+    const kept: Edge[] = [];
+    for (const e of this.edges) {
+      if (e.kind === 'raises-event' && overThreshold.has(e.target)) continue;
+      kept.push(e);
+    }
+    this.edges.length = 0;
+    for (const e of kept) this.edges.push(e);
+    return before - kept.length;
   }
 
   /**

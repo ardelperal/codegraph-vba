@@ -1600,7 +1600,12 @@ export class ExtractionOrchestrator {
     // Threaded into language detection so custom-extension files load the right
     // grammar and store under the mapped language.
     const overrides = loadExtensionOverrides(this.rootDir);
-    const vbaTargets = loadVbaConfig(this.rootDir).targets;
+    // Issue #152: pull the optional `vba.maxRaiseFanout` knob from the
+    // same `codegraph.json` → `vba` block the targets live in. The VBA
+    // extractor applies the per-file fanout gate at this threshold.
+    const vbaConfig = loadVbaConfig(this.rootDir);
+    const vbaTargets = vbaConfig.targets;
+    const maxRaiseFanout = vbaConfig.maxRaiseFanout;
 
     const log = verbose
       ? (msg: string) => { console.log(`[worker] ${msg}`); }
@@ -1710,8 +1715,11 @@ export class ExtractionOrchestrator {
      */
     const parseFile = (filePath: string, content: string): Promise<ExtractionResult> => {
       const language = detectLanguage(filePath, content, overrides);
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames, vbaTargets));
-      return pool.requestParse({ filePath, content, language, frameworkNames, vbaTargets });
+      // Issue #152: thread the optional `vba.maxRaiseFanout` knob through
+      // the worker boundary (or the in-process fallback) so every VBA
+      // file sees the same gate.
+      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout));
+      return pool.requestParse({ filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout });
     };
 
     // --- Bounded rolling-window dispatch, ordered commit ---
@@ -2229,9 +2237,19 @@ export class ExtractionOrchestrator {
 
     // Extract from source. Use cached framework names if indexAll has run,
     // otherwise detect on the spot so single-file re-index paths still emit
-    // route nodes / middleware / etc.
+    // route nodes / middleware / etc. Issue #152: also thread the
+    // `vba.maxRaiseFanout` knob so the single-file re-index path
+    // honours the same per-file fanout gate the full scan does.
     const frameworkNames = this.ensureDetectedFrameworks();
-    const result = extractFromSource(relativePath, content, language, frameworkNames);
+    const vbaReindexConfig = loadVbaConfig(this.rootDir);
+    const result = extractFromSource(
+      relativePath,
+      content,
+      language,
+      frameworkNames,
+      vbaReindexConfig.targets,
+      vbaReindexConfig.maxRaiseFanout,
+    );
 
     // Store in database
     if (result.nodes.length > 0 || result.errors.length === 0) {

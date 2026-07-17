@@ -1,0 +1,4 @@
+Attribute VB_Name = "Form_Child"
+Begin Form
+    Name ="Child"
+End

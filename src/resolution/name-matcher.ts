@@ -6,6 +6,73 @@
 
 import { Language, Node } from '../types';
 import { UnresolvedRef, ResolvedRef, ResolutionContext } from './types';
+import { normalizeAccessObjectName } from './vba-access-object-name';
+
+/** Resolve Me.<Control> only inside the extractor-declared sibling layout. */
+export function matchVbaMeControl(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-me-control') return null;
+  if (ref.metadata.builtIn === true) return null;
+  const siblingPath = ref.metadata.siblingPath;
+  if (typeof siblingPath !== 'string' || siblingPath.length === 0) return null;
+  const wanted = ref.referenceName.toLocaleLowerCase('en-US');
+  const matches = context
+    .getNodesInFile(siblingPath)
+    .filter((node) =>
+      node.language === 'vba' &&
+      node.kind === 'form-instance-control' &&
+      node.name.toLocaleLowerCase('en-US') === wanted
+    );
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 1,
+    resolvedBy: 'exact-match',
+  };
+}
+
+/** Resolve Access SourceObject embeddings only to a unique real layout node. */
+export function matchVbaSourceObject(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-source-object' || ref.metadata.embeds !== true) {
+    return null;
+  }
+  const kind = ref.metadata.accessObjectKind === 'report' ? 'report-layout' : 'form-layout';
+  const wanted = normalizeAccessObjectName(ref.referenceName);
+  const matches = context
+    .getNodesByKind(kind)
+    .filter((node) => node.language === 'vba' && normalizeAccessObjectName(node.name) === wanted);
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 0.95,
+    resolvedBy: 'exact-match',
+  };
+}
+
+/** Keep a layout's sibling-code binding from resolving back to the layout. */
+export function matchVbaFormBinding(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-form-binding') return null;
+  const matches = context
+    .getNodesByName(ref.referenceName)
+    .filter((node) => node.language === 'vba' && node.kind === 'class');
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 0.95,
+    resolvedBy: 'exact-match',
+  };
+}
 
 /**
  * Ceiling on how many same-named definitions a FUZZY name-match strategy will
@@ -1900,6 +1967,23 @@ export function matchReference(
   ref: UnresolvedRef,
   context: ResolutionContext
 ): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy === 'vba-expression-handler') {
+    const candidates = context
+      .getNodesByName(ref.referenceName)
+      .filter((node) => node.language === 'vba' && node.kind === 'function');
+    if (candidates.length === 0) return null;
+    const target = candidates.length === 1
+      ? candidates[0]!
+      : findBestMatch(ref, candidates, context);
+    if (!target) return null;
+    return {
+      original: ref,
+      targetNodeId: target.id,
+      confidence: candidates.length === 1 ? 0.9 : 0.7,
+      resolvedBy: 'exact-match',
+    };
+  }
+
   // Function-as-value refs (#756) resolve ONLY through the dedicated matcher —
   // never the fuzzy/qualified fallthrough below (a wrong callback edge is
   // worse than none).

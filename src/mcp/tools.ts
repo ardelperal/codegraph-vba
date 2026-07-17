@@ -25,12 +25,17 @@ import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
 import {
   existsSync,
+  realpathSync,
   readFileSync,
 } from 'fs';
+import { spawnSync } from 'child_process';
 import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, CONFIG_LEAF_LANGUAGES } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { scanDynamicDispatch } from './dynamic-boundaries';
 import { getUpdateNotice } from '../upgrade/update-check';
+
+/** Narrow subprocess seam for testing CLI-only MCP wrappers. */
+export const cliProcess = { spawnSync };
 
 /**
  * An expected, recoverable "codegraph can't serve this" condition — most
@@ -50,7 +55,7 @@ export class NotIndexedError extends Error {}
  * retry guidance — abandoning this path is the desired agent reaction.
  */
 export class PathRefusalError extends Error {}
-import { resolve as resolvePath } from 'path';
+import { basename, delimiter, isAbsolute, relative, resolve as resolvePath } from 'path';
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
@@ -483,6 +488,7 @@ export interface ToolAnnotations {
 interface PropertySchema {
   type: string;
   description: string;
+  items?: { type: string };
   enum?: string[];
   default?: unknown;
 }
@@ -534,6 +540,115 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
  * All tools support cross-project queries via the optional `projectPath` parameter.
  */
 export const tools: ToolDefinition[] = [
+  {
+    name: 'codegraph_affected',
+    description: 'Map changed source files to affected tests via the codegraph CLI. Read-only and disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          description: 'Changed source paths to map to affected test files.',
+          items: { type: 'string' },
+        },
+        path: {
+          type: 'string',
+          description: 'Project root (default: the selected project or current working directory).',
+        },
+        stdin: {
+          type: 'boolean',
+          description: 'Read additional changed paths from standard input.',
+          default: false,
+        },
+        depth: {
+          type: 'number',
+          description: 'Maximum dependency traversal depth (default: 5).',
+          default: 5,
+        },
+        filter: {
+          type: 'string',
+          description: 'Glob filter applied to affected test paths.',
+        },
+        json: {
+          type: 'boolean',
+          description: 'Request JSON output from the CLI.',
+          default: false,
+        },
+        quiet: {
+          type: 'boolean',
+          description: 'Suppress non-result CLI output.',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['files'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: 'codegraph_index',
+    description: 'Rebuild a project index from scratch via the codegraph CLI. Idempotent and disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project directory to rebuild (default: current working directory).',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Index even when the path looks like a home directory or filesystem root.',
+          default: false,
+        },
+        quiet: {
+          type: 'boolean',
+          description: 'Suppress progress output.',
+          default: false,
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'Enable verbose CLI output.',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'codegraph_query',
+    description: 'Run the canonical CodeGraph CLI symbol query and return its structured JSON output.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Symbol name or partial name to query',
+        },
+        path: {
+          type: 'string',
+          description: 'Validated project directory passed to the CLI; overrides projectPath when both are set. Defaults to the selected project root.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results (default: 10)',
+          default: 10,
+        },
+        kind: {
+          type: 'string',
+          description: 'Filter by node kind',
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['query'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
   {
     name: 'codegraph_search',
     description: 'Quick symbol search by name. Returns locations only (no code). Use codegraph_explore instead to get the actual source / understand an area in one call.',
@@ -699,6 +814,30 @@ export const tools: ToolDefinition[] = [
     annotations: READ_ONLY_ANNOTATIONS,
   },
   {
+    name: 'codegraph_sync',
+    description: 'Synchronize an existing CodeGraph index with filesystem changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project or directory whose full CodeGraph index should be synchronized.',
+        },
+        quiet: {
+          type: 'boolean',
+          description: 'Suppress progress output.',
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
+  {
     name: 'codegraph_status',
     description: 'Index health check (files / nodes / edges). Skip unless debugging.',
     inputSchema: {
@@ -743,6 +882,62 @@ export const tools: ToolDefinition[] = [
     },
     annotations: READ_ONLY_ANNOTATIONS,
   },
+  {
+    name: 'codegraph_uninit',
+    description: 'Remove a project\'s CodeGraph index by invoking the CLI. Destructive and disabled by default; re-enable with CODEGRAPH_MCP_TOOLS=explore,uninit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project directory to uninitialize (default: current working directory).',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Skip the CLI confirmation prompt (default: false).',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: 'codegraph_init',
+    description: 'Initialize and index a project by invoking the codegraph init CLI. This mutates the target project and is disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Project directory to initialize and index.',
+        },
+        force: {
+          type: 'boolean',
+          description: 'Pass --force to allow initialization at a normally unsafe root.',
+          default: false,
+        },
+        verbose: {
+          type: 'boolean',
+          description: 'Pass --verbose to show detailed worker lifecycle and memory information.',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['path'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
 ];
 
 /**
@@ -765,6 +960,9 @@ export const tools: ToolDefinition[] = [
  */
 function withRequiredProjectPath(defs: ToolDefinition[]): ToolDefinition[] {
   return defs.map((tool) => {
+    // Lifecycle tools operate on their own required `path`; they do not need a
+    // pre-opened default index, so their cross-project hint remains optional.
+    if (tool.annotations?.readOnlyHint === false && tool.inputSchema.required?.includes('path')) return tool;
     if (!tool.inputSchema.properties.projectPath) return tool;
     const required = tool.inputSchema.required ?? [];
     if (required.includes('projectPath')) return tool;
@@ -922,7 +1120,8 @@ export class ToolHandler {
   /**
    * Optional allowlist of exposed tools, parsed from the CODEGRAPH_MCP_TOOLS
    * env var (comma-separated short names, e.g. "trace,search,node,context").
-   * Unset/empty → every tool is exposed. Lets an operator (or an A/B harness)
+   * Unset/empty → legacy direct calls to read-only tools are allowed, while
+   * mutating lifecycle tools remain opt-in. Lets an operator (or an A/B harness)
    * trim the tool surface without rebuilding the client config; the ablated
    * tool is then truly absent from ListTools rather than merely denied on call.
    * Matching is on the short form, so "node" and "codegraph_node" both work.
@@ -938,7 +1137,11 @@ export class ToolHandler {
   /** Whether a tool name passes the CODEGRAPH_MCP_TOOLS allowlist (if any). */
   private isToolAllowed(name: string): boolean {
     const allow = this.toolAllowlist();
-    return !allow || allow.has(name.replace(/^codegraph_/, ''));
+    const shortName = name.replace(/^codegraph_/, '');
+    if (allow) return allow.has(shortName);
+    // Preserve backwards compatibility for direct read-only calls. Mutating
+    // lifecycle tools must be explicitly enabled even when tools/list is bypassed.
+    return shortName !== 'init' && shortName !== 'sync' && shortName !== 'index' && shortName !== 'affected';
   }
 
   /**
@@ -1000,7 +1203,7 @@ export class ToolHandler {
         'codegraph_search',
         'codegraph_node',
       ]);
-      if (stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
+      if (!allow && stats.fileCount < TINY_REPO_FILE_THRESHOLD) {
         visible = visible.filter(t => TINY_REPO_CORE_TOOLS.has(t.name));
       }
 
@@ -1390,6 +1593,18 @@ export class ToolHandler {
         if (typeof check === 'object' && check !== undefined) return check;
       }
 
+      if (toolName === 'codegraph_init') {
+        return this.executeMutatingTool('init', args);
+      }
+
+      if (toolName === 'codegraph_index') {
+        return this.executeMutatingTool('index', args);
+      }
+
+      if (toolName === 'codegraph_affected') {
+        return this.handleAffected(args);
+      }
+
       // codegraph_status reports watcher state (pending files, degraded mode,
       // worktree warning) and embeds its own sections — it must run on the MAIN
       // thread against the watched default instance, so it is NEVER off-loaded to
@@ -1397,6 +1612,14 @@ export class ToolHandler {
       // auto-banner wrapper to avoid duplicating its own pending-files section.
       if (toolName === 'codegraph_status') {
         return await this.handleStatus(args);
+      }
+
+      if (toolName === 'codegraph_uninit') {
+        return this.executeMutatingTool('uninit', args);
+      }
+
+      if (toolName === 'codegraph_sync') {
+        return this.handleSync(args);
       }
 
       // Read tools: off-load the CPU-heavy dispatch to the worker pool when one
@@ -1435,6 +1658,157 @@ export class ToolHandler {
         'continue without codegraph for this task.'
       );
     }
+  }
+
+  /** Run the CLI sync command and preserve its complete process output. */
+  private handleSync(args: Record<string, unknown>): ToolResult {
+    if (args.quiet !== undefined && typeof args.quiet !== 'boolean') {
+      return this.errorResult('quiet must be a boolean');
+    }
+
+    const target = args.path ?? args.projectPath ?? this.cg?.getProjectRoot() ?? process.cwd();
+    if (typeof target !== 'string') return this.errorResult('path must be a string');
+    const resolvedTarget = this.validateMutationTarget(target);
+    if (typeof resolvedTarget !== 'string') return resolvedTarget;
+    const commandArgs = [resolvePath(__dirname, '../../dist/bin/codegraph.js'), 'sync', resolvedTarget];
+    if (args.quiet === true) commandArgs.push('--quiet');
+
+    const result = spawnSync(process.execPath, commandArgs, {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const stdout = result.stdout ?? '';
+    const stderr = result.stderr ?? '';
+    const output = [stdout, stderr].filter(Boolean).join(stdout && stderr ? '\n' : '');
+
+    if (result.error) {
+      return this.errorResult(`${result.error.message}${output ? `\n${output}` : ''}`);
+    }
+    if (result.status !== 0) {
+      return {
+        content: [{
+          type: 'text',
+          text: [output, `codegraph sync exited with code ${result.status}`].filter(Boolean).join('\n'),
+        }],
+        isError: true,
+      };
+    }
+    return this.textResult(output || 'codegraph sync exited with code 0');
+  }
+
+  /** Run the CLI-only affected command and preserve its complete process output. */
+  private handleAffected(args: Record<string, unknown>): ToolResult {
+    if (!Array.isArray(args.files) || args.files.some(file => typeof file !== 'string')) {
+      return this.errorResult('files must be an array of strings');
+    }
+    for (const flag of ['stdin', 'json', 'quiet'] as const) {
+      if (args[flag] !== undefined && typeof args[flag] !== 'boolean') {
+        return this.errorResult(`${flag} must be a boolean`);
+      }
+    }
+
+    const target = args.path ?? args.projectPath ?? this.cg?.getProjectRoot() ?? process.cwd();
+    if (typeof target !== 'string') return this.errorResult('path must be a string');
+    const pathError = validateProjectPath(target);
+    if (pathError) return this.errorResult(pathError);
+
+    const depth = args.depth === undefined ? 5 : Number(args.depth);
+    if (!Number.isInteger(depth) || depth < 0) {
+      return this.errorResult('depth must be a non-negative integer');
+    }
+    let filter: string | undefined;
+    if (args.filter !== undefined) {
+      const validated = this.validateString(args.filter, 'filter');
+      if (typeof validated !== 'string') return validated;
+      filter = validated;
+    }
+
+    const cliEntry = resolvePath(__dirname, '../bin/codegraph.js');
+    const commandArgs = [cliEntry, 'affected', ...(args.files as string[]), '-p', target, '-d', String(depth)];
+    if (filter !== undefined) commandArgs.push('-f', filter);
+    if (args.json === true) commandArgs.push('--json');
+    if (args.quiet === true) commandArgs.push('--quiet');
+    if (args.stdin === true) commandArgs.push('--stdin');
+
+    const result = cliProcess.spawnSync(process.execPath, commandArgs, {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    const stdout = result.stdout ?? '';
+    const stderr = result.stderr ?? '';
+    let output = [stdout, stderr, result.error?.message].filter(Boolean).join('\n');
+    const failed = result.status !== 0 || result.error !== undefined;
+    if (!failed && args.json === true) {
+      try {
+        output = JSON.stringify(JSON.parse(stdout));
+      } catch (error) {
+        return this.errorResult(`codegraph affected returned invalid JSON: ${error instanceof Error ? error.message : String(error)}\n${output}`);
+      }
+    }
+    return {
+      content: [{
+        type: 'text',
+        text: output || result.error?.message || `codegraph affected exited with status ${result.status}`,
+      }],
+      ...(failed ? { isError: true } : {}),
+    };
+  }
+
+  /** Resolve symlinks/junctions and enforce mutation-root boundaries. */
+  private validateMutationTarget(target: string): string | ToolResult {
+    const canonicalize = (candidate: string): string => {
+      let existing = resolvePath(candidate);
+      const missing: string[] = [];
+      while (!existsSync(existing)) {
+        const parent = resolvePath(existing, '..');
+        if (parent === existing) break;
+        missing.unshift(basename(existing));
+        existing = parent;
+      }
+      return resolvePath(realpathSync.native(existing), ...missing);
+    };
+    const resolvedTarget = canonicalize(target);
+    const rawAllowlist = process.env.CODEGRAPH_MCP_ALLOWLIST?.trim();
+    if (rawAllowlist && rawAllowlist !== '*') {
+      const allowed = rawAllowlist.split(delimiter).map(entry => entry.trim()).filter(Boolean).some(entry => {
+        const relativePath = relative(canonicalize(entry), resolvedTarget);
+        return relativePath === '' || (!relativePath.startsWith('..') && !isAbsolute(relativePath));
+      });
+      if (!allowed) return this.errorResult(`Path is outside CODEGRAPH_MCP_ALLOWLIST: ${resolvedTarget}`);
+    }
+    return resolvedTarget;
+  }
+
+  /** Execute a mutating CodeGraph CLI command after enforcing its path allowlist. */
+  private executeMutatingTool(command: 'init' | 'uninit' | 'index', args: Record<string, unknown>): ToolResult {
+    const rawTarget = args.path ?? args.projectPath ?? (command === 'init' ? undefined : process.cwd());
+    const target = this.validateString(rawTarget, 'path');
+    if (typeof target !== 'string') return target;
+
+    const resolvedTarget = this.validateMutationTarget(target);
+    if (typeof resolvedTarget !== 'string') return resolvedTarget;
+
+    const adjacentCli = resolvePath(__dirname, '../bin/codegraph.js');
+    const builtCli = existsSync(adjacentCli) ? adjacentCli : resolvePath(__dirname, '../../dist/bin/codegraph.js');
+    const cliArgs = [builtCli, command];
+    if (command === 'init') {
+      if (args.force === true) cliArgs.push('--force');
+      if (args.verbose === true) cliArgs.push('--verbose');
+      cliArgs.push(resolvedTarget);
+    } else {
+      cliArgs.push(resolvedTarget);
+      if (args.force === true) cliArgs.push('--force');
+      if (command === 'index' && args.quiet === true) cliArgs.push('--quiet');
+      if (command === 'index' && args.verbose === true) cliArgs.push('--verbose');
+    }
+
+    const result = spawnSync(process.execPath, cliArgs, { encoding: 'utf8' });
+    const output = [result.stdout, result.stderr].filter(Boolean).join('');
+    const failed = result.status !== 0 || result.error !== undefined;
+    return {
+      content: [{ type: 'text', text: output || result.error?.message || `codegraph ${command} exited with status ${result.status}` }],
+      ...(command === 'uninit' ? (failed ? { isError: true } : {}) : { isError: failed }),
+    };
   }
 
   /**
@@ -1476,6 +1850,7 @@ export class ToolHandler {
    */
   private async dispatchTool(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
     switch (toolName) {
+      case 'codegraph_query': return await this.handleQuery(args);
       case 'codegraph_search': return await this.handleSearch(args);
       case 'codegraph_callers': return await this.handleCallers(args);
       case 'codegraph_callees': return await this.handleCallees(args);
@@ -1485,6 +1860,44 @@ export class ToolHandler {
       case 'codegraph_files': return await this.handleFiles(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
+  }
+
+  /** Run the CLI-only query command and preserve its JSON stdout verbatim. */
+  private async handleQuery(args: Record<string, unknown>): Promise<ToolResult> {
+    const query = this.validateString(args.query, 'query');
+    if (typeof query !== 'string') return query;
+
+    let projectPath: string;
+    if (args.path !== undefined) {
+      const explicitPath = this.validateString(args.path, 'path');
+      if (typeof explicitPath !== 'string') return explicitPath;
+      projectPath = explicitPath;
+      const pathError = validateProjectPath(projectPath);
+      if (pathError) return this.errorResult(pathError);
+    } else {
+      projectPath = this.getCodeGraph(args.projectPath as string | undefined).getProjectRoot();
+    }
+
+    const limit = clamp(Number(args.limit) || 10, 1, 100);
+    const commandArgs = ['query', query, '-p', projectPath, '-l', String(limit)];
+    if (args.kind !== undefined) {
+      const kind = this.validateString(args.kind, 'kind');
+      if (typeof kind !== 'string') return kind;
+      commandArgs.push('-k', kind);
+    }
+    commandArgs.push('--json');
+
+    const cliEntry = resolvePath(__dirname, '../bin/codegraph.js'); // Keep CLI and MCP on the same package version.
+    const result = cliProcess.spawnSync(
+      process.execPath,
+      [cliEntry, ...commandArgs],
+      { encoding: 'utf8', timeout: 30_000 },
+    );
+    if (result.error) return this.errorResult(`codegraph query failed: ${result.error.message}`);
+    if (result.status !== 0) {
+      return this.errorResult(`codegraph query failed: ${(result.stderr || '').trim() || `exit code ${result.status}`}`);
+    }
+    return this.textResult(result.stdout || '');
   }
 
   /**

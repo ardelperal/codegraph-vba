@@ -56,6 +56,17 @@ export interface ProjectConfig {
   exclude?: string[];
   vba?: {
     targets?: Record<string, boolean>;
+    /**
+     * Per-file fanout cap for `RaiseEvent <EventName>` edges (#152). When
+     * a single event (by name) is raised from more than this many sites
+     * in one file, the event node is flagged `metadata.highFanout: true`
+     * and ALL `raises-event` edges to it are dropped — the gate suppresses
+     * graph noise from events with generic names (`Change`, `Click`,
+     * `AfterUpdate`, …) that would otherwise produce hundreds of edges per
+     * file. Defaults to 50 when unset; the event node itself (declaration
+     * site, handler linkage via `subscribes-event`) is preserved.
+     */
+    maxRaiseFanout?: number;
   };
   /**
    * Gitignore-style patterns for first-party source to force INTO the index even
@@ -80,6 +91,7 @@ interface ParsedConfig {
   exclude: string[];
   vba?: {
     targets?: Record<string, boolean>;
+    maxRaiseFanout?: number;
   };
   include: string[];
 }
@@ -157,14 +169,14 @@ function parseConfig(file: string): ParsedConfig {
   const extensions = extractExtensions(parsed, file);
   const includeIgnored = extractIncludeIgnored(parsed, file);
   const exclude = extractExclude(parsed, file);
-  const vbaTargets = extractVbaTargets(parsed, file);
+  const vba = extractVbaTargets(parsed, file);
   const include = extractInclude(parsed, file);
   if (
     extensions === EMPTY_EXTENSIONS &&
     includeIgnored.length === 0 &&
     exclude.length === 0 &&
     include.length === 0 &&
-    vbaTargets === undefined
+    vba === undefined
   ) {
     return EMPTY_CONFIG;
   }
@@ -173,7 +185,7 @@ function parseConfig(file: string): ParsedConfig {
     includeIgnored,
     exclude,
     include,
-    ...(vbaTargets !== undefined ? { vba: { targets: vbaTargets } } : {}),
+    ...(vba !== undefined ? { vba } : {}),
   };
 }
 
@@ -253,7 +265,7 @@ function extractExclude(parsed: object, file: string): string[] {
   return out;
 }
 
-function extractVbaTargets(parsed: object, file: string): Record<string, boolean> | undefined {
+function extractVbaTargets(parsed: object, file: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number } | undefined {
   const vba = (parsed as any).vba;
   if (vba === undefined) return undefined;
   if (!vba || typeof vba !== 'object' || Array.isArray(vba)) {
@@ -261,22 +273,35 @@ function extractVbaTargets(parsed: object, file: string): Record<string, boolean
     return undefined;
   }
 
+  const out: { targets?: Record<string, boolean>; maxRaiseFanout?: number } = {};
+
   const targets = vba.targets;
-  if (targets === undefined) return undefined;
-  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
-    logWarn(`Ignoring "vba.targets" in ${PROJECT_CONFIG_FILENAME}: must be an object`, { file });
-    return undefined;
+  if (targets !== undefined) {
+    if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
+      logWarn(`Ignoring "vba.targets" in ${PROJECT_CONFIG_FILENAME}: must be an object`, { file });
+    } else {
+      const targetsOut: Record<string, boolean> = {};
+      for (const [rawKey, rawVal] of Object.entries(targets)) {
+        if (typeof rawVal !== 'boolean') {
+          logWarn(`Ignoring invalid target "${rawKey}" in ${PROJECT_CONFIG_FILENAME}: value must be a boolean`, { file });
+          continue;
+        }
+        targetsOut[rawKey] = rawVal;
+      }
+      out.targets = targetsOut;
+    }
   }
 
-  const out: Record<string, boolean> = {};
-  for (const [rawKey, rawVal] of Object.entries(targets)) {
-    if (typeof rawVal !== 'boolean') {
-      logWarn(`Ignoring invalid target "${rawKey}" in ${PROJECT_CONFIG_FILENAME}: value must be a boolean`, { file });
-      continue;
+  const maxFanout = vba.maxRaiseFanout;
+  if (maxFanout !== undefined) {
+    if (typeof maxFanout !== 'number' || !Number.isFinite(maxFanout) || maxFanout < 0) {
+      logWarn(`Ignoring "vba.maxRaiseFanout" in ${PROJECT_CONFIG_FILENAME}: value must be a non-negative number`, { file });
+    } else {
+      out.maxRaiseFanout = Math.floor(maxFanout);
     }
-    out[rawKey] = rawVal;
   }
-  return out;
+
+  return out.targets !== undefined || out.maxRaiseFanout !== undefined ? out : undefined;
 }
 
 /**
@@ -348,13 +373,23 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   const exclude = [...new Set([...localConfig.exclude, ...fileConfig.exclude])];
   const include = [...new Set([...localConfig.include, ...fileConfig.include])];
 
-  let vba: { targets?: Record<string, boolean> } | undefined;
-  if (localConfig.vba?.targets || fileConfig.vba?.targets) {
+  let vba: { targets?: Record<string, boolean>; maxRaiseFanout?: number } | undefined;
+  if (localConfig.vba?.targets || fileConfig.vba?.targets || localConfig.vba?.maxRaiseFanout !== undefined || fileConfig.vba?.maxRaiseFanout !== undefined) {
     vba = {
-      targets: {
-        ...localConfig.vba?.targets,
-        ...fileConfig.vba?.targets,
-      }
+      ...(localConfig.vba?.targets || fileConfig.vba?.targets
+        ? {
+            targets: {
+              ...localConfig.vba?.targets,
+              ...fileConfig.vba?.targets,
+            },
+          }
+        : {}),
+      // File overrides local; only fall through to local when file omitted it.
+      ...(fileConfig.vba?.maxRaiseFanout !== undefined
+        ? { maxRaiseFanout: fileConfig.vba.maxRaiseFanout }
+        : localConfig.vba?.maxRaiseFanout !== undefined
+          ? { maxRaiseFanout: localConfig.vba.maxRaiseFanout }
+          : {}),
     };
   }
 
@@ -370,7 +405,7 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   return config;
 }
 
-export function loadVbaConfig(rootDir: string): { targets?: Record<string, boolean> } {
+export function loadVbaConfig(rootDir: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number } {
   return loadParsedConfig(rootDir).vba || {};
 }
 

@@ -52,16 +52,45 @@ import { createEnumsConstsClassifier } from './vba/enums-consts';
 import { createImplementsClassifier } from './vba/implements';
 import { createCallsAndSqlClassifier } from './vba/call-sweep';
 
+/**
+ * Issue #152: per-file fanout cap for `RaiseEvent <EventName>` edges. An
+ * event raised from more than this many sites in a single file is
+ * flagged `metadata.highFanout: true` and ALL `raises-event` edges to it
+ * are dropped — the gate suppresses graph noise from events with generic
+ * names (`Change`, `Click`, `AfterUpdate`, …) that would otherwise
+ * produce hundreds of edges per file. Mirrors the upstream
+ * `EVENT_FANOUT_CAP` discipline in
+ * `src/resolution/callback-synthesizer.ts:43`. Configurable via
+ * `codegraph.json` → `vba.maxRaiseFanout`. Pass `Number.POSITIVE_INFINITY`
+ * (or any value `>=` the largest expected count) to disable the gate.
+ */
+export const DEFAULT_MAX_RAISE_FANOUT = 50;
+
 export class VbaExtractor {
   private filePath: string;
   private source: string;
   private ctx: VbaExtractorContext;
   private vbaTargets?: Record<string, boolean>;
+  /**
+   * Issue #152: per-file fanout cap for `RaiseEvent <EventName>` edges.
+   * When a single event is raised more than this many times in one file,
+   * the event node is flagged `metadata.highFanout: true` and ALL
+   * `raises-event` edges to it are dropped. Pass `undefined` to disable
+   * the gate (the legacy, uncapped behaviour). The 50 default lives in
+   * the orchestrator: callers that don't pass a value get the default.
+   */
+  private maxRaiseFanout: number | undefined;
 
-  constructor(filePath: string, source: string, vbaTargets?: Record<string, boolean>) {
+  constructor(
+    filePath: string,
+    source: string,
+    vbaTargets?: Record<string, boolean>,
+    maxRaiseFanout: number = DEFAULT_MAX_RAISE_FANOUT,
+  ) {
     this.filePath = filePath;
     this.source = source;
     this.vbaTargets = vbaTargets;
+    this.maxRaiseFanout = maxRaiseFanout;
     this.ctx = new VbaExtractorContext(filePath);
   }
 
@@ -145,6 +174,17 @@ export class VbaExtractor {
 
       // Finalize (calls-sql flushes proc-end line updates to function nodes).
       for (const c of classifiers) c.finalize?.(this.ctx);
+
+      // Issue #152: per-file fanout gate for `RaiseEvent <EventName>`
+      // edges. Events raised from more than `maxRaiseFanout` sites get
+      // the `metadata.highFanout` flag and ALL of their `raises-event`
+      // edges dropped. The gate is a no-op when `maxRaiseFanout` is
+      // undefined (the legacy, uncapped behaviour) and runs BEFORE the
+      // module/class node is created so `pendingModuleOrClassSource`
+      // re-attribution never sees the dropped edges.
+      if (this.maxRaiseFanout !== undefined) {
+        this.ctx.applyRaiseFanoutGate(this.maxRaiseFanout);
+      }
 
       const hasAnySymbols =
         proceduresCls.count > 0 || classifiers.some((c) => c.count > 0);

@@ -38,6 +38,15 @@ export function scanRaiseEvents(
     const eventName = m[1] ?? '';
     const eventNode = ctx.localEvents.get(eventName.toLowerCase());
     if (!eventNode) continue;
+    // Issue #152: bump the per-event fanout counter BEFORE pushing the
+    // edge. The orchestrator's `applyRaiseFanoutGate` reads this map to
+    // decide which event nodes to flag `metadata.highFanout: true` and
+    // which `raises-event` edges to drop. Counting in the same walk is
+    // free — one Map.get / Map.set per raise site.
+    ctx.raiseEventCounts.set(
+      eventNode.id,
+      (ctx.raiseEventCounts.get(eventNode.id) ?? 0) + 1,
+    );
     ctx.edges.push({
       source: ctx.findOrCreateFunctionNodeId(from),
       target: eventNode.id,

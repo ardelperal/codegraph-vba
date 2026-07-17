@@ -23,6 +23,7 @@
     "test:watch": "vitest run --watch",
     "test:eval": "vitest run __tests__/evaluation/",
     "eval": "npm run build && npx tsx __tests__/evaluation/runner.ts",
+    "spike:vbnet": "node scripts/spike-vbnet-as-vba.mjs",
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\""
   },
   "keywords": [

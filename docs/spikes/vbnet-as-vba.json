@@ -1,0 +1,2120 @@
+{
+  "generatedAt": "2026-07-17T19:49:52.203Z",
+  "grammar": "tree-sitter-vbnet.wasm",
+  "fixturesRoot": "__tests__\\fixtures",
+  "totals": {
+    "files": 16,
+    "clean": 0,
+    "partial": 16,
+    "failed": 0,
+    "failedRate": 0
+  },
+  "structural": {
+    "nodeTypes": [
+      "class_declaration",
+      "module_declaration",
+      "structure_declaration",
+      "interface_declaration",
+      "enum_declaration",
+      "method_declaration",
+      "constructor_declaration",
+      "external_method_declaration",
+      "abstract_method_declaration",
+      "property_declaration",
+      "field_declaration",
+      "event_declaration",
+      "custom_event_declaration",
+      "parameter_list",
+      "parameter",
+      "declaration_statement",
+      "variable_declarator",
+      "as_clause",
+      "raiseevent_statement",
+      "handler_clause",
+      "implements_clause",
+      "imports_statement"
+    ],
+    "recognized": 29,
+    "filesSeen": 4,
+    "complete": false
+  },
+  "body": {
+    "nodeTypes": [
+      "expression_statement",
+      "assignment_statement",
+      "return_statement",
+      "if_statement",
+      "elseif_clause",
+      "else_clause",
+      "for_statement",
+      "for_each_statement",
+      "while_statement",
+      "do_statement",
+      "select_statement",
+      "case_statement",
+      "with_statement",
+      "try_statement",
+      "throw_statement",
+      "invocation_expression",
+      "member_access_expression",
+      "array_access_expression",
+      "argument_list",
+      "call_statement",
+      "goto_statement",
+      "exit_statement",
+      "on_error_statement",
+      "me_expression",
+      "binary_expression",
+      "unary_expression",
+      "object_creation_expression",
+      "enum_member_declaration",
+      "option_statement",
+      "option_statements",
+      "preprocessor_directive",
+      "comment"
+    ],
+    "recognized": 1681,
+    "filesSeen": 23,
+    "complete": false
+  },
+  "structuralCompleteness": {
+    "hasClassWrapper": false,
+    "hasProcedures": false,
+    "hasFieldDecls": false,
+    "ratio": 0
+  },
+  "synthTotals": {
+    "files": 15,
+    "skipped": 1,
+    "perStructuralNode": {
+      "class_declaration": 13,
+      "method_declaration": 26,
+      "field_declaration": 36,
+      "property_declaration": 1,
+      "parameter_list": 36,
+      "event_declaration": 2,
+      "raiseevent_statement": 2,
+      "implements_clause": 0,
+      "enum_declaration": 8
+    }
+  },
+  "synthesizedResults": [
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Form_OtherForm.cls",
+      "className": "Form_OtherForm",
+      "skipped": false,
+      "total": 56,
+      "error": 0,
+      "missing": 0,
+      "classification": "clean",
+      "perType": {
+        "identifier": 9,
+        "comment": 9,
+        "\r\n": 6,
+        "member_access_expression": 4,
+        ".": 4,
+        "method_declaration": 2,
+        "member_modifier": 2,
+        "parameter_list": 2,
+        "(": 2,
+        ")": 2,
+        "assignment_statement": 2,
+        "me_expression": 2,
+        "=": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "string_literal": 1,
+        "parameter": 1,
+        "as_clause": 1,
+        "predefined_type": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 2,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 2,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Form_TestForm.cls",
+      "className": "Form_TestForm",
+      "skipped": false,
+      "total": 144,
+      "error": 1,
+      "missing": 0,
+      "classification": "partial",
+      "perType": {
+        "identifier": 23,
+        "\r\n": 18,
+        "comment": 12,
+        "member_access_expression": 12,
+        ".": 12,
+        "assignment_statement": 7,
+        "=": 7,
+        "(": 6,
+        ")": 6,
+        "me_expression": 6,
+        "string_literal": 6,
+        "method_declaration": 5,
+        "member_modifier": 5,
+        "parameter_list": 5,
+        "as_clause": 2,
+        "predefined_type": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "declaration_statement": 1,
+        "local_declaration_modifier": 1,
+        "variable_declarator": 1,
+        "ERROR": 1,
+        "array_access_expression": 1,
+        "parameter": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 5,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 5,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Report_NoSibling.cls",
+      "className": "Report_NoSibling",
+      "skipped": false,
+      "total": 31,
+      "error": 0,
+      "missing": 0,
+      "classification": "clean",
+      "perType": {
+        "comment": 7,
+        "identifier": 4,
+        "\r\n": 3,
+        "member_access_expression": 2,
+        ".": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "method_declaration": 1,
+        "member_modifier": 1,
+        "parameter_list": 1,
+        "(": 1,
+        ")": 1,
+        "assignment_statement": 1,
+        "me_expression": 1,
+        "=": 1,
+        "string_literal": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 1,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 1,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Report_PayrollSummary.cls",
+      "className": "Report_PayrollSummary",
+      "skipped": false,
+      "total": 75,
+      "error": 0,
+      "missing": 0,
+      "classification": "clean",
+      "perType": {
+        "comment": 11,
+        "\r\n": 11,
+        "identifier": 10,
+        "member_access_expression": 6,
+        ".": 6,
+        "method_declaration": 3,
+        "member_modifier": 3,
+        "parameter_list": 3,
+        "(": 3,
+        ")": 3,
+        "assignment_statement": 3,
+        "me_expression": 3,
+        "=": 3,
+        "string_literal": 3,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 3,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 3,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\modTestHelper.bas",
+      "className": "modTestHelper",
+      "skipped": false,
+      "total": 52,
+      "error": 4,
+      "missing": 0,
+      "classification": "partial",
+      "perType": {
+        "identifier": 8,
+        "comment": 8,
+        "\r\n": 6,
+        "ERROR": 4,
+        ",": 4,
+        "method_declaration": 2,
+        "member_modifier": 2,
+        "parameter_list": 2,
+        "(": 2,
+        ")": 2,
+        "member_access_expression": 2,
+        ".": 2,
+        "\"": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "empty_statement": 1,
+        "expression_statement": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 2,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 2,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Form_Main.cls",
+      "className": "Form_Main",
+      "skipped": false,
+      "total": 53,
+      "error": 4,
+      "missing": 0,
+      "classification": "partial",
+      "perType": {
+        "comment": 9,
+        "identifier": 8,
+        "\r\n": 5,
+        "ERROR": 4,
+        "member_modifier": 3,
+        "as_clause": 2,
+        "expression_statement": 2,
+        ":": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "field_declaration": 1,
+        "variable_declarator": 1,
+        "simple_name": 1,
+        "method_declaration": 1,
+        "parameter_list": 1,
+        "(": 1,
+        "parameter": 1,
+        "predefined_type": 1,
+        ")": 1,
+        "member_access_expression": 1,
+        ".": 1,
+        "binary_expression": 1,
+        "string_literal": 1,
+        "&": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 1,
+        "field_declaration": 1,
+        "property_declaration": 0,
+        "parameter_list": 1,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Form_MismatchedName.cls",
+      "className": "Form_MismatchedName",
+      "skipped": false,
+      "total": 47,
+      "error": 2,
+      "missing": 0,
+      "classification": "partial",
+      "perType": {
+        "comment": 11,
+        "identifier": 8,
+        "\r\n": 5,
+        "member_modifier": 3,
+        "as_clause": 2,
+        "ERROR": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "field_declaration": 1,
+        "variable_declarator": 1,
+        "simple_name": 1,
+        "method_declaration": 1,
+        "parameter_list": 1,
+        "(": 1,
+        "parameter": 1,
+        "predefined_type": 1,
+        ")": 1,
+        "member_access_expression": 1,
+        ".": 1,
+        "expression_statement": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 1,
+        "field_declaration": 1,
+        "property_declaration": 0,
+        "parameter_list": 1,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Form_NoHandlers.cls",
+      "className": "Form_NoHandlers",
+      "skipped": false,
+      "total": 30,
+      "error": 0,
+      "missing": 0,
+      "classification": "clean",
+      "perType": {
+        "comment": 7,
+        "identifier": 4,
+        "\r\n": 4,
+        "member_modifier": 3,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "field_declaration": 1,
+        "variable_declarator": 1,
+        "as_clause": 1,
+        "simple_name": 1,
+        "method_declaration": 1,
+        "parameter_list": 1,
+        "(": 1,
+        ")": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 1,
+        "field_declaration": 1,
+        "property_declaration": 0,
+        "parameter_list": 1,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Notifier.cls",
+      "className": "Notifier",
+      "skipped": false,
+      "total": 63,
+      "error": 0,
+      "missing": 0,
+      "classification": "clean",
+      "perType": {
+        "identifier": 11,
+        "\r\n": 8,
+        "comment": 6,
+        "member_modifier": 4,
+        "parameter_list": 4,
+        "(": 4,
+        "parameter": 4,
+        "as_clause": 4,
+        "predefined_type": 4,
+        ")": 4,
+        "event_declaration": 2,
+        "method_declaration": 2,
+        "raiseevent_statement": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 2,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 4,
+        "event_declaration": 2,
+        "raiseevent_statement": 2,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-source-object\\Form_Child.cls",
+      "className": "Form_Child",
+      "skipped": false,
+      "total": 5,
+      "error": 0,
+      "missing": 0,
+      "classification": "clean",
+      "perType": {
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "identifier": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 0,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 0,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\classes\\ACAuditoriaOperaciones.cls",
+      "className": "ACAuditoriaOperaciones",
+      "skipped": false,
+      "total": 2550,
+      "error": 89,
+      "missing": 2,
+      "classification": "partial",
+      "perType": {
+        "0": 65,
+        "identifier": 513,
+        "\r\n": 414,
+        ".": 202,
+        "member_access_expression": 129,
+        "=": 97,
+        "binary_expression": 92,
+        "empty_statement": 91,
+        "string_literal": 90,
+        "ERROR": 89,
+        "assignment_statement": 80,
+        "with_member_access_expression": 70,
+        "if_statement": 55,
+        "(": 47,
+        ")": 47,
+        "as_clause": 38,
+        "<>": 37,
+        "array_access_expression": 35,
+        "expression_statement": 33,
+        "&": 30,
+        ",": 25,
+        "simple_name": 24,
+        "variable_declarator": 23,
+        "declaration_statement": 22,
+        "local_declaration_modifier": 22,
+        "predefined_type": 19,
+        "exit_statement": 16,
+        "nothing_literal": 15,
+        "me_expression": 14,
+        ":": 13,
+        "labeled_statement": 12,
+        "parameter": 9,
+        "on_error_statement": 8,
+        "with_statement": 8,
+        "integer_literal": 8,
+        "member_modifier": 7,
+        "parameter_list": 6,
+        "else_clause": 6,
+        "method_declaration": 5,
+        "unary_expression": 4,
+        "invocation_expression": 4,
+        "argument_list": 4,
+        "for_each_statement": 3,
+        "boolean_literal": 3,
+        "qualified_name": 3,
+        "comment": 3,
+        "\"": 2,
+        "object_creation_expression": 2,
+        "cast_expression": 2,
+        "field_declaration": 1,
+        "<": 1,
+        "goto_statement": 1,
+        "\n": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 0,
+        "method_declaration": 5,
+        "field_declaration": 1,
+        "property_declaration": 0,
+        "parameter_list": 6,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\classes\\ARAuditoria.cls",
+      "className": "ARAuditoria",
+      "skipped": false,
+      "total": 2330,
+      "error": 90,
+      "missing": 0,
+      "classification": "partial",
+      "perType": {
+        "0": 18,
+        "identifier": 463,
+        "\r\n": 408,
+        "=": 139,
+        ".": 134,
+        "assignment_statement": 112,
+        "member_access_expression": 111,
+        "ERROR": 90,
+        "binary_expression": 85,
+        "string_literal": 78,
+        "empty_statement": 65,
+        "me_expression": 58,
+        "if_statement": 58,
+        "exit_statement": 48,
+        "(": 41,
+        ")": 41,
+        "&": 35,
+        "as_clause": 26,
+        "variable_declarator": 25,
+        "member_modifier": 24,
+        "array_access_expression": 24,
+        "field_declaration": 23,
+        "with_member_access_expression": 22,
+        "expression_statement": 19,
+        "predefined_type": 17,
+        "<>": 16,
+        "labeled_statement": 12,
+        ":": 12,
+        "integer_literal": 12,
+        "simple_name": 11,
+        "on_error_statement": 11,
+        "unary_expression": 11,
+        "\"": 11,
+        ",": 10,
+        "invocation_expression": 10,
+        "argument_list": 10,
+        "named_argument": 6,
+        ":=": 6,
+        "cast_expression": 6,
+        "else_clause": 5,
+        "nothing_literal": 4,
+        "<": 2,
+        "declaration_statement": 2,
+        "local_declaration_modifier": 2,
+        "comment": 1,
+        "qualified_name": 1,
+        "property_declaration": 1,
+        "parameter_list": 1,
+        "with_statement": 1,
+        "object_creation_expression": 1,
+        "\n": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 0,
+        "method_declaration": 0,
+        "field_declaration": 23,
+        "property_declaration": 1,
+        "parameter_list": 1,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\forms\\Form_FormNCAuditoriaMotivoEliminado.cls",
+      "skipped": true,
+      "reason": "no Attribute VB_Name"
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\modules\\constantes.bas",
+      "className": "constantes",
+      "skipped": false,
+      "total": 331,
+      "error": 0,
+      "missing": 0,
+      "classification": "clean",
+      "perType": {
+        "\r\n": 64,
+        "identifier": 57,
+        "=": 48,
+        "integer_literal": 48,
+        "enum_member_declaration": 41,
+        "member_modifier": 22,
+        "comment": 9,
+        "type_declaration_in_type": 8,
+        "enum_declaration": 8,
+        "field_declaration": 7,
+        "variable_declarator": 7,
+        "as_clause": 4,
+        "predefined_type": 4,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 0,
+        "field_declaration": 7,
+        "property_declaration": 0,
+        "parameter_list": 0,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 8
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\modules\\mdlCursor.bas",
+      "className": "mdlCursor",
+      "skipped": false,
+      "total": 213,
+      "error": 3,
+      "missing": 0,
+      "classification": "partial",
+      "perType": {
+        "identifier": 35,
+        "\r\n": 24,
+        "as_clause": 18,
+        "predefined_type": 18,
+        "member_modifier": 12,
+        "(": 12,
+        ")": 12,
+        "string_literal": 10,
+        "parameter": 10,
+        "parameter_list": 8,
+        "=": 6,
+        "empty_statement": 6,
+        "external_method_declaration": 6,
+        "variable_declarator": 4,
+        "assignment_statement": 4,
+        "array_access_expression": 4,
+        "integer_literal": 3,
+        "preprocessor_directive": 3,
+        "ERROR": 3,
+        ",": 3,
+        "field_declaration": 2,
+        "method_declaration": 2,
+        "declaration_statement": 2,
+        "local_declaration_modifier": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 2,
+        "field_declaration": 2,
+        "property_declaration": 0,
+        "parameter_list": 8,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\modules\\modCallerDemo.bas",
+      "className": "modCallerDemo",
+      "skipped": false,
+      "total": 61,
+      "error": 1,
+      "missing": 1,
+      "classification": "partial",
+      "perType": {
+        "identifier": 11,
+        "comment": 10,
+        "\r\n": 6,
+        "member_access_expression": 3,
+        ".": 3,
+        "(": 2,
+        ")": 2,
+        "declaration_statement": 2,
+        "local_declaration_modifier": 2,
+        "variable_declarator": 2,
+        "as_clause": 2,
+        "expression_statement": 2,
+        "\n": 2,
+        "source_file": 1,
+        "class_declaration": 1,
+        "method_declaration": 1,
+        "member_modifier": 1,
+        "parameter_list": 1,
+        "simple_name": 1,
+        "predefined_type": 1,
+        "ERROR": 1,
+        ":": 1,
+        "call_statement": 1,
+        "array_access_expression": 1,
+        "integer_literal": 1
+      },
+      "structuralCounts": {
+        "class_declaration": 1,
+        "method_declaration": 1,
+        "field_declaration": 0,
+        "property_declaration": 0,
+        "parameter_list": 1,
+        "event_declaration": 0,
+        "raiseevent_statement": 0,
+        "implements_clause": 0,
+        "enum_declaration": 0
+      }
+    }
+  ],
+  "perFile": [
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Form_OtherForm.cls",
+      "bytes": 840,
+      "lines": 25,
+      "total": 82,
+      "error": 9,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "identifier": 13,
+        "comment": 10,
+        "ERROR": 9,
+        "\r\n": 8,
+        "member_access_expression": 5,
+        ".": 5,
+        "assignment_statement": 4,
+        "=": 4,
+        "expression_statement": 3,
+        "integer_literal": 2,
+        "string_literal": 2,
+        "member_modifier": 2,
+        "(": 2,
+        ")": 2,
+        "me_expression": 2,
+        "source_file": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "invocation_expression": 1,
+        "argument_list": 1,
+        "array_access_expression": 1,
+        "empty_statement": 1,
+        "\n": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Form_TestForm.cls",
+      "bytes": 1380,
+      "lines": 43,
+      "total": 167,
+      "error": 13,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "identifier": 26,
+        "\r\n": 16,
+        "member_access_expression": 13,
+        "ERROR": 13,
+        ".": 13,
+        "comment": 13,
+        "assignment_statement": 9,
+        "=": 9,
+        "string_literal": 7,
+        "expression_statement": 6,
+        "member_modifier": 6,
+        "(": 6,
+        ")": 6,
+        "me_expression": 6,
+        "invocation_expression": 4,
+        "argument_list": 4,
+        "integer_literal": 2,
+        "array_access_expression": 2,
+        "source_file": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "empty_statement": 1,
+        "\n": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Report_NoSibling.cls",
+      "bytes": 694,
+      "lines": 19,
+      "total": 59,
+      "error": 7,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "identifier": 8,
+        "comment": 8,
+        "ERROR": 7,
+        "\r\n": 6,
+        "member_access_expression": 3,
+        ".": 3,
+        "assignment_statement": 3,
+        "=": 3,
+        "expression_statement": 2,
+        "integer_literal": 2,
+        "string_literal": 2,
+        "source_file": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "member_modifier": 1,
+        "invocation_expression": 1,
+        "argument_list": 1,
+        "(": 1,
+        ")": 1,
+        "me_expression": 1,
+        "empty_statement": 1,
+        "\n": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\Report_PayrollSummary.cls",
+      "bytes": 1067,
+      "lines": 31,
+      "total": 105,
+      "error": 9,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "identifier": 14,
+        "\r\n": 12,
+        "comment": 12,
+        "ERROR": 9,
+        "member_access_expression": 7,
+        ".": 7,
+        "assignment_statement": 5,
+        "=": 5,
+        "expression_statement": 4,
+        "string_literal": 4,
+        "member_modifier": 3,
+        "invocation_expression": 3,
+        "argument_list": 3,
+        "(": 3,
+        ")": 3,
+        "me_expression": 3,
+        "integer_literal": 2,
+        "source_file": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "empty_statement": 1,
+        "\n": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-control-modeling\\modTestHelper.bas",
+      "bytes": 796,
+      "lines": 20,
+      "total": 55,
+      "error": 7,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 0,
+          "text": "Attribute VB_Name = \"modTestHelper\" Option Compare Database"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "VB_Name"
+        },
+        {
+          "line": 14,
+          "col": 0,
+          "text": "Public Sub"
+        }
+      ],
+      "perType": {
+        "comment": 8,
+        "ERROR": 7,
+        "identifier": 7,
+        "\r\n": 4,
+        ",": 4,
+        "expression_statement": 2,
+        "invocation_expression": 2,
+        "argument_list": 2,
+        "(": 2,
+        ")": 2,
+        "member_access_expression": 2,
+        ".": 2,
+        "\"": 2,
+        "source_file": 1,
+        "assignment_statement": 1,
+        "=": 1,
+        "string_literal": 1,
+        "option_statements": 1,
+        "option_statement": 1,
+        "member_modifier": 1,
+        "empty_statement": 1,
+        "\n": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Form_Main.cls",
+      "bytes": 948,
+      "lines": 29,
+      "total": 64,
+      "error": 11,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "ERROR": 11,
+        "comment": 10,
+        "identifier": 8,
+        "\r\n": 7,
+        "expression_statement": 3,
+        "member_access_expression": 2,
+        ".": 2,
+        "integer_literal": 2,
+        "assignment_statement": 2,
+        "=": 2,
+        "string_literal": 2,
+        "member_modifier": 2,
+        ":": 2,
+        "source_file": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "(": 1,
+        ")": 1,
+        "binary_expression": 1,
+        "&": 1,
+        "empty_statement": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Form_MismatchedName.cls",
+      "bytes": 966,
+      "lines": 25,
+      "total": 54,
+      "error": 8,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "comment": 12,
+        "ERROR": 8,
+        "identifier": 7,
+        "\r\n": 6,
+        "member_access_expression": 2,
+        ".": 2,
+        "integer_literal": 2,
+        "assignment_statement": 2,
+        "=": 2,
+        "member_modifier": 2,
+        "source_file": 1,
+        "expression_statement": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "string_literal": 1,
+        "(": 1,
+        ")": 1,
+        "empty_statement": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Form_NoHandlers.cls",
+      "bytes": 695,
+      "lines": 21,
+      "total": 51,
+      "error": 7,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "comment": 8,
+        "ERROR": 7,
+        "\r\n": 7,
+        "identifier": 6,
+        "expression_statement": 2,
+        "integer_literal": 2,
+        "assignment_statement": 2,
+        "=": 2,
+        "member_modifier": 2,
+        "empty_statement": 2,
+        "source_file": 1,
+        "member_access_expression": 1,
+        ".": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "string_literal": 1,
+        "invocation_expression": 1,
+        "argument_list": 1,
+        "(": 1,
+        ")": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-event-synth\\Notifier.cls",
+      "bytes": 844,
+      "lines": 26,
+      "total": 47,
+      "error": 6,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "comment": 7,
+        "ERROR": 6,
+        "identifier": 5,
+        "\r\n": 5,
+        "(": 4,
+        ")": 4,
+        "integer_literal": 2,
+        "assignment_statement": 2,
+        "=": 2,
+        "source_file": 1,
+        "expression_statement": 1,
+        "member_access_expression": 1,
+        ".": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "string_literal": 1,
+        "member_modifier": 1,
+        "empty_statement": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba-source-object\\Form_Child.cls",
+      "bytes": 99,
+      "lines": 7,
+      "total": 32,
+      "error": 4,
+      "missing": 1,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "0 CLASS"
+        }
+      ],
+      "perType": {
+        "identifier": 6,
+        "\r\n": 5,
+        "ERROR": 4,
+        "expression_statement": 2,
+        "integer_literal": 2,
+        "assignment_statement": 2,
+        "=": 2,
+        "source_file": 1,
+        "member_access_expression": 1,
+        ".": 1,
+        "unary_expression": 1,
+        "-": 1,
+        "end_statement": 1,
+        "string_literal": 1,
+        "labeled_statement": 1,
+        ":": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\classes\\ACAuditoriaOperaciones.cls",
+      "bytes": 15303,
+      "lines": 472,
+      "total": 2429,
+      "error": 119,
+      "missing": 2,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 0,
+          "text": "VERSION 1.0 CLASS BEGIN MultiUse = -1 'True END Attribute VB_Name = \"ACAuditoria"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        }
+      ],
+      "perType": {
+        "0": 65,
+        "identifier": 496,
+        "\r\n": 398,
+        ".": 203,
+        "member_access_expression": 133,
+        "ERROR": 119,
+        "=": 103,
+        "binary_expression": 92,
+        "string_literal": 91,
+        "assignment_statement": 86,
+        "empty_statement": 70,
+        "with_member_access_expression": 70,
+        "if_statement": 55,
+        "(": 47,
+        ")": 47,
+        "expression_statement": 42,
+        "array_access_expression": 41,
+        "<>": 37,
+        "&": 30,
+        ",": 25,
+        "exit_statement": 16,
+        "nothing_literal": 15,
+        "me_expression": 14,
+        "member_modifier": 13,
+        ":": 13,
+        "labeled_statement": 12,
+        "integer_literal": 10,
+        "on_error_statement": 8,
+        "with_statement": 8,
+        "boolean_literal": 7,
+        "else_clause": 6,
+        "simple_name": 6,
+        "unary_expression": 5,
+        "declaration_statement": 5,
+        "local_declaration_modifier": 5,
+        "variable_declarator": 5,
+        "as_clause": 5,
+        "comment": 4,
+        "invocation_expression": 4,
+        "argument_list": 4,
+        "for_each_statement": 3,
+        "\"": 2,
+        "object_creation_expression": 2,
+        "cast_expression": 2,
+        "-": 1,
+        "end_statement": 1,
+        "<": 1,
+        "goto_statement": 1,
+        "predefined_type": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\classes\\ARAuditoria.cls",
+      "bytes": 14058,
+      "lines": 476,
+      "total": 2216,
+      "error": 100,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 0,
+          "text": "VERSION 1.0 CLASS BEGIN MultiUse = -1 'True END Attribute VB_Name = \"ARAuditoria"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        },
+        {
+          "line": 1,
+          "col": 8,
+          "text": "1"
+        }
+      ],
+      "perType": {
+        "0": 18,
+        "identifier": 443,
+        "\r\n": 394,
+        "=": 145,
+        ".": 135,
+        "assignment_statement": 118,
+        "member_access_expression": 113,
+        "ERROR": 100,
+        "binary_expression": 85,
+        "string_literal": 79,
+        "empty_statement": 63,
+        "me_expression": 58,
+        "if_statement": 58,
+        "exit_statement": 48,
+        "(": 41,
+        ")": 41,
+        "&": 35,
+        "array_access_expression": 24,
+        "expression_statement": 23,
+        "with_member_access_expression": 22,
+        "<>": 16,
+        "integer_literal": 14,
+        "unary_expression": 12,
+        "labeled_statement": 12,
+        ":": 12,
+        "invocation_expression": 11,
+        "argument_list": 11,
+        "on_error_statement": 11,
+        "\"": 11,
+        ",": 10,
+        "named_argument": 6,
+        ":=": 6,
+        "cast_expression": 6,
+        "else_clause": 5,
+        "boolean_literal": 4,
+        "nothing_literal": 4,
+        "member_modifier": 3,
+        "comment": 2,
+        "<": 2,
+        "declaration_statement": 2,
+        "local_declaration_modifier": 2,
+        "variable_declarator": 2,
+        "as_clause": 2,
+        "simple_name": 2,
+        "-": 1,
+        "end_statement": 1,
+        "with_statement": 1,
+        "predefined_type": 1,
+        "object_creation_expression": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\forms\\Form_FormNCAuditoriaMotivoEliminado.cls",
+      "bytes": 5803,
+      "lines": 210,
+      "total": 1000,
+      "error": 44,
+      "missing": 5,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 0,
+          "text": "Option Compare Database"
+        },
+        {
+          "line": 4,
+          "col": 0,
+          "text": "Private m_Error As String Private Sub"
+        },
+        {
+          "line": 12,
+          "col": 20,
+          "text": "True VBA"
+        }
+      ],
+      "perType": {
+        "0": 29,
+        "identifier": 212,
+        "\r\n": 173,
+        ".": 76,
+        "member_access_expression": 72,
+        "ERROR": 44,
+        "=": 35,
+        "binary_expression": 35,
+        "string_literal": 33,
+        "assignment_statement": 30,
+        "expression_statement": 24,
+        "empty_statement": 24,
+        "if_statement": 22,
+        "(": 18,
+        ")": 18,
+        ",": 17,
+        "<>": 14,
+        "array_access_expression": 14,
+        "&": 13,
+        "me_expression": 12,
+        "member_modifier": 10,
+        ":": 10,
+        "on_error_statement": 7,
+        "labeled_statement": 7,
+        "exit_statement": 7,
+        "boolean_literal": 7,
+        "integer_literal": 7,
+        "invocation_expression": 4,
+        "argument_list": 4,
+        "with_statement": 4,
+        "with_member_access_expression": 4,
+        "else_clause": 3,
+        "nothing_literal": 3,
+        "source_file": 1,
+        "option_statements": 1,
+        "option_statement": 1,
+        "for_each_statement": 1,
+        "unary_expression": 1,
+        "object_creation_expression": 1,
+        "simple_name": 1,
+        "\n": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\modules\\constantes.bas",
+      "bytes": 2063,
+      "lines": 77,
+      "total": 302,
+      "error": 8,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 10,
+          "text": "VB_Name"
+        },
+        {
+          "line": 2,
+          "col": 0,
+          "text": "Option Compare Database Option Explicit Public Const msoFileDialogFilePicker As "
+        },
+        {
+          "line": 7,
+          "col": 47,
+          "text": "3"
+        }
+      ],
+      "perType": {
+        "\r\n": 61,
+        "identifier": 54,
+        "=": 49,
+        "integer_literal": 44,
+        "enum_member_declaration": 41,
+        "member_modifier": 22,
+        "comment": 9,
+        "ERROR": 8,
+        "enum_declaration": 8,
+        "assignment_statement": 4,
+        "source_file": 1,
+        "string_literal": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\modules\\mdlCursor.bas",
+      "bytes": 1331,
+      "lines": 40,
+      "total": 177,
+      "error": 38,
+      "missing": 0,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 10,
+          "text": "VB_Name"
+        },
+        {
+          "line": 2,
+          "col": 7,
+          "text": "Compare Database Option Explicit Public Const IDC_SIZEWE"
+        },
+        {
+          "line": 6,
+          "col": 0,
+          "text": "Public Const"
+        }
+      ],
+      "perType": {
+        "ERROR": 38,
+        "identifier": 35,
+        "\r\n": 21,
+        "(": 12,
+        ")": 12,
+        "member_modifier": 11,
+        "array_access_expression": 11,
+        "\"": 10,
+        "assignment_statement": 7,
+        "=": 7,
+        "integer_literal": 3,
+        "preprocessor_directive": 3,
+        ",": 3,
+        "source_file": 1,
+        "string_literal": 1,
+        "expression_statement": 1,
+        "empty_statement": 1
+      }
+    },
+    {
+      "path": "__tests__\\fixtures\\vba\\src\\modules\\modCallerDemo.bas",
+      "bytes": 971,
+      "lines": 24,
+      "total": 60,
+      "error": 6,
+      "missing": 1,
+      "classification": "partial",
+      "errorSamples": [
+        {
+          "line": 1,
+          "col": 0,
+          "text": "Attribute VB_Name = \"modCallerDemo\" Option Compare Database"
+        },
+        {
+          "line": 1,
+          "col": 10,
+          "text": "VB_Name"
+        },
+        {
+          "line": 15,
+          "col": 0,
+          "text": "Public Sub"
+        }
+      ],
+      "perType": {
+        "comment": 10,
+        "identifier": 9,
+        "\r\n": 7,
+        "ERROR": 6,
+        "expression_statement": 3,
+        "member_access_expression": 3,
+        ".": 3,
+        "member_modifier": 2,
+        "(": 2,
+        ")": 2,
+        "source_file": 1,
+        "assignment_statement": 1,
+        "=": 1,
+        "string_literal": 1,
+        "option_statements": 1,
+        "option_statement": 1,
+        "invocation_expression": 1,
+        "argument_list": 1,
+        ":": 1,
+        "call_statement": 1,
+        "array_access_expression": 1,
+        "integer_literal": 1,
+        "empty_statement": 1
+      }
+    }
+  ],
+  "perConstruct": {
+    "0": {
+      "recognized": 112,
+      "filesSeen": 3
+    },
+    "identifier": {
+      "recognized": 1349,
+      "filesSeen": 16
+    },
+    "\r\n": {
+      "recognized": 1130,
+      "filesSeen": 16
+    },
+    ".": {
+      "recognized": 454,
+      "filesSeen": 14
+    },
+    "ERROR": {
+      "recognized": 396,
+      "filesSeen": 16
+    },
+    "=": {
+      "recognized": 372,
+      "filesSeen": 16
+    },
+    "member_access_expression": {
+      "recognized": 358,
+      "filesSeen": 14
+    },
+    "assignment_statement": {
+      "recognized": 278,
+      "filesSeen": 16
+    },
+    "string_literal": {
+      "recognized": 228,
+      "filesSeen": 16
+    },
+    "binary_expression": {
+      "recognized": 213,
+      "filesSeen": 4
+    },
+    "empty_statement": {
+      "recognized": 169,
+      "filesSeen": 14
+    },
+    "(": {
+      "recognized": 141,
+      "filesSeen": 14
+    },
+    ")": {
+      "recognized": 141,
+      "filesSeen": 14
+    },
+    "if_statement": {
+      "recognized": 135,
+      "filesSeen": 3
+    },
+    "expression_statement": {
+      "recognized": 119,
+      "filesSeen": 15
+    },
+    "comment": {
+      "recognized": 113,
+      "filesSeen": 13
+    },
+    "integer_literal": {
+      "recognized": 97,
+      "filesSeen": 15
+    },
+    "me_expression": {
+      "recognized": 96,
+      "filesSeen": 7
+    },
+    "with_member_access_expression": {
+      "recognized": 96,
+      "filesSeen": 3
+    },
+    "array_access_expression": {
+      "recognized": 94,
+      "filesSeen": 7
+    },
+    "member_modifier": {
+      "recognized": 81,
+      "filesSeen": 15
+    },
+    "&": {
+      "recognized": 79,
+      "filesSeen": 4
+    },
+    "exit_statement": {
+      "recognized": 71,
+      "filesSeen": 3
+    },
+    "<>": {
+      "recognized": 67,
+      "filesSeen": 3
+    },
+    ",": {
+      "recognized": 59,
+      "filesSeen": 5
+    },
+    "enum_member_declaration": {
+      "recognized": 41,
+      "filesSeen": 1
+    },
+    ":": {
+      "recognized": 39,
+      "filesSeen": 6
+    },
+    "invocation_expression": {
+      "recognized": 32,
+      "filesSeen": 10
+    },
+    "argument_list": {
+      "recognized": 32,
+      "filesSeen": 10
+    },
+    "labeled_statement": {
+      "recognized": 32,
+      "filesSeen": 4
+    },
+    "unary_expression": {
+      "recognized": 27,
+      "filesSeen": 12
+    },
+    "on_error_statement": {
+      "recognized": 26,
+      "filesSeen": 3
+    },
+    "\"": {
+      "recognized": 25,
+      "filesSeen": 4
+    },
+    "nothing_literal": {
+      "recognized": 22,
+      "filesSeen": 3
+    },
+    "boolean_literal": {
+      "recognized": 18,
+      "filesSeen": 3
+    },
+    "else_clause": {
+      "recognized": 14,
+      "filesSeen": 3
+    },
+    "source_file": {
+      "recognized": 14,
+      "filesSeen": 14
+    },
+    "with_statement": {
+      "recognized": 13,
+      "filesSeen": 3
+    },
+    "-": {
+      "recognized": 11,
+      "filesSeen": 11
+    },
+    "end_statement": {
+      "recognized": 11,
+      "filesSeen": 11
+    },
+    "simple_name": {
+      "recognized": 9,
+      "filesSeen": 3
+    },
+    "enum_declaration": {
+      "recognized": 8,
+      "filesSeen": 1
+    },
+    "cast_expression": {
+      "recognized": 8,
+      "filesSeen": 2
+    },
+    "declaration_statement": {
+      "recognized": 7,
+      "filesSeen": 2
+    },
+    "local_declaration_modifier": {
+      "recognized": 7,
+      "filesSeen": 2
+    },
+    "variable_declarator": {
+      "recognized": 7,
+      "filesSeen": 2
+    },
+    "as_clause": {
+      "recognized": 7,
+      "filesSeen": 2
+    },
+    "\n": {
+      "recognized": 6,
+      "filesSeen": 6
+    },
+    "named_argument": {
+      "recognized": 6,
+      "filesSeen": 1
+    },
+    ":=": {
+      "recognized": 6,
+      "filesSeen": 1
+    },
+    "for_each_statement": {
+      "recognized": 4,
+      "filesSeen": 2
+    },
+    "object_creation_expression": {
+      "recognized": 4,
+      "filesSeen": 3
+    },
+    "option_statements": {
+      "recognized": 3,
+      "filesSeen": 3
+    },
+    "option_statement": {
+      "recognized": 3,
+      "filesSeen": 3
+    },
+    "<": {
+      "recognized": 3,
+      "filesSeen": 2
+    },
+    "preprocessor_directive": {
+      "recognized": 3,
+      "filesSeen": 1
+    },
+    "predefined_type": {
+      "recognized": 2,
+      "filesSeen": 2
+    },
+    "call_statement": {
+      "recognized": 1,
+      "filesSeen": 1
+    },
+    "goto_statement": {
+      "recognized": 1,
+      "filesSeen": 1
+    }
+  },
+  "perConstructZero": {
+    "abstract_method_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "attribute": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "case_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "class_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "conditional_compilation_directive": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "constructor_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "custom_event_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "do_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "elseif_clause": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "event_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "external_method_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "field_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "for_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "handler_clause": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "implements_clause": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "imports_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "interface_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "method_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "module_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "parameter": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "parameter_list": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "preprocessorDirective": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "property_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "raiseevent_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "return_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "select_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "structure_declaration": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "throw_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "try_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    },
+    "while_statement": {
+      "recognized": 0,
+      "filesSeen": 0
+    }
+  },
+  "keywordPresence": {
+    "Dim": {
+      "occurrences": 34,
+      "files": 6
+    },
+    "Private": {
+      "occurrences": 36,
+      "files": 10
+    },
+    "Public": {
+      "occurrences": 69,
+      "files": 8
+    },
+    "Const": {
+      "occurrences": 9,
+      "files": 2
+    },
+    "Enum": {
+      "occurrences": 16,
+      "files": 1
+    },
+    "WithEvents": {
+      "occurrences": 9,
+      "files": 4
+    },
+    "Sub": {
+      "occurrences": 52,
+      "files": 11
+    },
+    "Function": {
+      "occurrences": 85,
+      "files": 5
+    },
+    "Property": {
+      "occurrences": 44,
+      "files": 2
+    },
+    "Get": {
+      "occurrences": 9,
+      "files": 1
+    },
+    "Set": {
+      "occurrences": 39,
+      "files": 4
+    },
+    "If": {
+      "occurrences": 289,
+      "files": 5
+    },
+    "Then": {
+      "occurrences": 144,
+      "files": 4
+    },
+    "Else": {
+      "occurrences": 15,
+      "files": 4
+    },
+    "End If": {
+      "occurrences": 144,
+      "files": 4
+    },
+    "For": {
+      "occurrences": 13,
+      "files": 10
+    },
+    "Next": {
+      "occurrences": 6,
+      "files": 2
+    },
+    "Case": {
+      "occurrences": 2,
+      "files": 2
+    },
+    "With": {
+      "occurrences": 32,
+      "files": 5
+    },
+    "End With": {
+      "occurrences": 15,
+      "files": 3
+    },
+    "Exit Sub": {
+      "occurrences": 2,
+      "files": 1
+    },
+    "Exit Function": {
+      "occurrences": 46,
+      "files": 3
+    },
+    "Exit Property": {
+      "occurrences": 23,
+      "files": 1
+    },
+    "On Error": {
+      "occurrences": 27,
+      "files": 3
+    },
+    "Resume": {
+      "occurrences": 2,
+      "files": 1
+    },
+    "GoTo": {
+      "occurrences": 26,
+      "files": 3
+    },
+    "RaiseEvent": {
+      "occurrences": 2,
+      "files": 1
+    },
+    "DoCmd": {
+      "occurrences": 10,
+      "files": 2
+    },
+    "New": {
+      "occurrences": 4,
+      "files": 3
+    }
+  }
+}

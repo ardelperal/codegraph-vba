@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.12.0] - 2026-07-18
+
 ### New Features
 
 - A new `codegraph stats vba-rules [--json]` command exposes the VBA extractor's available rules for debugging and automated health checks. (#168)
@@ -114,3 +117,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.9.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.9.0
 [1.10.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.10.0
 [1.11.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.11.0
+[1.12.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.12.0

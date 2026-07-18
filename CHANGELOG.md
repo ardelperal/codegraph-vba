@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- A new `codegraph stats vba-rules [--json]` command exposes the VBA extractor's available rules for debugging and automated health checks. (#168)
 - VBA extraction rules can now explicitly inspect masked source, original source, or both while preserving procedure, type-block, and enum-block boundaries. (#165)
 - The VBA extraction pipeline now has a published performance report on the real `00_VBA_TOOLKIT_BENCH` corpus. Set `CODEGRAPH_VBA_TIMING=2 codegraph index` to capture per-stage timings (preprocess / classifiers / walk) for every `.cls` and `.bas`, and compare across runs to spot slow files. `docs/vba-extraction-perf.md` shows the medians across three runs for the named fixtures, a corpus-level breakdown by stage, and an honest note on the v1.6.2 baseline. (#166)
 

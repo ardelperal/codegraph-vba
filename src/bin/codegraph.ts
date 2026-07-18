@@ -2410,6 +2410,81 @@ program
     console.log(packageJson.version);
   });
 
+/**
+ * codegraph stats <subcommand>
+ *
+ * Parent for read-only introspection commands that don't need an
+ * initialized project. The first subcommand is `vba-rules` (issue
+ * #168), which lists every declarative rule the VBA extractor
+ * dispatches — the orchestrator's aggregated `VBA_RULE_TABLES`
+ * (declared in `src/extraction/vba-extractor.ts`). Adding a new
+ * stats subcommand is one `.command(...).action(...)` block on this
+ * node — no need to touch anything else.
+ */
+const stats = program
+  .command('stats')
+  .description('Read-only introspection commands (no project required)');
+
+/**
+ * codegraph stats vba-rules [--json]
+ *
+ * Issue #168: the orchestrator exposes `VBA_RULE_TABLES` so tools
+ * can introspect every rule the VBA extractor dispatches. This
+ * subcommand is the first consumer — it lists every rule with its
+ * concern, id, plain-English description, serialized pattern,
+ * per-concern static count, and the cross-concern total.
+ *
+ * Important: the output reports **static rule counts** (size of
+ * each classifier's `RULES` array), NOT runtime per-rule emission
+ * counts — the orchestrator does not track those today. Anything
+ * resembling "rule X fired N times" would be fabricated; keep it
+ * absent until real instrumentation exists.
+ *
+ * `--json` prints one JSON envelope on stdout (CI / agent
+ * consumption); the default mode is a human-readable listing.
+ */
+stats
+  .command('vba-rules')
+  .description('List every VBA extractor rule (concern, id, description, pattern, counts)')
+  .option('-j, --json', 'Output as JSON')
+  .action(async (options: { json?: boolean }) => {
+    const { buildStatsVbaRules } = await import('../cli/stats-vba-rules');
+    const out = buildStatsVbaRules();
+
+    if (options.json) {
+      console.log(JSON.stringify(out));
+      return;
+    }
+
+    console.log(chalk.bold('\nVBA extraction rules\n'));
+    for (const concern of out.concerns) {
+      console.log(
+        `${chalk.cyan(concern.concern)} ${chalk.dim(`(${concern.ruleCount} rule${concern.ruleCount === 1 ? '' : 's'})`)}`,
+      );
+      for (const rule of concern.rules) {
+        const patternPreview = Array.isArray(rule.pattern)
+          ? `${rule.pattern.length} alternatives`
+          : truncate(rule.pattern, 80);
+        const gates = [rule.requires, rule.scan].filter(Boolean).join(', ');
+        const gatesLabel = gates ? chalk.dim(` [${gates}]`) : '';
+        console.log(`  ${chalk.green(rule.id)} — ${rule.description}${gatesLabel}`);
+        console.log(`    ${chalk.dim(patternPreview)}`);
+      }
+      console.log();
+    }
+    console.log(`${chalk.bold('Total:')} ${out.totalRules} rules across ${out.concerns.length} concerns`);
+  });
+
+/**
+ * Truncate `s` to at most `max` characters with a trailing ellipsis
+ * when it would otherwise overflow. Used by the pretty
+ * `stats vba-rules` output so a long regex `.source` doesn't break
+ * a terminal's column layout.
+ */
+function truncate(s: string, max: number): string {
+  return s.length > max ? `${s.slice(0, max - 3)}...` : s;
+}
+
 // Parse and run
 program.parse();
 

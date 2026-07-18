@@ -17,6 +17,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixes
 
 - VBA extraction now refuses to load if any per-concern rule table is empty, so an accidentally-emptied classifier fails the import instead of silently dropping an entire symbol family. (#164)
+- VBA `Public Const` and `Private Const` symbols now retain their declared `As` type alongside the value, with untyped constants reported as `Variant`. (#167)
 
 ## [1.11.0] - 2026-07-18
 

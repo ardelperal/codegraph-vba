@@ -414,6 +414,33 @@ across the entire 16-file corpus.
     first member). Without a class_declaration wrapper, the option_statement is
     orphaned. Not a fatal error, but F.2 needs to handle it.
 
+## Regex pipeline audit after issue #167
+
+The twelve findings above describe the raw `tree-sitter-vbnet` parse, not the
+production regex extractor. The production pipeline was audited separately on
+2026-07-18. “Accepted” below means the current graph contract preserves the useful
+relationship even when it does not mirror the VB.NET node shape.
+
+| # | Production regex behavior | Decision |
+|---|---|---|
+| 1 | `.cls` files emit `class` and other VBA source files emit `module`; `Attribute VB_Name` supplies the symbol name when present. | Accepted heuristic; no source wrapper is required by the regex extractor. |
+| 2 | `PROC_RE` emits `function` nodes for `Sub`, `Function`, and `Property Get/Let/Set`. VBA constructors such as `Class_Initialize` use the same procedure convention. | Accepted. |
+| 3 | `DIMS_RULES` records declared variable types and emits references to project types, but it does not emit standalone `field` nodes. | Accepted as the existing type-reference contract; field symbols remain outside the current VBA graph model. |
+| 4 | Property accessors are emitted as separate `function` nodes rather than one `property` node. | Accepted existing node convention. |
+| 5 | `Public`/`Private`/`Friend Event` declarations emit `event` nodes contained by their class/module. A `RaiseEvent` inside a procedure emits a parser-provenance `raises-event` edge from that procedure to the declared event; the post-index WithEvents pass can additionally materialize handler edges. | Accepted and behavior-tested, including containment, source/target, provenance, and source coordinates. |
+| 6 | `Implements IFoo` emits an `interface` target and parser-provenance `implements` edge from the owning class/module. | Accepted. |
+| 7 | `PROC_RE` recognizes the procedure boundary and name, while return-type parsing deliberately looks after the parameter list so parameter `As` clauses are not mistaken for the return type. Individual `parameter` nodes are not emitted. | Accepted as the current procedure-level graph contract; parameter symbols remain outside this extractor. |
+| 8 | Module-level `Public`/`Private Const` declarations already emitted the repository’s canonical `constant` kind before issue #167, so the issue’s claim that constant identity was lost was stale. The actual gap was that the optional `As` type was discarded. Constants now retain `metadata.asType` and `metadata.value`; an omitted `As` is normalized to `Variant`. Procedure-local constants remain resolution-only and do not become module symbols. | Fixed and regression-tested. |
+| 9 | There is no production `Wend` → `End While` rewrite. `Wend` is excluded from call detection, and the regex extractor does not emit loop nodes. | Accepted as inert for the current graph contract; the earlier “handled by pre-processing rewrite” claim was incorrect. |
+| 10 | The Access `VERSION 1.0 CLASS` / `BEGIN...END` header is not parsed as a node. `detectVbName` scans past it to find `Attribute VB_Name`, while declaration classifiers ignore the header lines. | Accepted. |
+| 11 | `Attribute VB_*` lines are not stripped by `stripVbaComments`. `Attribute VB_Name` is consumed for naming and the declaration classifiers ignore the remaining attribute lines. | Accepted as inert; the earlier “stripped” claim was incorrect. |
+| 12 | `stripVbaComments` replaces every `Option ...` directive with an empty line, so it emits no symbol while preserving downstream line coordinates. An Option-only file emits no class/module. | Accepted and behavior-tested with a following procedure retaining its original start/end lines. |
+
+Audit result: gap #8 required a production change; gaps #5 and #12 already had
+correct behavior and received stronger regression coverage. The other nine findings
+are accepted under the explicit limitations above rather than being presented as
+equivalent VB.NET AST nodes.
+
 ## What pre-processing can and cannot fix
 
 A first-cut pre-processing layer (strip `VERSION...END`, strip `Attribute VB_*`,

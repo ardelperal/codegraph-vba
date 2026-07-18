@@ -61,8 +61,8 @@ import type { VbaExtractorContext } from './context';
  *  - `scan?`     `'masked'` = run on the string-literal-masked line
  *                (so call patterns inside `"..."` are ignored), the
  *                default. `'unmasked'` = run on the original line (so
- *                SQL patterns inside `"..."` are caught). `'both'` =
- *                dispatcher calls the rule twice, once with each line.
+ *                SQL patterns inside `"..."` are caught). `'both'` tries
+ *                the masked line first, then the original line if needed.
  *  - `emit`      The per-match side effect. Receives the
  *                `RegExpExecArray` from the pattern, the shared
  *                `VbaExtractorContext`, the original (or masked) line,

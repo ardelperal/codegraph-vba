@@ -10,6 +10,18 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 
+## [1.13.0] - 2026-07-18
+
+### New Features
+
+- VBA standard-library calls such as `CStr`, `CLng`, `Nz`, and `IsNull` are now classified as runtime calls instead of missing user-defined callees. (#181)
+
+### Fixes
+
+- VBA control-flow keywords are no longer emitted as unresolved unqualified identifiers. (#179)
+- Unresolved VBA function and procedure calls now use the single canonical `calls` reference kind. (#180)
+- VBA array index expressions such as `values(index)` are no longer mistaken for function calls. (#182)
+
 ## [1.12.0] - 2026-07-18
 
 ### New Features
@@ -118,3 +130,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.10.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.10.0
 [1.11.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.11.0
 [1.12.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.12.0
+[1.13.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.13.0

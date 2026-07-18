@@ -5,7 +5,7 @@
  * call-sites, Me/Forms control refs, SQL wrappers, statement/qualified calls,
  * `Set x = New …` late-instantiation, `DoCmd.Open*`, and TempVars.
  */
-import { PROC_RE, PROCEDURE_END_RE, PRIMITIVE_TYPES } from './constants';
+import { PROC_RE, PROCEDURE_END_RE, PRIMITIVE_TYPES, isVbaKeyword } from './constants';
 import { maskStringContent } from './text-utils';
 import { VbaExtractorContext, ProcInfo, VbaClassifier } from './context';
 import { defineRule, matchRuleForScan, VbaExtractionRule } from './rules';
@@ -316,7 +316,7 @@ export function createCallsAndSqlClassifier(
             // `stmtCall` resolves to a known Const, we still surface it as
             // `unqualified-ident` (NOT `call`) because that's the
             // unambiguous shape of a bare-ident read.
-            if (!emitted && stmtCall !== caller.name) {
+            if (!emitted && stmtCall !== caller.name && !isVbaKeyword(stmtCall)) {
               ctx.unresolvedReferences.push({
                 fromNodeId: ctx.findOrCreateFunctionNodeId(caller),
                 referenceName: stmtCall,

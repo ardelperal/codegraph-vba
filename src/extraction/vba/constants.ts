@@ -78,6 +78,24 @@ export const CALL_KEYWORD_BLACKLIST = new Set([
 ]);
 
 /**
+ * VBA reserved words that cannot name an unqualified user-code target.
+ * Stored lowercase so source casing cannot change classification.
+ */
+export const VBA_KEYWORDS = new Set([
+  ...Array.from(CALL_KEYWORD_BLACKLIST, (keyword) => keyword.toLowerCase()),
+  'and', 'append', 'as', 'base', 'binary', 'byref', 'byval', 'close',
+  'compare', 'declare', 'empty', 'enum', 'eqv', 'erase', 'false', 'get',
+  'global', 'gosub', 'goto', 'imp', 'input', 'kill', 'mod', 'mybase',
+  'myclass', 'next', 'not', 'null', 'open', 'optional', 'or', 'output',
+  'paramarray', 'preserve', 'print', 'put', 'seek', 'stop', 'true', 'type',
+  'write', 'xor',
+]);
+
+export function isVbaKeyword(name: string): boolean {
+  return VBA_KEYWORDS.has(name.toLowerCase());
+}
+
+/**
  * Access runtime objects and singletons. Calls on these receivers are
  * real VBA calls but the targets are NOT user-defined modules or
  * classes — they're Access/DAO/ADO runtime types. Synthesizing a

@@ -161,6 +161,28 @@ End Sub
     expect(ref, 'expected unresolved ref for bare-ident HayErrorEnRiesgo').toBeDefined();
     expect(ref?.referenceKind).toBe('unqualified-ident');
   });
+
+  it('VBA statement keywords never become unqualified-ident references', () => {
+    const src = `Attribute VB_Name = "modKeywords"
+Public Sub Foo()
+    End
+    On Error GoTo Handler
+    Exit Sub
+    Set value = Nothing
+    Resume Next
+    Kill "temp.txt"
+    Close #1
+    Open "temp.txt" For Output As #1
+    Print #1, "value"
+Handler:
+End Sub
+`;
+    const r = extract('src/modKeywords.bas', src);
+    const keywordRefs = r.unresolvedReferences.filter(
+      (u) => u.referenceKind === 'unqualified-ident',
+    );
+    expect(keywordRefs).toEqual([]);
+  });
 });
 
 describe('reference-kind classification: back-compat (FR-5)', () => {

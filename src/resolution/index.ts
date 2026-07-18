@@ -27,7 +27,7 @@ import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packa
 import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
-import { isRuntimeObject } from './vba-runtime-objects';
+import { isRuntimeObject, isVbaStdlibFunction } from './vba-runtime-objects';
 import { normalizeAccessObjectName } from './vba-access-object-name';
 import { generateNodeId } from '../extraction/tree-sitter-helpers';
 
@@ -1181,6 +1181,9 @@ export class ReferenceResolver {
           fromNodeId: r.fromNodeId,
           referenceName: r.referenceName,
           referenceKind: r.referenceKind,
+          status: r.language === 'vba' && r.referenceKind === 'calls' && isVbaStdlibFunction(r.referenceName)
+            ? 'declined-runtime' as const
+            : 'failed' as const,
         }))
       );
     }
@@ -1229,6 +1232,9 @@ export class ReferenceResolver {
       fromNodeId: r.fromNodeId,
       referenceName: r.referenceName,
       referenceKind: r.referenceKind,
+      status: r.language === 'vba' && r.referenceKind === 'calls' && isVbaStdlibFunction(r.referenceName)
+        ? 'declined-runtime' as const
+        : 'failed' as const,
     }));
     for (let i = 0; i < unresolvedKeys.length; i += PERSIST_CHUNK) {
       this.queries.markReferencesFailed(unresolvedKeys.slice(i, i + PERSIST_CHUNK));
@@ -1426,6 +1432,9 @@ export class ReferenceResolver {
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,
         referenceKind: r.referenceKind,
+        status: r.language === 'vba' && r.referenceKind === 'calls' && isVbaStdlibFunction(r.referenceName)
+          ? 'declined-runtime' as const
+          : 'failed' as const,
       }));
       for (let i = 0; i < unresolvedKeys.length; i += PERSIST_CHUNK) {
         this.queries.markReferencesFailed(unresolvedKeys.slice(i, i + PERSIST_CHUNK));

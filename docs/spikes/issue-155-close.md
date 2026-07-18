@@ -40,6 +40,14 @@ needed structural behavior, so starting the hybrid AST rewrite now would add
 complexity without solving a concrete user-visible problem. Issue #170 is the
 guard: F.2 may be opened only when its documented trigger conditions are met.
 
+Issue #170 was closed because no qualifying trigger exists: issue #167 resolved
+the only production gap found in the twelve-item audit without requiring an AST,
+and issue #166 measured the largest real fixture (9,535 lines) at roughly 303 ms,
+far below the 5-second performance trigger. No second regex-fatal concern, no
+30-day user-visible blocker, and no pair of independent `+1` signals accumulated.
+If that evidence changes, open a new implementation issue and cite the concrete
+failure rather than reopening speculative work.
+
 ### F.2-F.4 status (potential follow-up work, not scheduled)
 
 These are **not** done or scheduled. If Issue #170's trigger conditions are met,

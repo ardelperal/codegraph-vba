@@ -33,9 +33,17 @@ The report is **positive (GO)**, not negative, so the epic does NOT cancel. F.2,
 2. **F.2-F.4 are scoped sub-efforts**, not sub-issues of this one — they should be tracked as their own issues when work begins, not as a checklist hanging off a parent issue that says "F.1 done" on it.
 3. **The spike report is the durable artifact** — `docs/spikes/vbnet-as-vba.md` captures the verdict, the per-construct data, the F.2 unlock dry-run, and the pre-processing checklist. Anyone picking up F.2 should start there.
 
-### F.2-F.4 status (open follow-up work, not closed)
+### F.2 deferred pending evidence
 
-These are **not** done. F.2 is the next step and the report spells out exactly what it needs:
+F.2 implementation is not scheduled. The regex pipeline already provides the
+needed structural behavior, so starting the hybrid AST rewrite now would add
+complexity without solving a concrete user-visible problem. Issue #170 is the
+guard: F.2 may be opened only when its documented trigger conditions are met.
+
+### F.2-F.4 status (potential follow-up work, not scheduled)
+
+These are **not** done or scheduled. If Issue #170's trigger conditions are met,
+the report spells out what F.2 would need:
 
 - **F.2** — Hybrid: vbnet AST for the language skeleton, regex for Access-specific.
   - **Pre-processing checklist for F.2** (in the report):

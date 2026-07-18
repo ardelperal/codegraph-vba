@@ -21,6 +21,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const REPORT_PATH = path.join(REPO_ROOT, 'docs', 'spikes', 'vbnet-as-vba.md');
 const JSON_PATH = path.join(REPO_ROOT, 'docs', 'spikes', 'vbnet-as-vba.json');
 const SCRIPT_PATH = path.join(REPO_ROOT, 'scripts', 'spike-vbnet-as-vba.mjs');
+const CLOSE_NOTES_PATH = path.join(REPO_ROOT, 'docs', 'spikes', 'issue-155-close.md');
 
 /**
  * Ensure the artifact exists. If not, spawn the spike script (node, no
@@ -85,6 +86,12 @@ describe('spike: tree-sitter-vbnet as VBA parser (F.1, issue #155)', () => {
 
   it('produces the machine-readable JSON at docs/spikes/vbnet-as-vba.json', () => {
     expect(fs.existsSync(JSON_PATH)).toBe(true);
+  });
+
+  it('archives the F.2 deferral and links its trigger guard', () => {
+    const notes = fs.readFileSync(CLOSE_NOTES_PATH, 'utf8');
+    expect(notes).toContain('F.2 implementation is not scheduled');
+    expect(notes).toContain('Issue #170');
   });
 
   it('report is non-empty and not a placeholder', () => {

@@ -92,6 +92,8 @@ describe('spike: tree-sitter-vbnet as VBA parser (F.1, issue #155)', () => {
     const notes = fs.readFileSync(CLOSE_NOTES_PATH, 'utf8');
     expect(notes).toContain('F.2 implementation is not scheduled');
     expect(notes).toContain('Issue #170');
+    expect(notes).toContain('Issue #170 was closed');
+    expect(notes).toContain('no qualifying trigger');
   });
 
   it('report is non-empty and not a placeholder', () => {

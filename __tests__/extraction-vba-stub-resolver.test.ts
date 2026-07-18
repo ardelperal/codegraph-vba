@@ -20,8 +20,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CodeGraph } from '../src';
-import { isRuntimeObject, RUNTIME_OBJECTS } from '../src/resolution/vba-runtime-objects';
+import { CodeGraph, DatabaseConnection, getDatabasePath } from '../src';
+import {
+  isRuntimeObject,
+  isVbaStdlibFunction,
+  RUNTIME_OBJECTS,
+} from '../src/resolution/vba-runtime-objects';
 import type { Edge } from '../src/types';
 
 const CLS_HEADER = ['VERSION 1.0 CLASS', 'BEGIN', "  MultiUse = -1  'True", 'END'];
@@ -245,5 +249,34 @@ describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
     for (const expected of ['dao', 'fso', 'err', 'listbox', 'collection', 'docmd']) {
       expect(RUNTIME_OBJECTS.has(expected)).toBe(true);
     }
+  });
+
+  it('Test 7: VBA stdlib functions are classified case-insensitively', () => {
+    for (const name of ['CStr', 'CLng', 'Nz', 'IsNull', 'Array', 'InStr', 'Len', 'Replace', 'TypeName', 'VarType']) {
+      expect(isVbaStdlibFunction(name)).toBe(true);
+      expect(isVbaStdlibFunction(name.toLowerCase())).toBe(true);
+    }
+    expect(isVbaStdlibFunction('ProjectHelper')).toBe(false);
+    expect(isVbaStdlibFunction(undefined)).toBe(false);
+  });
+
+  it('Test 8: stdlib unresolved calls are parked as declined-runtime', async () => {
+    const cg = await buildProject({
+      'src/modules/Caller.bas': [
+        'Attribute VB_Name = "Caller"',
+        'Public Sub CallerSub()',
+        '    value = CStr(42)',
+        '    ProjectHelper(42)',
+        'End Sub',
+      ].join('\n'),
+    });
+    const projectRoot = (cg as unknown as { projectRoot: string }).projectRoot;
+    const connection = DatabaseConnection.open(getDatabasePath(projectRoot));
+    const rows = connection.getDb().prepare(
+      "SELECT reference_name, status FROM unresolved_refs WHERE reference_name IN ('CStr', 'ProjectHelper')",
+    ).all() as Array<{ reference_name: string; status: string }>;
+    connection.close();
+    expect(rows.find((row) => row.reference_name === 'CStr')?.status).toBe('declined-runtime');
+    expect(rows.find((row) => row.reference_name === 'ProjectHelper')?.status).toBe('failed');
   });
 });

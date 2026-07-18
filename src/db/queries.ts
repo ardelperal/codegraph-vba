@@ -2219,22 +2219,23 @@ export class QueryBuilder {
   }
 
   /**
-   * Mark refs a completed resolution pass could not resolve as status='failed'
-   * instead of deleting them (#1240). Failed rows are invisible to the pending
+   * Park refs a completed resolution pass could not resolve as `failed`, or
+   * as `declined-runtime` when the resolver recognizes built-in runtime noise.
+   * Parked rows are invisible to the pending
    * count/batch readers (so drain loops and the #1187 orphan sweep still
    * terminate) but stay queryable by name_tail so a later sync can retry them
    * when a changed file introduces a symbol that could satisfy them. name_tail
    * is (re)written here so rows inserted before the v8 migration get their
    * tail the first time they're attempted.
    */
-  markReferencesFailed(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string }>): void {
+  markReferencesFailed(refs: Array<{ fromNodeId: string; referenceName: string; referenceKind: string; status?: 'failed' | 'declined-runtime' }>): void {
     if (refs.length === 0) return;
     const stmt = this.db.prepare(
-      "UPDATE unresolved_refs SET status = 'failed', name_tail = ? WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?"
+      "UPDATE unresolved_refs SET status = ?, name_tail = ? WHERE from_node_id = ? AND reference_name = ? AND reference_kind = ?"
     );
     const markMany = this.db.transaction((items: typeof refs) => {
       for (const ref of items) {
-        stmt.run(referenceNameTail(ref.referenceName), ref.fromNodeId, ref.referenceName, ref.referenceKind);
+        stmt.run(ref.status ?? 'failed', referenceNameTail(ref.referenceName), ref.fromNodeId, ref.referenceName, ref.referenceKind);
       }
     });
     markMany(refs);

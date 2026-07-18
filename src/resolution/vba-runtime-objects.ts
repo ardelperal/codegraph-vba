@@ -61,3 +61,23 @@ export function isRuntimeObject(receiver: string | null | undefined): boolean {
   const key = receiver.replace(/^\[/, '').replace(/\]$/, '').trim().toLowerCase();
   return RUNTIME_OBJECTS.has(key);
 }
+
+/** Canonical VBA and Access built-in functions that never resolve to project code. */
+export const VBA_STDLIB_FUNCTIONS: ReadonlySet<string> = new Set([
+  'cstr', 'cint', 'clng', 'cdbl', 'csng', 'cbyte', 'cbool', 'cdate', 'cverr',
+  'isnull', 'isempty', 'isnumeric', 'isdate', 'isarray', 'isobject', 'ismissing',
+  'typename', 'vartype', 'len', 'lenb', 'instr', 'instrb', 'instrrev', 'lcase',
+  'ucase', 'left', 'leftb', 'right', 'rightb', 'mid', 'midb', 'replace', 'trim',
+  'ltrim', 'rtrim', 'space', 'string', 'strconv', 'asc', 'ascb', 'ascw', 'chr',
+  'chrb', 'chrw', 'format', 'format$', 'array', 'lbound', 'ubound', 'split',
+  'join', 'filter', 'abs', 'int', 'fix', 'round', 'sgn', 'sqr', 'val', 'now',
+  'date', 'time', 'dateadd', 'datediff', 'datepart', 'dateserial', 'datevalue',
+  'timeserial', 'timevalue', 'year', 'month', 'day', 'hour', 'minute', 'second',
+  'weekday', 'weekdayname', 'monthname', 'timer', 'msgbox', 'inputbox', 'shell',
+  'environ', 'command', 'createobject', 'getobject', 'rgb', 'qbcolor', 'doevents',
+  'nz', 'iif', 'fv', 'pv', 'pmt', 'rate', 'npv', 'irr', 'sln', 'syd', 'ddb', 'mirr',
+]);
+
+export function isVbaStdlibFunction(name: string | null | undefined): boolean {
+  return !!name && VBA_STDLIB_FUNCTIONS.has(name.trim().toLowerCase());
+}

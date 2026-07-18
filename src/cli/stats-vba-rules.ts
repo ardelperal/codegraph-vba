@@ -39,8 +39,7 @@ import type { VbaExtractionRule } from '../extraction/vba/rules';
  * One rule as serialized for `codegraph stats vba-rules`.
  *
  * `pattern` is intentionally a `string | string[]` (NOT a `RegExp`):
- * the JSON output path must round-trip through `JSON.stringify`,
- * which throws on `RegExp` instances by default. Serializing the
+ * `JSON.stringify` would reduce a `RegExp` to `{}`. Serializing the
  * `.source` keeps the output copy-pasteable for debugging
  * ("what does this rule actually match against?") without losing
  * the structure that distinguishes single-RegExp rules from
@@ -89,18 +88,13 @@ export function buildStatsVbaRules(): StatsVbaRulesOutput {
       concern,
       ruleCount: rules.length,
       rules: rules.map((rule) => {
-        const serialized: StatsVbaRule = {
+        return {
           id: rule.id,
           description: rule.description,
           pattern: serializePattern(rule.pattern),
+          ...(rule.requires !== undefined ? { requires: rule.requires } : {}),
+          ...(rule.scan !== undefined ? { scan: rule.scan } : {}),
         };
-        if (rule.requires !== undefined) {
-          (serialized as { requires?: string }).requires = rule.requires;
-        }
-        if (rule.scan !== undefined) {
-          (serialized as { scan?: string }).scan = rule.scan;
-        }
-        return serialized;
       }),
     });
     totalRules += rules.length;

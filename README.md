@@ -574,7 +574,7 @@ codegraph-vba daemon                  # Manage background daemons — pick one t
 codegraph-vba telemetry [on|off]      # Show or change anonymous usage telemetry
 codegraph-vba upgrade [version]       # Update to the latest release (--check, --force)
 codegraph-vba version                 # Print the installed version (also -v, --version)
-codegraph-vba stats vba-rules [--json]# List every VBA extractor rule (concern, id, description, pattern, counts)
+codegraph-vba stats vba-rules [--json] # List every VBA extractor rule (concern, id, description, pattern, counts)
 codegraph-vba help [command]          # Show help, optionally for one command
 ```
 

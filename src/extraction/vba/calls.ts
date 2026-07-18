@@ -94,12 +94,12 @@ export function scanCallSites(
       if (!localFuncNode) {
         // Round-3 (FR-2.1, issue #108): the call-sweep path used to
         // silent-skip here, leaving the paren-form unresolvable call
-        // invisible in `unresolved_refs`. Surface it as `'call'` so the
-        // SQL filter `WHERE reference_kind = 'call'` reaches it.
+        // invisible in `unresolved_refs`. Surface it as canonical `'calls'`
+        // so consumers use the same kind as resolved call edges.
         ctx.unresolvedReferences.push({
           fromNodeId: ctx.findOrCreateFunctionNodeId(from),
           referenceName: receiver,
-          referenceKind: 'call',
+          referenceKind: 'calls',
           line: lineNum,
           column: col,
           filePath: ctx.filePath,

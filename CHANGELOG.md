@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- VBA extraction's per-rule `scan` and `requires` field behavior is now pinned by a dedicated behavior test suite, so a future refactor that breaks the string-literal masking or the procedure / type-block / enum-block gating fails the suite immediately. No user-visible behavior change — the full existing VBA test suite passes unchanged. (#165)
+
 ### Fixes
 
 - VBA extraction now refuses to load if any per-concern rule table is empty, so an accidentally-emptied classifier fails the import instead of silently dropping an entire symbol family. (#164)

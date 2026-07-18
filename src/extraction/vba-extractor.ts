@@ -161,16 +161,21 @@ export function validateVbaRuleTables(
   return { ok: empty.length === 0, empty };
 }
 
-// Run the validator once at module load. The IIFE never throws — it
-// just emits a console.error so the failure is visible in CI logs
-// without aborting the import. The unit test
-// `__tests__/extraction-vba-rule-table.test.ts` pins the
-// `validateVbaRuleTables` contract independently.
+// Run the validator once at module load. The IIFE THROWS on a non-ok
+// result so an accidentally-emptied `RULES` array (e.g. from a partial
+// refactor that drops the `defineRule` calls) aborts the import
+// instead of silently losing an entire concern at the first
+// `extract()` call. A user running `codegraph index` without first
+// running `npm test` would otherwise see no symptom at all — the
+// downstream `extract()` would just emit fewer symbols. The unit
+// test in `__tests__/extraction-vba-rule-table.test.ts` pins the
+// `validateVbaRuleTables` return-value contract; the IIFE itself is
+// pinned by `__tests__/extraction-vba-extractor-import-invariant.test.ts`
+// (issue #164).
 (function runRuleTableInvariant(): void {
   const result = validateVbaRuleTables();
   if (!result.ok) {
-    // eslint-disable-next-line no-console
-    console.error(
+    throw new Error(
       `[vba-extractor] VBA_RULE_TABLES is missing rules for: ${result.empty.join(', ')}. ` +
         `Each concern's RULES array must be non-empty.`,
     );

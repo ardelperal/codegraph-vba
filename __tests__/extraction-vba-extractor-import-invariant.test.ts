@@ -23,7 +23,12 @@
  * "spawn a Node child process" suggestion aimed to exercise, but
  * deterministic and in-process.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+
+afterEach(() => {
+  vi.doUnmock('../src/extraction/vba/dims');
+  vi.resetModules();
+});
 
 describe('vba-extractor module-load invariant (#164)', () => {
   it('refuses to load the orchestrator when a classifier RULES table is empty', async () => {
@@ -44,8 +49,6 @@ describe('vba-extractor module-load invariant (#164)', () => {
       /VBA_RULE_TABLES is missing rules for: dims/,
     );
 
-    vi.doUnmock('../src/extraction/vba/dims');
-    vi.resetModules();
   });
 
   it('loads the orchestrator cleanly when every RULES table is non-empty', async () => {

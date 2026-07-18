@@ -4,7 +4,7 @@
  * Round-3 (issue #108): classify `unresolved_refs.reference_kind` by
  * syntactic shape. Tests cover:
  *
- *   Test 1 (FR-2.1): Paren-form `Foo(args)` when unresolved → 'call'
+ *   Test 1 (FR-2.1): Paren-form `Foo(args)` when unresolved → 'calls'
  *   Test 2 (FR-1.1): `Me!Ctl` (bang read)                  → 'bang-get'
  *   Test 3 (FR-1.1): `Me.Ctl` (dot read)                   → 'property-get'
  *   Test 4 (DAO round-4): SKIPPED — TODO marker
@@ -37,10 +37,10 @@ function findRefByName(
 }
 
 describe('reference-kind classification: paren-form call (FR-2.1)', () => {
-  it('Foo(args) unresolved → referenceKind = "call"', () => {
+  it('Foo(args) unresolved → canonical referenceKind = "calls"', () => {
     // `HelperFunction` is referenced paren-form (`Name(...)`) but NEVER
     // declared in this file, so `scanCallSites` falls through to silent-skip
-    // today. Round-3 must instead emit a 'call' unresolved reference.
+    // today. Round-3 must instead emit a 'calls' unresolved reference.
     const src = `Attribute VB_Name = "modCaller"
 Public Sub Caller()
     HelperFunction(42)
@@ -49,7 +49,7 @@ End Sub
     const r = extract('src/modCaller.bas', src);
     const ref = findRefByName(r, 'HelperFunction');
     expect(ref, 'expected unresolved ref for HelperFunction when unresolved').toBeDefined();
-    expect(ref?.referenceKind).toBe('call');
+    expect(ref?.referenceKind).toBe('calls');
   });
 });
 
@@ -195,7 +195,7 @@ describe('reference-kind classification: back-compat (FR-5)', () => {
     // row carrying `reference_kind = 'references'` in the SQL layer.
     //
     // After round-3 ships, every VBA-push-site the round enumerates emits a
-    // shape-based literal (`call`, `bang-get`, …). The literal `'references'`
+    // shape-based literal (`calls`, `bang-get`, …). The literal `'references'`
     // is reachable on rows from `resurrectRefFromDroppedEdge` (which uses
     // `e.metadata?.refKind ?? e.kind` and falls back to `e.kind`), but that
     // path lives in `src/extraction/index.ts` (an integration re-index flow),

@@ -370,7 +370,7 @@ export interface ExtractionError {
  * layer. The legacy `EdgeKind` literal `'references'` is preserved as
  * `references` here via `EdgeKind` — back-compat for any push site this
  * round does not reclassify (e.g. the Implements emitter). New literals:
- *   - `call`             paren-form `Name(...)` or statement-form Sub call
+ *   - `calls`            paren-form `Name(...)` or statement-form Sub call
  *   - `qualified-call`   `Receiver.Member(...)` (qualified-paren) or
  *                        `Receiver.Member args` (qualified-statement)
  *   - `property-get`     `Me.Name` (dot access, read)
@@ -385,13 +385,14 @@ export interface ExtractionError {
  *   - `dao-query`        `DoCmd.OpenQuery "X"` argument
  * `dao-field-get` / `dao-field-set` are deliberately deferred to round-4.
  */
-export type ReferenceKind = EdgeKind | 'function_ref' | 'call' | 'qualified-call' | 'property-get' | 'property-set' | 'bang-get' | 'bang-set' | 'unqualified-ident' | 'member-with' | 'dao-query';
+/** `calls` is the canonical kind for unresolved procedure and function calls. */
+export type ReferenceKind = EdgeKind | 'function_ref' | 'qualified-call' | 'property-get' | 'property-set' | 'bang-get' | 'bang-set' | 'unqualified-ident' | 'member-with' | 'dao-query';
 
 /**
  * Runtime guard for whether a `ReferenceKind` literal is also an `EdgeKind`
  * literal (i.e. the value flows from an unresolved-ref row straight onto the
  * kind column of a resolved edge without remapping). Round-3 (issue #108)
- * introduced shape-based classifier literals (`call`, `qualified-call`,
+ * introduced shape-based classifier literals (`qualified-call`,
  * `property-get`, …) that are valid as a `ReferenceKind` but are NOT valid
  * edge kinds — edges still use the `calls`/`references` family of literals.
  * The resolver uses this guard to fall back to `'references'` for the edge

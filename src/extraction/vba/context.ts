@@ -141,6 +141,7 @@ export class VbaExtractorContext {
     withEvents?: boolean;
     variableName?: string;
     assignedWithSet?: boolean;
+    isArray?: boolean;
   }>();
 
   /**

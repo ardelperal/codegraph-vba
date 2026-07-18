@@ -65,6 +65,11 @@ export function scanCallSites(
   from: ProcInfo,
   lineNum: number,
 ): void {
+  const arrayAssignment = /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*Array\s*\(/iu.exec(line);
+  if (arrayAssignment?.[1]) {
+    const entry = ctx.localVarTypeMap.get(arrayAssignment[1].toLowerCase());
+    if (entry) entry.isArray = true;
+  }
   CALL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = CALL_RE.exec(line)) !== null) {
@@ -75,6 +80,7 @@ export function scanCallSites(
     const receiver = m[1] ?? m[2] ?? '';
     const member = m[3] ?? m[4] ?? '';
     if (!receiver) continue;
+    if (!member && ctx.localVarTypeMap.get(receiver.toLowerCase())?.isArray) continue;
     // Skip VBA control-flow keywords.
     if (CALL_KEYWORD_BLACKLIST.has(receiver)) continue;
     if (member && CALL_KEYWORD_BLACKLIST.has(member)) continue;

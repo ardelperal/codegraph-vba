@@ -89,6 +89,11 @@ const WITHEVENTS_VAR_RE =
 /** Helper regex for the bare-Dim fallback path — extracts an `As <Type>` continuation. */
 const DIM_AS_TYPE_RE = /\bAs\s+(\p{L}[\p{L}\p{N}_]*)/iu;
 
+function isArrayDeclaration(line: string, variableName: string): boolean {
+  const escaped = variableName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\s*\\(`, 'iu').test(line);
+}
+
 /**
  * Issue #153: the declarative rule table for the Dim / WithEvents
  * concern. Two rules:
@@ -148,6 +153,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
           ctx.localVarTypeMap.set(varName.toLowerCase(), {
             outer: outerType,
             qualified: !!innerType,
+            isArray: isArrayDeclaration(line, varName),
           });
         }
 
@@ -194,6 +200,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
             ctx.localVarTypeMap.set(key, {
               outer,
               qualified: false,
+              isArray: isArrayDeclaration(line, varName),
             });
           }
         }

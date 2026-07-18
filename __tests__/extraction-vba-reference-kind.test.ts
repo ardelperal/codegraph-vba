@@ -51,6 +51,26 @@ End Sub
     expect(ref, 'expected unresolved ref for HelperFunction when unresolved').toBeDefined();
     expect(ref?.referenceKind).toBe('calls');
   });
+
+  it('array indexes are not emitted as calls', () => {
+    const src = `Attribute VB_Name = "modArrays"
+Public Sub Caller()
+    Dim fixed(0 To 3) As String
+    Dim dynamic() As Long
+    Dim values As Variant
+    values = Array("a", "b")
+    fixed(0) = "x"
+    dynamic(1) = 42
+    values(0) = "y"
+    MissingHelper(1)
+End Sub
+`;
+    const r = extract('src/modArrays.bas', src);
+    for (const name of ['fixed', 'dynamic', 'values']) {
+      expect(findRefByName(r, name)).toBeUndefined();
+    }
+    expect(findRefByName(r, 'MissingHelper')?.referenceKind).toBe('calls');
+  });
 });
 
 describe('reference-kind classification: Me-control reads (FR-1.1)', () => {

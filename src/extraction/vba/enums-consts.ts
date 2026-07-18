@@ -212,7 +212,10 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
           startColumn: 0,
           endColumn: line.length,
           visibility,
-          metadata: declaration.value !== null ? { value: declaration.value } : undefined,
+          metadata: {
+            asType: declaration.asType,
+            ...(declaration.value !== null ? { value: declaration.value } : {}),
+          },
           updatedAt: Date.now(),
         });
         ctx.pushContainsFromModule(constId);

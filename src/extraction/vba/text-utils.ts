@@ -66,16 +66,18 @@ export function escapeRegExpLiteral(value: string): string {
 
 export function parseConstDeclarations(
   body: string,
-): Array<{ name: string; value: string | null }> {
-  const declarations: Array<{ name: string; value: string | null }> = [];
+): Array<{ name: string; asType: string; value: string | null }> {
+  const declarations: Array<{ name: string; asType: string; value: string | null }> = [];
   for (const part of splitOutsideVbaStrings(body, ',')) {
     const m =
-      /^\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:As\s+[^=]+?)?\s*=\s*(.+?)\s*$/iu.exec(part);
+      /^\s*(\p{L}[\p{L}\p{N}_]*)\s*(?:As\s+([^=]+?))?\s*=\s*(.+?)\s*$/iu.exec(part);
     if (!m) continue;
     const name = m[1] ?? '';
-    const rawValue = (m[2] ?? '').trim();
+    const asType = (m[2] ?? 'Variant').trim();
+    const rawValue = (m[3] ?? '').trim();
     declarations.push({
       name,
+      asType,
       value: rawValue.startsWith('"') ? unwrapVbaStringLiteral(rawValue) : rawValue || null,
     });
   }

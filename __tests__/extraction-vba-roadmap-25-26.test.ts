@@ -17,9 +17,13 @@ describe('VbaExtractor — roadmap #26 event declarations', () => {
     ].join('\n');
 
     const r = extract('src/classes/PedidoPublisher.cls', src);
+    const publisher = r.nodes.find(
+      (n) => n.kind === 'class' && n.name === 'PedidoPublisher',
+    );
     const event = r.nodes.find((n) => n.kind === 'event' && n.name === 'PedidoGuardado');
     const caller = r.nodes.find((n) => n.kind === 'function' && n.name === 'Guardar');
 
+    expect(publisher).toBeDefined();
     expect(event).toBeDefined();
     expect(event?.qualifiedName).toBe('PedidoPublisher.PedidoGuardado');
     expect(event?.visibility).toBe('public');
@@ -27,9 +31,19 @@ describe('VbaExtractor — roadmap #26 event declarations', () => {
     expect(caller).toBeDefined();
     expect(r.edges).toContainEqual(
       expect.objectContaining({
+        source: publisher?.id,
+        target: event?.id,
+        kind: 'contains',
+      }),
+    );
+    expect(r.edges).toContainEqual(
+      expect.objectContaining({
         source: caller?.id,
         target: event?.id,
         kind: 'raises-event',
+        provenance: 'parser',
+        line: 5,
+        column: 2,
         metadata: expect.objectContaining({ eventName: 'PedidoGuardado' }),
       }),
     );

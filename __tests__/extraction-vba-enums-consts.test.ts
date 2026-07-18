@@ -91,18 +91,21 @@ End Enum`);
 });
 
 describe('VbaExtractor — Const declarations (REQ-CODE-13)', () => {
-  it('emits a constant node with public visibility for Public Const', () => {
-    const r = extract('src/modules/c.bas', 'Public Const msoFileDialogOpen As Long = 1');
-    const c = r.nodes.find((n) => n.kind === 'constant' && n.name === 'msoFileDialogOpen');
+  it('emits a typed Public Const with public visibility, type, and value', () => {
+    const r = extract('src/modules/c.bas', 'Public Const RetryLimit As Long = 42');
+    const c = r.nodes.find((n) => n.kind === 'constant' && n.name === 'RetryLimit');
     expect(c).toBeDefined();
     expect(c?.visibility).toBe('public');
     expect(c?.language).toBe('vba');
+    expect(c?.metadata).toEqual({ asType: 'Long', value: '42' });
   });
 
-  it('folds Private Const visibility to private', () => {
-    const r = extract('src/modules/c.bas', 'Private Const Secret = 42');
+  it('emits an untyped Private Const as Variant with private visibility and value', () => {
+    const r = extract('src/modules/c.bas', 'Private Const Secret = "classified"');
     const c = r.nodes.find((n) => n.kind === 'constant' && n.name === 'Secret');
+    expect(c).toBeDefined();
     expect(c?.visibility).toBe('private');
+    expect(c?.metadata).toEqual({ asType: 'Variant', value: 'classified' });
   });
 
   it('captures a hex-valued const name', () => {
@@ -144,5 +147,16 @@ Public Const X = 1`);
 Option Compare Database`);
     const mod = r.nodes.find((n) => n.kind === 'module' || n.kind === 'class');
     expect(mod).toBeUndefined();
+  });
+
+  it('keeps Option directives inert without shifting following symbol lines', () => {
+    const r = extract('src/modules/options.bas', `Option Compare Database
+Option Explicit
+Public Sub Run()
+End Sub`);
+    const fn = r.nodes.find((n) => n.kind === 'function' && n.name === 'Run');
+    expect(fn?.startLine).toBe(3);
+    expect(fn?.endLine).toBe(4);
+    expect(r.nodes.some((n) => /^Option|^(Compare|Explicit)$/.test(n.name))).toBe(false);
   });
 });

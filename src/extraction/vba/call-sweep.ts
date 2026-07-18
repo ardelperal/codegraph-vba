@@ -8,7 +8,7 @@
 import { PROC_RE, PROCEDURE_END_RE, PRIMITIVE_TYPES } from './constants';
 import { maskStringContent } from './text-utils';
 import { VbaExtractorContext, ProcInfo, VbaClassifier } from './context';
-import { defineRule, matchRule, VbaExtractionRule } from './rules';
+import { defineRule, matchRuleForScan, VbaExtractionRule } from './rules';
 import {
   scanRaiseEvents,
   scanCallSites,
@@ -259,9 +259,9 @@ export function createCallsAndSqlClassifier(
       // > 0)` gate).
       for (const rule of RULES) {
         if (rule.requires === 'inside-procedure' && stack.length === 0) continue;
-        const m = matchRule(rule.pattern, callScanLine);
-        if (!m) continue;
-        const result = rule.emit(m, ctx, callScanLine, lineNum);
+        const matched = matchRuleForScan(rule, line, callScanLine);
+        if (!matched) continue;
+        const result = rule.emit(matched.match, ctx, matched.line, lineNum);
         if (result !== null && result !== undefined) {
           this.count += rule.count ? rule.count(result as never) : 1;
         }

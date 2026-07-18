@@ -61,8 +61,8 @@ import type { VbaExtractorContext } from './context';
  *  - `scan?`     `'masked'` = run on the string-literal-masked line
  *                (so call patterns inside `"..."` are ignored), the
  *                default. `'unmasked'` = run on the original line (so
- *                SQL patterns inside `"..."` are caught). `'both'` =
- *                dispatcher calls the rule twice, once with each line.
+ *                SQL patterns inside `"..."` are caught). `'both'` tries
+ *                the masked line first, then the original line if needed.
  *  - `emit`      The per-match side effect. Receives the
  *                `RegExpExecArray` from the pattern, the shared
  *                `VbaExtractorContext`, the original (or masked) line,
@@ -151,4 +151,22 @@ export function matchRule(
     return null;
   }
   return pattern.exec(line);
+}
+
+export function matchRuleForScan(
+  rule: VbaExtractionRule,
+  line: string,
+  maskedLine: string,
+): { match: RegExpMatchArray; line: string } | null {
+  const candidates = rule.scan === 'unmasked'
+    ? [line]
+    : rule.scan === 'both'
+      ? [maskedLine, line]
+      : [maskedLine];
+
+  for (const candidate of candidates) {
+    const match = matchRule(rule.pattern, candidate);
+    if (match) return { match, line: candidate };
+  }
+  return null;
 }

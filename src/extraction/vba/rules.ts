@@ -152,3 +152,21 @@ export function matchRule(
   }
   return pattern.exec(line);
 }
+
+export function matchRuleForScan(
+  rule: VbaExtractionRule,
+  line: string,
+  maskedLine: string,
+): { match: RegExpMatchArray; line: string } | null {
+  const candidates = rule.scan === 'unmasked'
+    ? [line]
+    : rule.scan === 'both'
+      ? [maskedLine, line]
+      : [maskedLine];
+
+  for (const candidate of candidates) {
+    const match = matchRule(rule.pattern, candidate);
+    if (match) return { match, line: candidate };
+  }
+  return null;
+}

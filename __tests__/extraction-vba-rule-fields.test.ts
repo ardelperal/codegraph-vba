@@ -44,6 +44,7 @@ import { createCallsAndSqlClassifier } from '../src/extraction/vba/call-sweep';
 import { createEventsTypesDeclaresClassifier } from '../src/extraction/vba/declarations';
 import { createEnumsConstsClassifier } from '../src/extraction/vba/enums-consts';
 import { VbaExtractor } from '../src/extraction/vba-extractor';
+import { defineRule, matchRuleForScan } from '../src/extraction/vba/rules';
 
 /** Run `cls.classifyLine(line, i, ctx)` for every entry in `lines`. */
 function drive(
@@ -569,5 +570,30 @@ describe('end-to-end: rule gating survives the full VbaExtractor walk', () => {
       .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
       .filter((n): n is string => !!n);
     expect(names).toEqual(['RealType']);
+  });
+});
+
+describe('VbaExtractionRule.scan dispatch', () => {
+  const line = 'x = "Ghost"';
+  const maskedLine = 'x =        ';
+  const rule = (scan: 'masked' | 'unmasked' | 'both') =>
+    defineRule({
+      id: scan,
+      description: scan,
+      scan,
+      pattern: /Ghost/,
+      emit: () => null,
+    });
+
+  it('uses only the masked line for masked rules', () => {
+    expect(matchRuleForScan(rule('masked'), line, maskedLine)).toBeNull();
+  });
+
+  it('uses the original line for unmasked rules', () => {
+    expect(matchRuleForScan(rule('unmasked'), line, maskedLine)?.line).toBe(line);
+  });
+
+  it('falls back to the original line for both rules', () => {
+    expect(matchRuleForScan(rule('both'), line, maskedLine)?.line).toBe(line);
   });
 });

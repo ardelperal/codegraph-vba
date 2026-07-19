@@ -26,6 +26,20 @@ export interface ProcInfo {
   kind: 'sub' | 'function' | 'property';
   visibility: 'public' | 'private' | 'protected' | 'internal';
   startLine: number;
+  /**
+   * Issue #190: lowercase parameter names declared as arrays on this
+   * procedure's signature (e.g. `ByRef logs() As String` or
+   * `ByVal p_Logs() As Long`). Used by the call-site scan to suppress
+   * `name(index)` accesses INSIDE this procedure body — the receiver
+   * is a known array bound at the parameter boundary, not an
+   * unresolved function call.
+   *
+   * Scoped to this procedure on purpose: a `logs` parameter on one Sub
+   * does NOT make `logs` an array inside another Sub, and a module-level
+   * `Dim logs As String` (not an array) must not be polluted by a
+   * different procedure's `ByRef logs()` declaration.
+   */
+  arrayParameters?: string[];
 }
 
 /**

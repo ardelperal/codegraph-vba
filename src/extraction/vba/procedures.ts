@@ -29,6 +29,45 @@ function parseReturnType(line: string): string | null {
   return m[1] ?? m[2] ?? null;
 }
 
+function parseArrayParameters(line: string): string[] {
+  const openIdx = line.indexOf('(');
+  if (openIdx < 0) return [];
+  const closeIdx = line.lastIndexOf(')');
+  if (closeIdx < openIdx) return [];
+  const body = line.slice(openIdx + 1, closeIdx);
+  const params: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    else if (ch === ',' && depth === 0) {
+      params.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  params.push(body.slice(start));
+  const arrayParamRe =
+    /^\s*(?:ByRef|ByVal)\s+(\p{L}[\p{L}\p{N}_]*)\s*\(\s*\)/iu;
+  const out: string[] = [];
+  for (const raw of params) {
+    const match = arrayParamRe.exec(raw);
+    const name = match?.[1];
+    if (name) out.push(name.toLowerCase());
+  }
+  return out;
+}
+
+function parenthesisDelta(line: string): number {
+  let depth = 0;
+  for (const ch of line) {
+    if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+  }
+  return depth;
+}
+
 /**
  * Issue #153: the declarative rule table for the procedures concern.
  * One rule — `procedure` — matches a `Sub` / `Function` /
@@ -108,6 +147,10 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
         kind,
         visibility,
         startLine: lineNum,
+        // Issue #190: capture parameter-array names so the call sweep can
+        // suppress `name(index)` accesses inside this procedure body
+        // without polluting the file-global `localVarTypeMap`.
+        arrayParameters: parseArrayParameters(line),
       };
       ctx.procedures.push(proc);
       const bucket = ctx.localProcs.get(name);
@@ -258,25 +301,43 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
   }),
 ];
 
-/**
- * Issue #83: factory for the procedures classifier. Closure state: none
- * beyond `count` (the per-concern accumulators live on `ctx`).
- *
- * The body walks the declarative `RULES` table (Issue #153). The
- * inline cascade that used to live here is now one entry in `RULES`.
- */
 export function createProceduresClassifier(): VbaClassifier {
+  let pendingHeader:
+    | { proc: ProcInfo; text: string; depth: number }
+    | undefined;
+
   return {
     name: 'procedures',
     count: 0,
     classifyLine(line, i, ctx) {
+      if (pendingHeader) {
+        pendingHeader.text += ` ${line}`;
+        pendingHeader.depth += parenthesisDelta(line);
+        if (pendingHeader.depth <= 0) {
+          pendingHeader.proc.arrayParameters = parseArrayParameters(
+            pendingHeader.text,
+          );
+          pendingHeader = undefined;
+        }
+      }
+
       const lineNum = i + 1;
       for (const rule of RULES) {
         const m = matchRule(rule.pattern, line);
         if (!m) continue;
+        const previousProcCount = ctx.procedures.length;
         const result = rule.emit(m, ctx, line, lineNum);
         if (result !== null && result !== undefined) {
           this.count += rule.count ? rule.count(result as never) : 1;
+        }
+
+        const proc = ctx.procedures[previousProcCount];
+        const openIdx = line.indexOf('(');
+        if (proc && openIdx >= 0) {
+          const depth = parenthesisDelta(line.slice(openIdx));
+          if (depth > 0) {
+            pendingHeader = { proc, text: line, depth };
+          }
         }
       }
     },

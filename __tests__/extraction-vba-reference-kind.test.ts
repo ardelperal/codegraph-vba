@@ -71,6 +71,110 @@ End Sub
     }
     expect(findRefByName(r, 'MissingHelper')?.referenceKind).toBe('calls');
   });
+
+  // Issue #190: a VBA procedure parameter declared `ByRef name() As Type`
+  // (the param-array signature seen on Dysflow-exported Sub boundaries)
+  // is an array for the duration of that procedure body. `name(index)`
+  // accesses inside that body must not be surfaced as `calls` — the
+  // receiver is a known array bound at the parameter boundary, not an
+  // unresolved function call.
+  it('ByRef parameter declared as array() is treated as an array within the procedure', () => {
+    const src = `Attribute VB_Name = "modParamArrays"
+Public Sub Collect(ByRef logs() As String)
+    logs(0) = "first"
+    Debug.Print logs(1)
+    Dim s As String
+    s = logs(2)
+End Sub
+`;
+    const r = extract('src/modParamArrays.bas', src);
+    // logs is the parameter, declared as an array. None of its indexed
+    // accesses (`logs(0)`, `logs(1)`, `logs(2)`) must reach unresolved_refs.
+    expect(findRefByName(r, 'logs')).toBeUndefined();
+  });
+
+  // Issue #190, sad path / negative control: a real missing helper still
+  // resolves to `calls` even when other identifiers in the same body are
+  // suppressed as array indexes. This guards against an over-broad fix
+  // that flips everything to suppressed.
+  it('a real missing call inside the array-parameter procedure still emits "calls"', () => {
+    const src = `Attribute VB_Name = "modParamArraysMixed"
+Public Sub Collect(ByRef logs() As String)
+    logs(0) = "first"
+    MissingHelper(1)
+End Sub
+`;
+    const r = extract('src/modParamArraysMixed.bas', src);
+    expect(findRefByName(r, 'logs')).toBeUndefined();
+    expect(findRefByName(r, 'MissingHelper')?.referenceKind).toBe('calls');
+  });
+
+  // Issue #190, scope guard: the ByRef array-parameter recognition is
+  // PROCEDURE-SCOPED. A same-named genuine function call in another
+  // procedure (or another module) must still emit a calls reference. A
+  // file-global `isArray` flag would over-suppress and break this case.
+  it('array-parameter recognition is procedure-scoped (different proc keeps the call)', () => {
+    const src = `Attribute VB_Name = "modParamScope"
+Public Sub Collect(ByRef logs() As String)
+    logs(0) = "first"
+End Sub
+
+Public Sub Other()
+    logs(2) = "second"
+End Sub
+`;
+    const r = extract('src/modParamScope.bas', src);
+    // Inside Collect, logs is the array param → suppressed.
+    // Inside Other, logs is an UNDECLARED identifier, so logs(2) is a
+    // genuine missing-call and must surface as 'calls'.
+    const logsRef = findRefByName(r, 'logs');
+    expect(logsRef).toBeDefined();
+    expect(logsRef?.referenceKind).toBe('calls');
+  });
+
+  // Issue #190, ByVal parity: `ByVal name() As Type` is also an array
+  // parameter. The recognition must not be tied to ByRef specifically.
+  it('ByVal parameter declared as array() is treated as an array within the procedure', () => {
+    const src = `Attribute VB_Name = "modParamArraysByVal"
+Public Sub Collect(ByVal logs() As String)
+    logs(0) = "first"
+End Sub
+`;
+    const r = extract('src/modParamArraysByVal.bas', src);
+    expect(findRefByName(r, 'logs')).toBeUndefined();
+  });
+
+  it('array parameters on continued declarations stay procedure-scoped', () => {
+    const src = `Attribute VB_Name = "modParamArraysContinued"
+Public Sub Collect( _
+    ByRef logs() As String, _
+    ByVal tag As String)
+    logs(0) = "first"
+    tag(0)
+    MissingHelper(1)
+End Sub
+`;
+    const r = extract('src/modParamArraysContinued.bas', src);
+    expect(findRefByName(r, 'logs')).toBeUndefined();
+    expect(findRefByName(r, 'tag')?.referenceKind).toBe('calls');
+    expect(findRefByName(r, 'MissingHelper')?.referenceKind).toBe('calls');
+  });
+
+  // Issue #190, multi-parameter case: a Sub with several params, only
+  // one of them an array, must suppress only the array one. The
+  // non-array param `tag` is undeclared here so `tag(0)` would still
+  // surface as a call (since `tag` is not an array).
+  it('only array parameters are suppressed; non-array parameters stay visible', () => {
+    const src = `Attribute VB_Name = "modParamMixed"
+Public Sub Collect(ByRef logs() As String, ByVal tag As String)
+    logs(0) = "first"
+    tag(0)
+End Sub
+`;
+    const r = extract('src/modParamMixed.bas', src);
+    expect(findRefByName(r, 'logs')).toBeUndefined();
+    expect(findRefByName(r, 'tag')?.referenceKind).toBe('calls');
+  });
 });
 
 describe('reference-kind classification: Me-control reads (FR-1.1)', () => {

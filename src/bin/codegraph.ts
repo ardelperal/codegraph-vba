@@ -900,7 +900,12 @@ program
       const journalMode = cg.getJournalMode();
 
       const buildInfo = cg.getIndexBuildInfo();
-      const reindexRecommended = cg.isIndexStale();
+      // Single source of truth for "should the user re-index?" — read once,
+      // shared between the JSON and human branches. The human-readable prose
+      // must NEVER call the index healthy when this list is non-empty (issue
+      // #193); the JSON shape is authoritative and unchanged from #189.
+      const reindexReasons = cg.getReindexReasons();
+      const reindexRecommended = reindexReasons.length > 0;
       const indexState = cg.getIndexState();
       // Zero on a healthy index; non-zero at rest means a resolution pass was
       // interrupted, so some files' call edges are missing (#1187).
@@ -941,7 +946,7 @@ program
             // 'extraction-version' when the on-disk stamp is older than this
             // engine's EXTRACTION_VERSION. CI scripts can switch on the array
             // contents without parsing the prose warning.
-            reindexReasons: cg.getReindexReasons(),
+            reindexReasons,
             // 'complete' | 'partial' (files silently dropped) | 'indexing'
             // (a run was killed mid-index — the index is truncated) |
             // 'failed' | null (predates the marker).
@@ -1029,16 +1034,22 @@ program
           console.log(`  Removed:   ${changes.removed.length} files`);
         }
         info('Run "codegraph sync" to update the index');
-      } else {
-        success('Index is up to date');
+      } else if (reindexReasons.length === 0) {
+        // Only call the index healthy when nothing recommends a re-index — a
+        // stale engine stamp means a rebuild would add data a migration can't
+        // backfill, so the clean-health sentence must not appear in that case.
+        // (Issue #193 — the JSON contract from #189 is authoritative.)
+        success('No source changes detected');
       }
       console.log();
 
-      // Re-index hint: the index was built by an older engine than the one now
-      // running, so a rebuild would add data a migration can't backfill.
-      if (reindexRecommended) {
-        const builtWith = buildInfo.version ? `v${buildInfo.version.replace(/^v/, '')}` : 'an earlier version';
-        warn(`Index was built by ${builtWith}; re-index to pick up this engine's improvements.`);
+      // Re-index hint. The human-readable recommendation is driven by
+      // `reindexReasons` (issue #189) so it can never disagree with the JSON
+      // contract. We deliberately do NOT print the legacy "Index was built by
+      // vX.Y.Z" line here — that older wording implied a version-mismatch
+      // trigger that #189 retired in favor of the structured reasons array.
+      if (reindexReasons.length > 0) {
+        warn(`Re-index recommended: ${reindexReasons.join(', ')}`);
         info('Run "codegraph index" (full rebuild) or "codegraph sync"');
         console.log();
       }

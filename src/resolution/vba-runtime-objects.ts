@@ -81,3 +81,55 @@ export const VBA_STDLIB_FUNCTIONS: ReadonlySet<string> = new Set([
 export function isVbaStdlibFunction(name: string | null | undefined): boolean {
   return !!name && VBA_STDLIB_FUNCTIONS.has(name.trim().toLowerCase());
 }
+
+/**
+ * Issue #192 — central decision: should this unresolved reference be parked
+ * as `declined-runtime` instead of `failed`?
+ *
+ * VBA stdlib calls reach `unresolved_refs` under three shapes:
+ *
+ *   1. **paren-form call** — `MsgBox("hi")` is emitted by the call-site sweep
+ *      as `reference_kind='calls'` with `metadata.synthesizedBy` either
+ *      absent or set to `vba-paren-call-unresolved` (the post-sweep
+ *      unifier). The classic PR #185 / issue #181 path.
+ *
+ *   2. **statement-form call** — `MsgBox "hi"`, `DoEvents`, `Shell "calc"`
+ *      are emitted by the statement-call sweep as
+ *      `reference_kind='unqualified-ident'` with
+ *      `metadata.synthesizedBy='vba-statement-call-unresolved'`. Without
+ *      this classifier, those 49+ rows from the bench corpus (MsgBox=44,
+ *      DoEvents=4, Shell=1) leak as `failed`, polluting actionable
+ *      failed-reference reports.
+ *
+ *   3. **NOT a call at all** — a bare `Public Const SomePublicConst = 1`
+ *      read inside a procedure (e.g. `SomePublicConst` on its own line,
+ *      same shape the const-first disambiguation rule checks) ALSO reaches
+ *      `unresolved_refs` as `reference_kind='unqualified-ident'`. The
+ *      resolver first attempts normal `matchFunctionRef` / matchConstRef
+ *      resolution; for genuine misses this row will be deleted from
+ *      unresolved_refs. When a Const cannot be resolved but still produces
+ *      a row, classifying its status purely by name is wrong — a
+ *      user-defined `Public Sub ProjectHelper s` and a public Const that
+ *      elude resolution must NOT be marked `declined-runtime`.
+ *
+ * The gate is therefore deliberately tight: a row qualifies only when its
+ * NAME matches the stdlib allowlist AND its shape (call parity OR the
+ * extraction-stamped `vba-statement-call-unresolved` flag) is one of the
+ * two real call shapes. Name-only matching is intentionally rejected.
+ */
+export function classifyVbaReferenceAsRuntime(ref: {
+  language?: string | null;
+  referenceKind?: string | null;
+  referenceName?: string | null;
+  metadata?: { synthesizedBy?: unknown } | null;
+}): boolean {
+  if ((ref.language ?? '').toLowerCase() !== 'vba') return false;
+  if (!isVbaStdlibFunction(ref.referenceName)) return false;
+  const kind = ref.referenceKind;
+  if (kind === 'calls') return true;
+  const synthesizedBy = ref.metadata?.synthesizedBy;
+  if (kind === 'unqualified-ident' && synthesizedBy === 'vba-statement-call-unresolved') {
+    return true;
+  }
+  return false;
+}

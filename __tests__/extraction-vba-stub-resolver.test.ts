@@ -279,4 +279,148 @@ describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
     expect(rows.find((row) => row.reference_name === 'CStr')?.status).toBe('declined-runtime');
     expect(rows.find((row) => row.reference_name === 'ProjectHelper')?.status).toBe('failed');
   });
+
+  it('Test 9: stdlib statement calls are declined only when extraction marks statement-call shape', async () => {
+    const cg = await buildProject({
+      'src/modules/Caller.bas': [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        'Public Const SomePublicConst As Long = 1',
+        '',
+        'Public Sub CallerSub()',
+        '    MsgBox "hi"',
+        '    DoEvents',
+        '    Shell "calc.exe"',
+        '    MsgBox("hi")',
+        '    ProjectHelper "x"',
+        '    SomePublicConst',
+        'End Sub',
+        '',
+        'Public Sub ProjectHelper(s As String)',
+        'End Sub',
+      ].join('\n'),
+    });
+    const projectRoot = (cg as unknown as { projectRoot: string }).projectRoot;
+    const connection = DatabaseConnection.open(getDatabasePath(projectRoot));
+    const rows = connection.getDb().prepare(
+      "SELECT reference_name, reference_kind, status, metadata FROM unresolved_refs WHERE reference_name IN ('MsgBox', 'DoEvents', 'Shell', 'ProjectHelper', 'SomePublicConst') ORDER BY line",
+    ).all() as Array<{
+      reference_name: string;
+      reference_kind: string;
+      status: string;
+      metadata: string | null;
+    }>;
+    connection.close();
+
+    const runtimeRows = rows
+      .filter((row) => ['MsgBox', 'DoEvents', 'Shell'].includes(row.reference_name))
+      .map((row) => ({
+        name: row.reference_name,
+        kind: row.reference_kind,
+        status: row.status,
+        synthesizedBy: row.metadata
+          ? (JSON.parse(row.metadata) as { synthesizedBy?: string }).synthesizedBy
+          : undefined,
+      }));
+    expect(runtimeRows).toEqual([
+      {
+        name: 'MsgBox',
+        kind: 'unqualified-ident',
+        status: 'declined-runtime',
+        synthesizedBy: 'vba-statement-call-unresolved',
+      },
+      {
+        name: 'DoEvents',
+        kind: 'unqualified-ident',
+        status: 'declined-runtime',
+        synthesizedBy: 'vba-statement-call-unresolved',
+      },
+      {
+        name: 'Shell',
+        kind: 'unqualified-ident',
+        status: 'declined-runtime',
+        synthesizedBy: 'vba-statement-call-unresolved',
+      },
+      {
+        name: 'MsgBox',
+        kind: 'calls',
+        status: 'declined-runtime',
+        synthesizedBy: 'vba-paren-call-unresolved',
+      },
+    ]);
+
+    const caller = cg
+      .searchNodes('CallerSub', { languages: ['vba'], kinds: ['function'] })
+      .find((node) => node.node.name === 'CallerSub');
+    const helper = cg
+      .searchNodes('ProjectHelper', { languages: ['vba'], kinds: ['function'] })
+      .find((node) => node.node.name === 'ProjectHelper');
+    expect(caller).toBeDefined();
+    expect(helper).toBeDefined();
+    expect(rows.filter((row) => row.reference_name === 'ProjectHelper')).toEqual([]);
+    expect(
+      caller && helper
+        ? cg.getOutgoingEdges(caller.node.id).filter((edge) => edge.kind === 'calls' && edge.target === helper.node.id)
+        : [],
+    ).toHaveLength(1);
+
+    const constantRow = rows.find((row) => row.reference_name === 'SomePublicConst');
+    if (constantRow) {
+      expect(constantRow).toMatchObject({
+        reference_kind: 'unqualified-ident',
+        status: 'failed',
+      });
+    } else {
+      const constant = cg
+        .searchNodes('SomePublicConst', { languages: ['vba'], kinds: ['constant'] })
+        .find((node) => node.node.name === 'SomePublicConst');
+      expect(constant).toBeDefined();
+      expect(
+        caller && constant
+          ? cg.getIncomingEdges(constant.node.id).filter((edge) => edge.source === caller.node.id)
+          : [],
+      ).toHaveLength(1);
+    }
+  });
+
+  it('Test 10: a user-defined MsgBox shadow resolves before runtime classification', async () => {
+    const cg = await buildProject({
+      'src/modules/Caller.bas': [
+        'Attribute VB_Name = "Caller"',
+        'Public Sub CallerSub()',
+        '    MsgBox "shadow"',
+        'End Sub',
+      ].join('\n'),
+      'src/modules/Shadow.bas': [
+        'Attribute VB_Name = "Shadow"',
+        'Public Function MsgBox(prompt As String) As Long',
+        '    MsgBox = 1',
+        'End Function',
+      ].join('\n'),
+    });
+
+    const caller = cg
+      .searchNodes('CallerSub', { languages: ['vba'], kinds: ['function'] })
+      .find((node) => node.node.name === 'CallerSub');
+    const shadow = cg
+      .searchNodes('MsgBox', { languages: ['vba'], kinds: ['function'] })
+      .find((node) => node.node.name === 'MsgBox' && node.node.filePath.endsWith('Shadow.bas'));
+    expect(caller).toBeDefined();
+    expect(shadow).toBeDefined();
+    const edges =
+      caller && shadow
+        ? cg
+            .getOutgoingEdges(caller.node.id)
+            .filter((edge) => (edge.kind === 'calls' || edge.kind === 'references') && edge.target === shadow.node.id)
+        : [];
+    expect(edges).toHaveLength(1);
+
+    const projectRoot = (cg as unknown as { projectRoot: string }).projectRoot;
+    const connection = DatabaseConnection.open(getDatabasePath(projectRoot));
+    const rows = connection.getDb().prepare(
+      "SELECT reference_name, status FROM unresolved_refs WHERE reference_name = 'MsgBox'",
+    ).all();
+    connection.close();
+    expect(rows).toEqual([]);
+  });
 });

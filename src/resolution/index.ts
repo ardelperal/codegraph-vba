@@ -27,7 +27,7 @@ import { loadWorkspacePackages, type WorkspacePackages } from './workspace-packa
 import { logDebug } from '../errors';
 import type { ReExport } from './types';
 import { LRUCache } from './lru-cache';
-import { isRuntimeObject, isVbaStdlibFunction } from './vba-runtime-objects';
+import { isRuntimeObject, classifyVbaReferenceAsRuntime } from './vba-runtime-objects';
 import { normalizeAccessObjectName } from './vba-access-object-name';
 import { generateNodeId } from '../extraction/tree-sitter-helpers';
 
@@ -1181,7 +1181,7 @@ export class ReferenceResolver {
           fromNodeId: r.fromNodeId,
           referenceName: r.referenceName,
           referenceKind: r.referenceKind,
-          status: r.language === 'vba' && r.referenceKind === 'calls' && isVbaStdlibFunction(r.referenceName)
+          status: classifyVbaReferenceAsRuntime(r)
             ? 'declined-runtime' as const
             : 'failed' as const,
         }))
@@ -1232,7 +1232,7 @@ export class ReferenceResolver {
       fromNodeId: r.fromNodeId,
       referenceName: r.referenceName,
       referenceKind: r.referenceKind,
-      status: r.language === 'vba' && r.referenceKind === 'calls' && isVbaStdlibFunction(r.referenceName)
+      status: classifyVbaReferenceAsRuntime(r)
         ? 'declined-runtime' as const
         : 'failed' as const,
     }));
@@ -1432,7 +1432,7 @@ export class ReferenceResolver {
         fromNodeId: r.fromNodeId,
         referenceName: r.referenceName,
         referenceKind: r.referenceKind,
-        status: r.language === 'vba' && r.referenceKind === 'calls' && isVbaStdlibFunction(r.referenceName)
+        status: classifyVbaReferenceAsRuntime(r)
           ? 'declined-runtime' as const
           : 'failed' as const,
       }));

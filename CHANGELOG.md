@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- VBA array parameters declared with `ByRef name() As Type` or `ByVal name() As Type`, including continued declarations, no longer flag indexed accesses inside their procedure as unresolved calls, while same-named genuine calls elsewhere still surface normally. (#190)
 
 ## [1.13.0] - 2026-07-18
 

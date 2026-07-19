@@ -81,6 +81,20 @@ export function scanCallSites(
     const member = m[3] ?? m[4] ?? '';
     if (!receiver) continue;
     if (!member && ctx.localVarTypeMap.get(receiver.toLowerCase())?.isArray) continue;
+    // Issue #190: procedure-scoped param-array recognition. A
+    // `ByRef name() As Type` (or `ByVal name() As Type`) on this
+    // procedure's signature makes `name` an array for the duration of
+    // the body. The check is on the CURRENT procedure's
+    // `arrayParameters` set, not on the file-global `localVarTypeMap`,
+    // so a same-named parameter on a different procedure cannot suppress
+    // a genuine missing-call elsewhere in the file.
+    if (
+      !member &&
+      from.arrayParameters !== undefined &&
+      from.arrayParameters.includes(receiver.toLowerCase())
+    ) {
+      continue;
+    }
     // Skip VBA control-flow keywords.
     if (CALL_KEYWORD_BLACKLIST.has(receiver)) continue;
     if (member && CALL_KEYWORD_BLACKLIST.has(member)) continue;

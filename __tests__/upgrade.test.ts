@@ -719,6 +719,40 @@ describe('index extraction-version stamp / isIndexStale', () => {
     expect(cg.isIndexStale()).toBe(true);
     cg.destroy();
   });
+
+  // Issue #189: at v1.13.0 the EXTRACTION_VERSION constant stayed at 24 even
+  // though parser PRs #188 / #190 / #192 materially changed extraction output.
+  // Every index stamped with the previous constant is now silently stale —
+  // `isIndexStale()` returned false because `24 < 24` is false. Pin the stamp
+  // to the v1.12.x constant value (24) and assert the bump surfaces it as stale.
+  it('flags an index stamped with the previous extraction-version constant (24) as stale after the bump to 25 (#189)', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'export function hello() { return 1; }\n');
+    const cg = await CodeGraph.init(dir, { index: false });
+    await cg.indexAll();
+
+    // Simulate an index built by the previous engine (constant 24). With the
+    // bumped engine (constant 25), `24 < 25` is true → stale.
+    (cg as unknown as { queries: { setMetadata(k: string, v: string): void } }).queries.setMetadata(
+      'indexed_with_extraction_version',
+      '24'
+    );
+    expect(cg.getIndexBuildInfo().extractionVersion).toBe(24);
+    expect(cg.isIndexStale()).toBe(true);
+    // The runtime signal behind `codegraph status --json > reindexReasons`
+    // must surface `'extraction-version'` so scripts can detect a missed bump
+    // without parsing a prose warning.
+    expect(cg.getReindexReasons()).toContain('extraction-version');
+    cg.destroy();
+  });
+
+  it('returns no reindex reasons for a fresh full index', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'export function hello() { return 1; }\n');
+    const cg = await CodeGraph.init(dir, { index: false });
+    await cg.indexAll();
+    expect(cg.isIndexStale()).toBe(false);
+    expect(cg.getReindexReasons()).toEqual([]);
+    cg.destroy();
+  });
 });
 
 // ---------------------------------------------------------------------------

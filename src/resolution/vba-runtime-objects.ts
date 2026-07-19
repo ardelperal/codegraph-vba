@@ -83,6 +83,60 @@ export function isVbaStdlibFunction(name: string | null | undefined): boolean {
 }
 
 /**
+ * Issue #188 — VBA intrinsic constants and DAO enum values reach
+ * `unresolved_refs` as `reference_kind='unqualified-ident'` and used to leak
+ * as `failed`. They are bare identifiers (NOT calls), so unlike the stdlib
+ * set they need NO `metadata.synthesizedBy` gate — name membership alone is
+ * the discriminator. The same case-insensitive / lowercased-compare
+ * convention as the stdlib set applies. A user-defined
+ * `Public Const dbFailOnError = 0` or `Public Function vbCrLf() As String`
+ * shadow resolves normally first and never reaches the classifier, so the
+ * name-only gate does not weaken user-symbol resolution.
+ *
+ * The bench corpus flagged ~104 confirmed rows (DAO enum literals in
+ * `Execute` / `OpenArgs` / recordset options; `vbCrLf` / `vbLf` / `vbTab`
+ * in `Debug.Print`; the full `vbMsgBoxStyle` + `vbMsgBoxHelpButton` +
+ * `vbApplicationModal` / `vbSystemModal` matrix in `MsgBox` calls).
+ */
+export const DAO_ENUM_VALUES: ReadonlySet<string> = new Set<string>([
+  // Recordset / Database option flags (DAO enum values used as bare args).
+  'dbfailonerror',
+  'dbseechanges',
+  'dbdenywrite',
+  'dbdenyread',
+  'dbreadonly',
+  'dbappendonly',
+]);
+
+export function isDaoEnumValue(name: string | null | undefined): boolean {
+  return !!name && DAO_ENUM_VALUES.has(name.trim().toLowerCase());
+}
+
+/**
+ * Issue #188 — VBA intrinsic constants. Lowercased so matching is
+ * case-insensitive. Covers the constants listed in the issue's explicit SQL
+ * set plus the rest of the `vbMsgBoxStyle` family and the
+ * `vbApplicationModal` / `vbSystemModal` modal flags.
+ */
+export const VBA_INTRINSIC_CONSTANTS: ReadonlySet<string> = new Set<string>([
+  // Newline / control-char constants.
+  'vbcrlf', 'vblf', 'vbcr', 'vbnewline', 'vbtab', 'vbnullchar', 'vbnullstring',
+  // MsgBox icon constants (`vbMsgBoxStyle`).
+  'vbexclamation', 'vbquestion', 'vbinformation', 'vbcritical',
+  // MsgBox button-set constants.
+  'vbokonly', 'vbokcancel', 'vbabortretryignore',
+  'vbyesnocancel', 'vbyesno', 'vbretrycancel',
+  // MsgBox default-button constants.
+  'vbdefaultbutton1', 'vbdefaultbutton2', 'vbdefaultbutton3', 'vbdefaultbutton4',
+  // MsgBox modality constants.
+  'vbapplicationmodal', 'vbsystemmodal',
+]);
+
+export function isVbaIntrinsicConstant(name: string | null | undefined): boolean {
+  return !!name && VBA_INTRINSIC_CONSTANTS.has(name.trim().toLowerCase());
+}
+
+/**
  * Issue #192 — central decision: should this unresolved reference be parked
  * as `declined-runtime` instead of `failed`?
  *
@@ -112,10 +166,20 @@ export function isVbaStdlibFunction(name: string | null | undefined): boolean {
  *      user-defined `Public Sub ProjectHelper s` and a public Const that
  *      elude resolution must NOT be marked `declined-runtime`.
  *
- * The gate is therefore deliberately tight: a row qualifies only when its
- * NAME matches the stdlib allowlist AND its shape (call parity OR the
- * extraction-stamped `vba-statement-call-unresolved` flag) is one of the
- * two real call shapes. Name-only matching is intentionally rejected.
+ * Issue #188 extends the contract with two new name-only branches for
+ * bare DAO enum values and VBA intrinsic constants — these are emitted as
+ * `reference_kind='unqualified-ident'` WITHOUT a `synthesizedBy` flag
+ * because they are identifiers, not calls. Name membership alone is the
+ * discriminator; the metadata gate does NOT apply. Normal user-symbol
+ * resolution runs first, so a user-defined `Public Const dbFailOnError`
+ * or `Public Function vbCrLf` shadow never reaches this classifier.
+ *
+ * The stdlib branch keeps its original tight gate: name match AND one of
+ * the two real call shapes (paren-form `calls`, or statement-form
+ * `unqualified-ident` stamped with `vba-statement-call-unresolved`).
+ * Name-only matching for the stdlib set is still intentionally rejected —
+ * a row like `MsgBox` on its own line without the statement-call stamp is
+ * a user-defined reference, not a runtime call.
  */
 export function classifyVbaReferenceAsRuntime(ref: {
   language?: string | null;
@@ -124,6 +188,15 @@ export function classifyVbaReferenceAsRuntime(ref: {
   metadata?: { synthesizedBy?: unknown } | null;
 }): boolean {
   if ((ref.language ?? '').toLowerCase() !== 'vba') return false;
+  // Issue #188 — bare DAO enum values and VBA intrinsic constants are
+  // emitted as `reference_kind='unqualified-ident'` with no
+  // `synthesizedBy` stamp (they're identifiers, not calls). Name
+  // membership alone is the discriminator; the stdlib metadata gate does
+  // NOT apply to these sets.
+  if (ref.referenceKind === 'unqualified-ident') {
+    if (isDaoEnumValue(ref.referenceName)) return true;
+    if (isVbaIntrinsicConstant(ref.referenceName)) return true;
+  }
   if (!isVbaStdlibFunction(ref.referenceName)) return false;
   const kind = ref.referenceKind;
   if (kind === 'calls') return true;

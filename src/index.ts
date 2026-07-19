@@ -1005,9 +1005,26 @@ export class CodeGraph {
    * hint and `codegraph upgrade`'s reminder.
    */
   isIndexStale(): boolean {
-    if (this.queries.getLastIndexedAt() == null) return false;
+    return this.getReindexReasons().length > 0;
+  }
+
+  /**
+   * Structured list of reasons the on-disk index should be rebuilt. Each entry
+   * is a stable token CI scripts can switch on without parsing the prose
+   * warning. Currently emits `'extraction-version'` when the on-disk
+   * `indexed_with_extraction_version` stamp is older than the running engine's
+   * `EXTRACTION_VERSION`. Empty when there is no index yet or the stamp is
+   * current. Future reasons (e.g. resolver-version drift) append to the same
+   * list — never replace it.
+   */
+  getReindexReasons(): string[] {
+    if (this.queries.getLastIndexedAt() == null) return [];
+    const reasons: string[] = [];
     const { extractionVersion } = this.getIndexBuildInfo();
-    return extractionVersion == null || extractionVersion < EXTRACTION_VERSION;
+    if (extractionVersion == null || extractionVersion < EXTRACTION_VERSION) {
+      reasons.push('extraction-version');
+    }
+    return reasons;
   }
 
   /**

@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Projects built with an older engine are now correctly flagged for re-indexing instead of silently going stale, and `codegraph status --json` exposes a `reindexReasons` array so scripts can detect a missed update without parsing the prose warning. (#189)
 - VBA intrinsic constants such as `vbCrLf`, `vbTab`, `vbYesNo`, and `vbExclamation`, plus DAO option flags such as `dbFailOnError`, `dbSeeChanges`, `dbReadOnly`, and `dbAppendOnly`, no longer appear as failed references when they appear as bare identifiers; user-defined symbols that happen to share one of these names still resolve normally. (#188)
 - VBA statement-form built-in calls such as `MsgBox "…"`, `DoEvents`, and `Shell "calc.exe"` are now classified as runtime calls instead of failing, while user-defined symbols that happen to share a built-in name still resolve normally. (#192)
 - VBA array parameters declared with `ByRef name() As Type` or `ByVal name() As Type`, including continued declarations, no longer flag indexed accesses inside their procedure as unresolved calls, while same-named genuine calls elsewhere still surface normally. (#190)

@@ -936,6 +936,12 @@ program
             builtWithExtractionVersion: buildInfo.extractionVersion,
             currentExtractionVersion: EXTRACTION_VERSION,
             reindexRecommended,
+            // Structured tokens describing *why* a re-index is recommended
+            // (issue #189). Empty when the index is current; currently emits
+            // 'extraction-version' when the on-disk stamp is older than this
+            // engine's EXTRACTION_VERSION. CI scripts can switch on the array
+            // contents without parsing the prose warning.
+            reindexReasons: cg.getReindexReasons(),
             // 'complete' | 'partial' (files silently dropped) | 'indexing'
             // (a run was killed mid-index — the index is truncated) |
             // 'failed' | null (predates the marker).

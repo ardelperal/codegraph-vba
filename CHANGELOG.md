@@ -17,6 +17,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - VBA array parameters declared with `ByRef name() As Type` or `ByVal name() As Type`, including continued declarations, no longer flag indexed accesses inside their procedure as unresolved calls, while same-named genuine calls elsewhere still surface normally. (#190)
 - The human-readable `codegraph status` output no longer reports an index as healthy when a re-index is recommended; the clean-health sentence now reads "No source changes detected" and the re-index hint names the structured reasons, matching the existing JSON contract. (#193)
 
+### Documentation
+
+- The seven `reference_kind` literals that appear in VBA `unresolved_refs` (`unqualified-ident`, `calls`, `qualified-call`, `member-with`, `property-get`, `property-set`, `references`) are now documented in one place alongside the `declined-runtime` semantics and the v1.13.0 noise-ratio benchmarks on the `00_VBA_TOOLKIT_BENCH` corpus, so audit scripts can filter actionable "missing callees" without re-reading the resolver source. Reference: `docs/vba-reference-kinds.md`. (#191)
+
 ## [1.13.0] - 2026-07-18
 
 ### New Features

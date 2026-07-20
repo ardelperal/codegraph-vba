@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.15.0] - 2026-07-20
+
 ### New Features
 
 - External integrations now have a stable headless CLI contract and a generated index-schema reference, making it safer to build tools on CodeGraph without depending on undocumented internals. (#200)
@@ -149,3 +152,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.12.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.12.0
 [1.13.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.13.0
 [1.14.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.14.0
+[1.15.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.15.0

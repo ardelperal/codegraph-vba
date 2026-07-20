@@ -23,6 +23,7 @@
     "test:watch": "vitest run --watch",
     "test:eval": "vitest run __tests__/evaluation/",
     "eval": "npm run build && npx tsx __tests__/evaluation/runner.ts",
+    "schema:dump": "tsx scripts/dump-index-schema.ts",
     "spike:vbnet": "node scripts/spike-vbnet-as-vba.mjs",
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\""
   },
@@ -49,6 +50,7 @@
     "@types/better-sqlite3": "^7.6.0",
     "@types/node": "^20.19.30",
     "@types/picomatch": "^4.0.2",
+    "tsx": "^4.23.1",
     "typescript": "^5.0.0",
     "vitest": "^3.2.6"
   },

@@ -384,6 +384,8 @@ export interface ExtractionError {
  *   - `member-with`      `.Member` inside a `With <receiver>` block
  *   - `dao-query`        `DoCmd.OpenQuery "X"` argument
  * `dao-field-get` / `dao-field-set` are deliberately deferred to round-4.
+ *
+ * See `docs/vba-reference-kinds.md` for the full taxonomy, noise ratios, and consumer-side SQL queries.
  */
 /** `calls` is the canonical kind for unresolved procedure and function calls. */
 export type ReferenceKind = EdgeKind | 'function_ref' | 'qualified-call' | 'property-get' | 'property-set' | 'bang-get' | 'bang-set' | 'unqualified-ident' | 'member-with' | 'dao-query';

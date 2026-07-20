@@ -74,3 +74,7 @@ GROUP BY decision, stub ORDER BY n DESC;
 - src/resolution/index.ts:resolveVbaCallStubs — producer side
 - src/extraction/vba/vba-runtime-objects.ts — runtime-object allowlist source
 - server-instructions.ts (MCP) — AI-facing summary (same values, terser)
+
+## See also
+
+- [`docs/vba-reference-kinds.md`](vba-reference-kinds.md) — the full 7-kind `reference_kind` taxonomy that gates whether a row becomes `declined-runtime` here.

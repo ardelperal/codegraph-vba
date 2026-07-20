@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.14.0] - 2026-07-20
+
 ### Fixes
 
 - Projects built with an older engine are now correctly flagged for re-indexing instead of silently going stale, and `codegraph status --json` exposes a `reindexReasons` array so scripts can detect a missed update without parsing the prose warning. (#189)
@@ -142,3 +145,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.11.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.11.0
 [1.12.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.12.0
 [1.13.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.13.0
+[1.14.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.14.0

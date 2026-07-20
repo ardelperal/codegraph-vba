@@ -229,3 +229,7 @@ node scripts/parse-vba-timing-stderr.mjs run1-init-stderr.log run2-index-stderr.
 ```
 
 The original `00_VBA_TOOLKIT_BENCH\.codegraph-vba\` index is **not** modified by any of these steps — every indexer run targets the temp copy.
+
+## See also
+
+- [`docs/vba-reference-kinds.md`](vba-reference-kinds.md) — the 7 `reference_kind` literals each per-stage classifier above emits (and the noise-ratio benchmarks that bound acceptable v1.13.0 residuals).

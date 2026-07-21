@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- VBA classifiers now share one rule dispatcher with consistent scan modes, structural gates, counting, and declarative terminal behavior, preventing future rule tables from silently bypassing their documented preconditions. (#216)
 - VBA extraction now exposes only the classifier factories used by the shared source walker, removing obsolete compatibility entry points and other unused public helpers. (#217)
 
 ### Fixes

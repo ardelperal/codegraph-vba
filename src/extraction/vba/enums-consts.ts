@@ -8,7 +8,7 @@ import { generateNodeId } from '../tree-sitter-helpers';
 import { PROC_RE, PROCEDURE_END_RE } from './constants';
 import { foldVisibility, parseConstDeclarations } from './text-utils';
 import { VbaClassifier } from './context';
-import { defineRule, matchRule, VbaExtractionRule } from './rules';
+import { defineRule, runRules, VbaExtractionRule } from './rules';
 
 /** `[visibility] Enum <Name>` — opens an enum block. */
 const ENUM_START_RE =
@@ -126,6 +126,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       'Match `End Enum` while inside an enum block; emit nothing and clear `ctx.vbaEnumBlock` so subsequent lines route back to the outside-enum-block rules.',
     pattern: ENUM_END_RE,
     requires: 'inside-enum-block',
+    terminal: true,
     emit: (_m, ctx) => {
       ctx.vbaEnumBlock = null;
       return { kind: 'end-enum-block' as const };
@@ -246,20 +247,10 @@ export function createEnumsConstsClassifier(): VbaClassifier {
     count: 0,
     classifyLine(line, i, ctx) {
       const lineNum = i + 1;
-      for (const rule of RULES) {
-        if (rule.requires === 'inside-enum-block' && !ctx.vbaEnumBlock) continue;
-        if (rule.requires === 'outside-enum-block' && ctx.vbaEnumBlock) continue;
-        const m = matchRule(rule.pattern, line);
-        if (!m) continue;
-        const result = rule.emit(m, ctx, line, lineNum);
-        if (result !== null && result !== undefined) {
-          this.count += rule.count ? rule.count(result as never) : 1;
-        }
-        // `enum-end` cleared the enum block — nothing else on this
-        // line can apply. The legacy cascade did the same short-circuit
-        // via `return`.
-        if (rule.id === 'enum-end') break;
-      }
+      this.count += runRules(RULES, ctx, line, line, lineNum, {
+        'inside-enum-block': ctx.vbaEnumBlock !== null,
+        'outside-enum-block': ctx.vbaEnumBlock === null,
+      });
     },
   };
   return cls;

@@ -51,10 +51,8 @@ import type { VbaExtractorContext } from './context';
  *                or a non-empty `RegExp[]` (a rule is matched when ANY
  *                of the alternatives matches). The dispatcher runs
  *                `.exec()` for single regexes and iterates for arrays.
- *  - `requires?` Optional structural gate. `'class'` means the rule
- *                only fires inside a `.cls` file; `'module'` only in
- *                `.bas`/`.frm`/`.dsr`; `'inside-procedure'` only when
- *                `ctx.procStack.length > 0`. The orchestrator is
+ *  - `requires?` Optional structural gate from the closed
+ *                `VbaRuleRequirement` union. The orchestrator is
  *                expected to honour this — keeping the gate declarative
  *                lets the rule own its own preconditions instead of
  *                scattering `if` checks into the rule body.
@@ -76,6 +74,8 @@ import type { VbaExtractorContext } from './context';
  *                rules whose emit can fan out (e.g. a multi-variable
  *                `Dim a As Foo, b As Bar` line that produces two
  *                `references` edges from one match).
+ *  - `terminal?` Stop dispatch after this rule matches, without coupling
+ *                dispatcher control flow to a rule id.
  *
  * The `count` parameter is typed as `unknown` to keep the
  * `VbaExtractionRule<T>` shape covariant in `T` — narrowing `T`
@@ -88,8 +88,9 @@ export interface VbaExtractionRule<T = unknown> {
   readonly id: string;
   readonly description: string;
   readonly pattern: RegExp | RegExp[];
-  readonly requires?: 'class' | 'module' | 'inside-procedure' | string;
+  readonly requires?: VbaRuleRequirement;
   readonly scan?: 'masked' | 'unmasked' | 'both';
+  readonly terminal?: boolean;
   readonly emit: (
     match: RegExpMatchArray,
     ctx: VbaExtractorContext,
@@ -98,6 +99,15 @@ export interface VbaExtractionRule<T = unknown> {
   ) => T | null;
   readonly count?: (result: unknown) => number;
 }
+
+export type VbaRuleRequirement =
+  | 'inside-procedure'
+  | 'inside-type-block'
+  | 'outside-type-block'
+  | 'inside-enum-block'
+  | 'outside-enum-block';
+
+export type VbaRuleGates = Partial<Record<VbaRuleRequirement, boolean>>;
 
 /**
  * Helper to build a `VbaExtractionRule<T>` with a single RegExp.
@@ -169,4 +179,27 @@ export function matchRuleForScan(
     if (match) return { match, line: candidate };
   }
   return null;
+}
+
+/** Dispatch a rule table with consistent scan, gate, count, and terminal semantics. */
+export function runRules(
+  rules: readonly VbaExtractionRule[],
+  ctx: VbaExtractorContext,
+  line: string,
+  maskedLine: string,
+  lineNum: number,
+  gates: VbaRuleGates,
+): number {
+  let count = 0;
+  for (const rule of rules) {
+    if (rule.requires && gates[rule.requires] !== true) continue;
+    const matched = matchRuleForScan(rule, line, maskedLine);
+    if (!matched) continue;
+    const result = rule.emit(matched.match, ctx, matched.line, lineNum);
+    if (result !== null && result !== undefined) {
+      count += rule.count ? rule.count(result) : 1;
+    }
+    if (rule.terminal) break;
+  }
+  return count;
 }

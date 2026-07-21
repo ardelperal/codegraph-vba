@@ -10,7 +10,7 @@ import { generateNodeId } from '../tree-sitter-helpers';
 import { PROC_RE, PRIMITIVE_TYPES } from './constants';
 import { parseEventHandlerName } from './text-utils';
 import { ProcInfo, VbaClassifier } from './context';
-import { defineRule, matchRule, VbaExtractionRule } from './rules';
+import { defineRule, runRules, VbaExtractionRule } from './rules';
 
 /**
  * Parse a `Function`/`Property Get` declaration's return type — the `As
@@ -298,14 +298,7 @@ export function createProceduresClassifier(): VbaClassifier {
     count: 0,
     classifyLine(line, i, ctx) {
       const lineNum = i + 1;
-      for (const rule of RULES) {
-        const m = matchRule(rule.pattern, line);
-        if (!m) continue;
-        const result = rule.emit(m, ctx, line, lineNum);
-        if (result !== null && result !== undefined) {
-          this.count += rule.count ? rule.count(result as never) : 1;
-        }
-      }
+      this.count += runRules(RULES, ctx, line, line, lineNum, {});
     },
   };
 }

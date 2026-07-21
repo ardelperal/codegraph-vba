@@ -8,7 +8,7 @@ import { Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { PRIMITIVE_TYPES, PROC_RE, PROCEDURE_END_RE } from './constants';
 import { VbaClassifier } from './context';
-import { defineRule, matchRule, VbaExtractionRule } from './rules';
+import { defineRule, runRules, VbaExtractionRule } from './rules';
 
 /**
  * Check that a line is a variable declaration and NOT a Sub/Function/
@@ -335,14 +335,7 @@ export function createDimsClassifier(): VbaClassifier {
         ctx.currentVarTypeProcKey =
           stack.length > 0 ? String(stack[stack.length - 1]) : 'module';
       }
-      for (const rule of RULES) {
-        const m = matchRule(rule.pattern, line);
-        if (!m) continue;
-        const result = rule.emit(m, ctx, line, lineNum);
-        if (result !== null && result !== undefined) {
-          this.count += rule.count ? rule.count(result as never) : 1;
-        }
-      }
+      this.count += runRules(RULES, ctx, line, line, lineNum, {});
     },
   };
 }

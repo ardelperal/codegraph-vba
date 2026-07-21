@@ -100,7 +100,13 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       if (!varName || !outerType) return null;
       // Skip primitives defensively — consistent with the Dim sweep guard.
       if (PRIMITIVE_TYPES.has(outerType.toLowerCase())) return null;
-      ctx.localVarTypeMap.set(varName.toLowerCase(), {
+      // Issue #205: write to the current procedure's bucket so a
+      // `Set x = New Foo` inside `Sub Bar` does not silently
+      // overwrite a `Dim x As Whatever` declaration in `Sub Baz`
+      // (or a module-level `Dim x As ModuleThing`). `currentProcKey`
+      // is maintained by the call-sweep's per-line proc stack walk
+      // (see `procStack.push` / `pop` in the factory's `classifyLine`).
+      ctx.setLocalVarTypeInScope(ctx.currentProcKey, varName, {
         outer: outerType,
         // Mirror `Dim x As Foo.Bar`: qualified `Set rs = New
         // DAO.Recordset` registers `qualified: true` so the PR #61
@@ -125,13 +131,20 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       const factory = (m[2] ?? '').toLowerCase();
       const retType = factory ? ctx.functionReturnTypes.get(factory) : undefined;
       if (!varName || !retType) return null;
-      const existing = ctx.localVarTypeMap.get(varName.toLowerCase());
+      // Issue #205: the existing-key check uses the two-tier
+      // lookup (current proc → module) so a `Set x = Factory()`
+      // inside `Sub Bar` correctly yields to a `Dim x As Class`
+      // declared in `Sub Bar` (proc bucket) AND to a module-level
+      // `Dim x As ModuleClass` (module bucket). A proc-local
+      // `Dim x As Class` declared in `Sub Baz` (a different
+      // procedure) does NOT suppress this `set-call`.
+      const existing = ctx.lookupLocalVarType(varName);
       const existingIsProjectClass =
         !!existing &&
         !existing.qualified &&
         !PRIMITIVE_TYPES.has(existing.outer.toLowerCase());
       if (existingIsProjectClass) return null;
-      ctx.localVarTypeMap.set(varName.toLowerCase(), {
+      ctx.setLocalVarTypeInScope(ctx.currentProcKey, varName, {
         outer: retType,
         qualified: false,
         assignedWithSet: true,

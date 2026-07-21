@@ -67,8 +67,12 @@ export function scanCallSites(
 ): void {
   const arrayAssignment = /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*Array\s*\(/iu.exec(line);
   if (arrayAssignment?.[1]) {
-    const entry = ctx.localVarTypeMap.get(arrayAssignment[1].toLowerCase());
-    if (entry) entry.isArray = true;
+    // Issue #205: scope the `isArray` mutation to the current proc
+    // bucket so a `x = Array(...)` inside `Sub Foo` does not flip
+    // the `isArray` flag on a `Dim x As String` declared in
+    // `Sub Bar` (or at module level).
+    const existing = ctx.lookupLocalVarType(arrayAssignment[1]);
+    if (existing) existing.isArray = true;
   }
   CALL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
@@ -80,7 +84,7 @@ export function scanCallSites(
     const receiver = m[1] ?? m[2] ?? '';
     const member = m[3] ?? m[4] ?? '';
     if (!receiver) continue;
-    if (!member && ctx.localVarTypeMap.get(receiver.toLowerCase())?.isArray) continue;
+    if (!member && ctx.lookupLocalVarType(receiver)?.isArray) continue;
     // Issue #190: procedure-scoped param-array recognition. A
     // `ByRef name() As Type` (or `ByVal name() As Type`) on this
     // procedure's signature makes `name` an array for the duration of
@@ -164,7 +168,11 @@ export function scanCallSites(
       // stub `<receiver>.<member>` would be dead-end graph pollution no
       // resolver could ever repoint. Cross-module qualified calls like
       // `modUtils.Foo(1)` are unaffected (`modUtils` is not a local var).
-      const recvEntry = ctx.localVarTypeMap.get(receiver.toLowerCase());
+      // Issue #205: lookup is two-tier (current proc → module) so the
+      // primitive-gate fires on the type declared IN this procedure,
+      // not the type declared in whichever procedure happened to write
+      // to `localVarTypeMap` last.
+      const recvEntry = ctx.lookupLocalVarType(receiver);
       if (recvEntry && PRIMITIVE_TYPES.has(recvEntry.outer.toLowerCase())) {
         // Match the round-3 surfaced row so the SQL filter has the
         // receiver/member string even when the stub emission was

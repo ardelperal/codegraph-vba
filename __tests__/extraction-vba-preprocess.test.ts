@@ -9,6 +9,7 @@
  * Each helper is < 30 LOC and tested in isolation. Red-green TDD per group.
  */
 import { describe, it, expect } from 'vitest';
+import type { ExtractionError } from '../src/types';
 import {
   joinLineContinuations,
   stripVbaComments,
@@ -429,7 +430,16 @@ describe('preprocessConditionalCompilation', () => {
     expect(out).toContain('Right');
   });
 
-  it('treats unsafe or unknown expressions as false without throwing', () => {
+  it('treats unsafe or unknown expressions conservatively (Issue #206: branch kept active)', () => {
+    // Pre-#206: `CreateObject("WScript.Shell")` throws inside the
+    // tokenizer (the `"` is unsupported), the catch returns `false`,
+    // the `#If` branch is blanked, and `SafeFallback` is kept.
+    //
+    // Post-#206: could-not-evaluate routes to ACTIVE under the
+    // conservative contract. The originally-active branch is now
+    // preserved, the `#Else` falls through to inactive, and a warning
+    // is surfaced via the (optional) errors channel. The function
+    // itself still does not throw.
     const src = [
       '#If CreateObject("WScript.Shell") Then',
       'Public Sub Unsafe()',
@@ -439,9 +449,11 @@ describe('preprocessConditionalCompilation', () => {
     ].join('\n');
 
     expect(() => preprocessConditionalCompilation(src)).not.toThrow();
-    const out = preprocessConditionalCompilation(src);
-    expect(out).not.toContain('Unsafe');
-    expect(out).toContain('SafeFallback');
+    const errors: ExtractionError[] = [];
+    const out = preprocessConditionalCompilation(src, undefined, undefined, errors);
+    expect(out).toContain('Unsafe');
+    expect(out).not.toContain('SafeFallback');
+    expect(errors.some((e) => e.severity === 'warning')).toBe(true);
   });
 });
 
@@ -646,6 +658,13 @@ describe('Issue #51: Win32/Win16 + True=-1 + #Const support', () => {
     // VBA forbids string-literal #Const values (CC evaluates only at
     // compile time, no runtime string comparison); the implementation
     // must NOT store the entry, and the line must be blanked.
+    //
+    // Post-Issue #206: when a subsequent `#If X Then` references an
+    // unknown name, X falls through to the unknown-identifier fallback
+    // (a DEFINITIVE 0 — `evaluated: false`, not could-not-evaluate).
+    // That branch is therefore blanked. The string-literal RHS itself
+    // (which throws inside `evaluateConstRhs`) is unrelated: it only
+    // means X is not stored in the const table.
     const src = [
       '#Const X = "hello"',
       '#If X Then',
@@ -656,9 +675,9 @@ describe('Issue #51: Win32/Win16 + True=-1 + #Const support', () => {
     const lines = out.split('\n');
     expect(lines).toHaveLength(4);
     expect(lines[0]).toBe(''); // #Const line blanked regardless
-    // X is unknown — falls through to the unknown-identifier fallback
-    // (the conservative behavior preserved from the original
-    // implementation), which blanks the branch.
+    // X is unknown → evaluated-false (NOT could-not-evaluate) →
+    // branch blanked. atom 4 below distinguishes this from
+    // could-not-evaluate.
     expect(lines[2]).toBe('');
   });
 });
@@ -828,7 +847,12 @@ describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero 
     expect(preprocessConditionalCompilation(srcZero)).toContain('inactive');
   });
 
-  it('handles invalid syntax gracefully', () => {
+  it('handles invalid syntax gracefully (Issue #206: branch kept active on could-not-evaluate)', () => {
+    // Pre-#206 contract: invalid syntax → branch blanked (#Else wins).
+    // Issue #206 contract: could-not-evaluate means the lexer/parser hit
+    // an unsupported token — keep the branch ACTIVE (conservative for a
+    // code-intelligence tool) and emit a warning. The unused #Else
+    // branch is now blanked, which is exactly what we want.
     const srcMismatchedParen = [
       '#If (1 And 2 Then',
       'Debug.Print "active"',
@@ -836,7 +860,9 @@ describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero 
       'Debug.Print "inactive"',
       '#End If',
     ].join('\n');
-    expect(preprocessConditionalCompilation(srcMismatchedParen)).toContain('inactive');
+    const outMismatched = preprocessConditionalCompilation(srcMismatchedParen);
+    expect(outMismatched).toContain('Debug.Print "active"');
+    expect(outMismatched).not.toContain('Debug.Print "inactive"');
 
     const srcInvalidTokens = [
       '#If 1 And 2 @@@ Then',
@@ -845,7 +871,9 @@ describe('Issue 84: Bitwise, Operator Precedence, comparisons, Xor and non-zero 
       'Debug.Print "inactive"',
       '#End If',
     ].join('\n');
-    expect(preprocessConditionalCompilation(srcInvalidTokens)).toContain('inactive');
+    const outInvalid = preprocessConditionalCompilation(srcInvalidTokens);
+    expect(outInvalid).toContain('Debug.Print "active"');
+    expect(outInvalid).not.toContain('Debug.Print "inactive"');
   });
 
   it('triangulates overflow, nested negation, and case insensitivity', () => {
@@ -1073,10 +1101,12 @@ describe('Issue #212: #ElseIf + unbalanced-directive coverage', () => {
   });
 
   // ---- atom 6: An unclosed #If does not throw --------------------------
-  it('atom 6: an unclosed #If does not throw and keeps an active branch', () => {
+  it('atom 6: an unclosed #If does not throw and keeps an active branch (Issue #206 restores lines)', () => {
     // #If Win64 is true so the inner branch is active. The stack never
-    // drains, but the function must not throw — downstream extraction
-    // surfaces the missing #End If as a separate concern (#206).
+    // drains, but the function must not throw. Post-#206: the
+    // unclosed `#If` at line 0 triggers the line-restore path, so the
+    // directive line is preserved (not blanked) and the inner branch is
+    // kept.
     const src = [
       '#If Win64 Then',
       'Public Sub Active()',
@@ -1086,9 +1116,239 @@ describe('Issue #212: #ElseIf + unbalanced-directive coverage', () => {
     const out = preprocessConditionalCompilation(src);
     const lines = out.split('\n');
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toBe('');
+    // Post-#206: lines[0] is restored to the original directive, not
+    // blanked — the `every(active)` guard would have blanked it, but
+    // the unterminated-#If restore re-emits the original lines.
+    expect(lines[0]).toBe('#If Win64 Then');
     expect(lines[1]).toContain('Active');
     expect(lines[2]).toBe('End Sub');
+  });
+});
+
+/**
+ * Issue #206 — `fix(vba): a missing #End If silently blanks the rest of the
+ * file with no diagnostic`. Three concrete defects the previous evaluator
+ * had:
+ *
+ *   1. An unterminated `#If` (inactive parent) blanked every line to EOF
+ *      with no warning — symbols vanished from the graph with no signal.
+ *   2. `evaluateConditionalExpression` returned a flat `boolean` and
+ *      swallowed `tokenize` exceptions as `false`, deleting every branch
+ *      whose expression was syntactically legal but unsupported
+ *      (`#If MODE = "DEBUG" Then`, `#If VER >= 1.5 Then`, …).
+ *   3. The "Unsupported/unsafe expressions evaluate to false rather than
+ *      throwing" docstring at `:220` framed silent whole-branch source
+ *      deletion as a safety property. It was not — false-negative
+ *      extraction is indistinguishable from correct extraction.
+ *
+ * The fix:
+ *   - On stack-non-empty after the loop: emit a warning AND re-emit
+ *     the un-blanked lines (an unterminated `#If` is far more likely a
+ *     typo than a genuinely dead file tail).
+ *   - Distinguish `evaluated` (definitive) from `could-not-evaluate`
+ *     (lex/parse failed or unsupported token). On
+ *     could-not-evaluate, treat the branch as ACTIVE — conservative for
+ *     a code-intelligence tool (a spurious symbol is recoverable, a
+ *     missing one is invisible).
+ *   - `tokenize` explicitly recognizes string-literal and floating-point
+ *     tokens and routes them to the could-not-evaluate path via a
+ *     thrown Error (not silent deletion).
+ *
+ * Every atom asserts line-count parity (the core invariant — downstream
+ * extraction's `startLine` values depend on it). The `errors` parameter
+ * is the production channel for the warning: callers route it into
+ * `ctx.errors` (see `VbaExtractor.extract()` at `vba-extractor.ts:259`).
+ */
+describe('Issue #206: unterminated #If + could-not-evaluate branches', () => {
+  // ---- atom 1: unterminated inactive #If emits warning + restores ------
+  it('atom 1: unterminated inactive #If emits warning and re-emits un-blanked lines', () => {
+    const src = [
+      '#If Mac Then',
+      'Sub Dead()',
+      'End Sub',
+      'Sub AlsoDead()',
+      'End Sub',
+    ].join('\n');
+    const errors: ExtractionError[] = [];
+    const out = preprocessConditionalCompilation(src, undefined, undefined, errors);
+    // Lines preserved (the user's source is recoverable).
+    expect(out).toContain('Sub Dead()');
+    expect(out).toContain('Sub AlsoDead()');
+    expect(out).toContain('End Sub');
+    // Line-count parity maintained.
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    // Warning surfaced through the errors channel.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.severity).toBe('warning');
+    expect(errors[0]?.code).toBe('unterminated_if');
+    expect(errors[0]?.message).toMatch(/unterminated/i);
+  });
+
+  // ---- atom 2: string-literal expression (#Const + #If MODE = "DEBUG") -
+  it('atom 2: #Const with string-literal RHS + #If NAME = "DEBUG" keeps branch (was silently deleted)', () => {
+    // Reproduction from the issue: a #Const with a string-literal RHS
+    // currently throws inside `evaluateConstRhs`, the name is NOT stored,
+    // the subsequent `#If MODE` then evaluates against an empty const
+    // table, `tokenize` throws on the `"`, the exception is caught and
+    // the branch is silently blanked.
+    const src = [
+      '#Const MODE = "DEBUG"',
+      '#If MODE = "DEBUG" Then',
+      'Public Sub DebugBranch()',
+      '#Else',
+      'Public Sub ReleaseBranch()',
+      '#End If',
+    ].join('\n');
+    const errors: ExtractionError[] = [];
+    const out = preprocessConditionalCompilation(src, undefined, undefined, errors);
+    // The old behavior was to delete the branch (silently). With the
+    // conservative fix, the branch is KEPT and a warning is emitted.
+    expect(out).toContain('DebugBranch');
+    expect(out).not.toContain('ReleaseBranch');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+    expect(errors.some((e) => e.severity === 'warning')).toBe(true);
+  });
+
+  // ---- atom 3: floating-point token (#If VER >= 1.5) ------------------
+  it('atom 3: #If VER >= 1.5 Then keeps branch (was silently deleted)', () => {
+    // Reproduction: `1.5` throws on `.` (the lexer only accepts integer
+    // literals). The branch was being silently deleted.
+    const src = [
+      '#If VER >= 1.5 Then',
+      'Public Sub NewStyle()',
+      '#Else',
+      'Public Sub OldStyle()',
+      '#End If',
+    ].join('\n');
+    const errors: ExtractionError[] = [];
+    const out = preprocessConditionalCompilation(src, undefined, undefined, errors);
+    expect(out).toContain('NewStyle');
+    expect(out).not.toContain('OldStyle');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    expect(errors.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // ---- atom 4: unknown identifier (#If Wn64 — typo) is NOT could-not-evaluate
+  it('atom 4: unknown identifier (#If Wn64 typo) is evaluated false — distinct from could-not-evaluate', () => {
+    // Important boundary: an unrecognized IDENTIFIER falling through to 0
+    // is a definitive answer (false) — different from a string/float
+    // token that throws. The fix must NOT route the unknown-identifier
+    // fallback into the could-not-evaluate branch (it would change the
+    // evaluated-false semantics that #212 atom 8 already pins).
+    const src = [
+      '#If Wn64 Then',
+      'Public Sub BadBranch()',
+      '#Else',
+      'Public Sub GoodBranch()',
+      '#End If',
+    ].join('\n');
+    const errors: ExtractionError[] = [];
+    const out = preprocessConditionalCompilation(src, undefined, undefined, errors);
+    // Unknown identifier → evaluated false → branch blanked.
+    expect(out).not.toContain('BadBranch');
+    expect(out).toContain('GoodBranch');
+    // No warning — this is a DEFINITIVE false, not could-not-evaluate.
+    expect(errors).toEqual([]);
+  });
+
+  // ---- atom 5: stray #End If (no matching #If) does not throw ---------
+  it('atom 5: a stray #End If with no matching #If does not throw', () => {
+    // stack.pop() on an empty array returns undefined; the helper must
+    // not throw. Subsequent code stays live (the #212 atom 5 covers the
+    // behavior; this atom additionally confirms it works with the new
+    // `errors` channel).
+    const src = [
+      '#End If',
+      'Sub X()',
+      'End Sub',
+    ].join('\n');
+    expect(() => preprocessConditionalCompilation(src, undefined, undefined, [])).not.toThrow();
+  });
+
+  // ---- atom 6: nested unclosed inactive #Ifs re-emit restored lines ---
+  it('atom 6: nested unclosed inactive #Ifs restore lines from the earliest unclosed frame', () => {
+    const src = [
+      '#If Mac Then',
+      'Sub Outer()',
+      '#If Win64 Then',
+      'Sub Inner()',
+      'End Sub',
+      'Sub AlsoOuter()',
+      'End Sub',
+    ].join('\n');
+    const errors: ExtractionError[] = [];
+    const out = preprocessConditionalCompilation(src, undefined, undefined, errors);
+    // All symbols preserved (outer #If was unclosed → restore from line 0).
+    expect(out).toContain('Sub Outer()');
+    expect(out).toContain('Sub Inner()');
+    expect(out).toContain('Sub AlsoOuter()');
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    // One warning, not two — the unclosed-NESTED case is reported once.
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.severity).toBe('warning');
+  });
+
+  // ---- atom 7: errors parameter is optional (back-compat) --------------
+  it('atom 7: the existing 2-arg call shape still works (errors parameter optional)', () => {
+    // The `errors` parameter is optional and must NOT be required for
+    // any existing call shape (VbaExtractor once it's plumbed, but
+    // every current test calls without it). The 2-arg shape preserves
+    // the public surface.
+    const src = '#If Win64 Then\nDebug.Print "x"\n#End If';
+    expect(() => preprocessConditionalCompilation(src)).not.toThrow();
+    expect(() => preprocessConditionalCompilation(src, { Win64: false })).not.toThrow();
+  });
+
+  // ---- atom 8: well-formed file emits no warnings ----------------------
+  it('atom 8: a well-balanced CC file emits no warnings through the errors channel', () => {
+    const src = [
+      '#Const MODO_DEBUG = True',
+      '#If MODO_DEBUG Then',
+      'Debug.Print "x"',
+      '#End If',
+    ].join('\n');
+    const errors: ExtractionError[] = [];
+    preprocessConditionalCompilation(src, undefined, undefined, errors);
+    expect(errors).toEqual([]);
+  });
+
+  // ---- atom 9: warn has filePath and code for downstream telemetry ----
+  it('atom 9: the emitted warning carries filePath and a stable code for telemetry', () => {
+    const src = [
+      '#If Mac Then',
+      'Sub A()',
+      'End Sub',
+    ].join('\n');
+    const errors: ExtractionError[] = [];
+    preprocessConditionalCompilation(
+      src,
+      undefined, // customTargets
+      undefined, // timings
+      errors, // errors
+      'src/modules/MyMod.bas', // filePath
+    );
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.filePath).toBe('src/modules/MyMod.bas');
+    expect(errors[0]?.code).toBe('unterminated_if');
+  });
+
+  // ---- line-count parity across the atoms ------------------------------
+  it('Issue #206 atoms preserve line-count parity across the suite', () => {
+    const sources = [
+      // atom 1 (originally broken): unterminated inactive #If
+      '#If Mac Then\nSub A()\nEnd Sub\nSub B()\nEnd Sub',
+      // atom 2: #Const string + #If equality
+      '#Const MODE = "DEBUG"\n#If MODE = "DEBUG" Then\nA\n#Else\nB\n#End If',
+      // atom 3: float compare
+      '#If VER >= 1.5 Then\nA\n#Else\nB\n#End If',
+      // atom 6: nested unclosed
+      '#If Mac Then\nA\n#If Win64 Then\nB\nEnd Sub\nC\nEnd Sub',
+    ];
+    for (const src of sources) {
+      const out = preprocessConditionalCompilation(src);
+      expect(out.split('\n').length).toBe(src.split('\n').length);
+    }
   });
 });
 

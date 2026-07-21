@@ -16,6 +16,26 @@ import { VbaExtractorContext, ProcInfo } from './context';
  */
 const ME_CONTROL_RE = /\bMe[.!](\p{L}[\p{L}\p{N}_]*)/gu;
 
+// Length of the `Me.` / `Me!` prefix that opens every captured control
+// reference. Both forms are 3 chars; `ME_PREFIX_LEN` replaces the bare
+// `+ 3` literal that previously appeared at multiple call sites.
+const ME_PREFIX_LEN = 3;
+
+/**
+ * Issue #211: shared direct-assignment predicate. The same-line rule
+ * the third branch (`control` for non-builtin Me.<Ctl>) already uses is
+ * the right shape — `before` must be empty (or whitespace) AND `after`
+ * must start with `=` — and lifts cleanly into the `builtIn` and bang
+ * branches too. Returning `true` means the match IS the LHS of an
+ * assignment (`Me.X = ...`), so callers should tag it `*-set`. Any
+ * other shape (e.g. `If Me.X = ...`, `MsgBox Me.X`, `x = Me.X`) is a
+ * read and must tag `*-get`. The function is intentionally narrow; a
+ * cross-line assignment is out of scope (matches the prior comment).
+ */
+function isDirectAssignment(before: string, after: string): boolean {
+  return /^\s*$/.test(before) && /^\s*=/.test(after);
+}
+
 const ACCESS_FORM_MEMBER_BLACKLIST = new Set([
   'requery', 'refresh', 'repaint', 'recalc', 'undo', 'dirty', 'newrecord',
   'currentrecord', 'recordset', 'recordsetclone', 'recordsource', 'controls',
@@ -81,7 +101,8 @@ export function scanMeControlReferences(
     const controlName = m[1] ?? '';
     if (!controlName) continue;
     // Round-3: operator is the char at `m.index + 2` (skipping the `Me`).
-    // Both `.` and `!` are 1 char so the captured name starts at `m.index + 3`.
+    // Both `.` and `!` are 1 char so the captured name starts at
+    // `m.index + ME_PREFIX_LEN`.
     const operator = line.charAt(m.index + 2); // '.' | '!'
     const isBang = operator === '!';
     const siblingPath = siblingLayoutPath(ctx.filePath);
@@ -99,13 +120,14 @@ export function scanMeControlReferences(
         // form properties such as Me.Name remain property-get/property-set
         // unresolved refs. The dedicated resolver sees `builtIn: true` and
         // always declines them, so they still create no node or graph edge.
-        const after = line.slice(m.index + 3 + controlName.length);
+        const after = line.slice(m.index + ME_PREFIX_LEN + controlName.length);
+        const before = line.slice(0, m.index);
         ctx.unresolvedReferences.push({
           fromNodeId: ctx.findOrCreateFunctionNodeId(from),
           referenceName: controlName,
-          referenceKind: after.includes('=') ? 'property-set' : 'property-get',
+          referenceKind: isDirectAssignment(before, after) ? 'property-set' : 'property-get',
           line: lineNum,
-          column: m.index + 3,
+          column: m.index + ME_PREFIX_LEN,
           filePath: ctx.filePath,
           language: 'vba',
           metadata: { synthesizedBy: 'vba-me-control', siblingPath, builtIn: true },
@@ -122,37 +144,34 @@ export function scanMeControlReferences(
       if (seen.has(dedupeKey)) continue;
       seen.add(dedupeKey);
 
-      const after = line.slice(m.index + 3 + controlName.length);
+      const after = line.slice(m.index + ME_PREFIX_LEN + controlName.length);
       const before = line.slice(0, m.index);
-      const isDirectAssignment = /^\s*$/.test(before) && /^\s*=/.test(after);
       ctx.unresolvedReferences.push({
         fromNodeId,
         referenceName: controlName,
         referenceKind: 'references',
         line: lineNum,
-        column: m.index + 3,
+        column: m.index + ME_PREFIX_LEN,
         filePath: ctx.filePath,
         language: 'vba',
         metadata: {
           synthesizedBy: 'vba-me-control',
           siblingPath,
-          access: isDirectAssignment ? 'write' : 'read',
+          access: isDirectAssignment(before, after) ? 'write' : 'read',
         },
       });
       continue;
     }
 
     // Preserve the existing Me! default-collection behavior from issue #44.
-    // Same-line get vs set heuristic: anything past the captured control
-    // name on this line. Cover the `=` form (`Me.Name = "X"`) and ignore
-    // a previous-line `=`. The `= charAt(...)` short-circuits on the first
-    // non-whitespace; that matches VBA `Me.Name =` and tolerates intervening
-    // spaces. We do NOT match `==` (VBA has no `==`), and `=` inside a RHS
-    // expression on the SAME line is a false positive that's tolerable —
-    // round-4 can add a paren-depth check if needed.
-    const after = line.slice(m.index + 3 + controlName.length);
-    const eqIdx = after.indexOf('=');
-    const isAssign = eqIdx >= 0;
+    // Same-line get vs set heuristic: `before` must be empty/whitespace AND
+    // `after` must start with `=`. Both predicates are the same `isDirectAssignment`
+    // helper used by the dot branches (issue #211), so reads inside `If`,
+    // `MsgBox`, or `IIf` correctly emit `bang-get` while `Me!X = v` emits
+    // `bang-set`.
+    const after = line.slice(m.index + ME_PREFIX_LEN + controlName.length);
+    const before = line.slice(0, m.index);
+    const isAssign = isDirectAssignment(before, after);
     const referenceKind: 'property-get' | 'property-set' | 'bang-get' | 'bang-set' = isBang
       ? isAssign
         ? 'bang-set'
@@ -165,7 +184,7 @@ export function scanMeControlReferences(
       referenceName: controlName,
       referenceKind,
       line: lineNum,
-      column: m.index + 3, // +3 to skip the `Me.` / `Me!` prefix
+      column: m.index + ME_PREFIX_LEN,
       filePath: ctx.filePath,
       language: 'vba',
       metadata: { synthesizedBy: 'vba-me-control' },

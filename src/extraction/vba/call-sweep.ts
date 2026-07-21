@@ -104,8 +104,8 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       // `Set x = New Foo` inside `Sub Bar` does not silently
       // overwrite a `Dim x As Whatever` declaration in `Sub Baz`
       // (or a module-level `Dim x As ModuleThing`). `currentProcKey`
-      // is maintained by the call-sweep's per-line proc stack walk
-      // (see `procStack.push` / `pop` in the factory's `classifyLine`).
+      // is maintained by the enum/const classifier, the sole writer of
+      // the shared scope stack during the main walk.
       ctx.setLocalVarTypeInScope(ctx.currentProcKey, varName, {
         outer: outerType,
         // Mirror `Dim x As Foo.Bar`: qualified `Set rs = New
@@ -218,14 +218,6 @@ export function createCallsAndSqlClassifier(
 
       const procStart = PROC_RE.exec(line);
       if (procStart) {
-        // Issue #52: mirror the proc push into the shared
-        // `procStack` + `currentProcKey` so Const reads in this same
-        // sweep see the same scope as the const writes did (during
-        // `sweepEnumsAndConsts`).
-        const procStartLine = lineNum;
-        ctx.procStack.push(procStartLine);
-        ctx.currentProcKey = String(procStartLine);
-
         const name = procStart[3] ?? '';
         const bucket = ctx.localProcs.get(name);
         if (bucket) {
@@ -242,23 +234,27 @@ export function createCallsAndSqlClassifier(
         // A `return` here would silently drop the first body line of every
         // procedure (a real bug — `Sub Foo()\n  Bar 1\n` would never see
         // the `Bar 1` call).
-      } else if (PROCEDURE_END_RE.test(line) && stack.length > 0) {
-        const ending = stack.pop()!;
-        // Issue #52: mirror the pop into the shared scope state.
-        ctx.procStack.pop();
-        ctx.currentProcKey =
-          ctx.procStack.length > 0
-            ? String(ctx.procStack[ctx.procStack.length - 1])
-            : 'module';
-        procEndLines.set(ending.startLine, lineNum);
-        return;
       }
+      // This is deliberately independent of the proc-start branch: a
+      // colon-separated single-line procedure contains both markers.
+      // Keep the frame alive until after scanners process its body.
+      const endsProcedure = PROCEDURE_END_RE.test(line) && stack.length > 0;
 
       // Fix 2 (Issue #2): mask string-literal content before call scanning so
       // patterns like `modHelper.BuildQuery(` inside a string argument are not
       // mistakenly treated as call sites.  SQL scanning still uses the original
       // line because SQL lives INSIDE string literals.
       const callScanLine = maskStringContent(line);
+      const procStartColon = procStart ? callScanLine.indexOf(':') : -1;
+      const procStartBodyClauses = procStart
+        ? procStartColon < 0
+          ? []
+          : callScanLine
+            .slice(procStartColon + 1)
+            .split(':')
+            .map((clause) => clause.trim())
+            .filter((clause) => clause.length > 0 && !/^End\s+(?:Sub|Function|Property)\b/i.test(clause))
+        : null;
 
       // Issue #153: dispatch the declarative RULES table on the
       // masked line. The four per-line patterns (set-new, set-call,
@@ -285,16 +281,22 @@ export function createCallsAndSqlClassifier(
 
       // Don't scan call sites on the line that declares the procedure — it
       // would match the proc name itself in `Sub Outer()`.
-      if (!procedureStartLines.has(lineNum) && stack.length > 0) {
+      if (stack.length > 0) {
         const currentProc = stack[stack.length - 1]!;
-        scanRaiseEvents(ctx, callScanLine, currentProc, lineNum);
-        scanCallSites(ctx, callScanLine, currentProc, lineNum);
+        const scanLines = procStartBodyClauses ?? [callScanLine];
+        for (const scanLine of scanLines) {
+          scanRaiseEvents(ctx, scanLine, currentProc, lineNum);
+          scanCallSites(ctx, scanLine, currentProc, lineNum);
+        }
       }
 
       // Hueco 1: capture `Me.<Control>` references. Only inside procedures
       // because `Me` is only meaningful inside a form's class module.
-      if (!procedureStartLines.has(lineNum) && stack.length > 0) {
-        scanMeControlReferences(ctx, callScanLine, stack[stack.length - 1]!, lineNum);
+      if (stack.length > 0) {
+        const scanLines = procStartBodyClauses ?? [callScanLine];
+        for (const scanLine of scanLines) {
+          scanMeControlReferences(ctx, scanLine, stack[stack.length - 1]!, lineNum);
+        }
       }
 
       // SQL wrappers — only inside a procedure.  Use the ORIGINAL line — SQL is
@@ -308,12 +310,12 @@ export function createCallsAndSqlClassifier(
       // Issue #45: split single-line `If … Then <body>` clauses first so the
       // actual call after `Then`/`Else`/`:` is not shadowed by the leading
       // keyword.
-      if (stack.length > 0 && !procedureStartLines.has(lineNum)) {
+      if (stack.length > 0 && (!procedureStartLines.has(lineNum) || procStartBodyClauses?.length)) {
         // Note: `Set x = New ...` and `Set x = <Factory>(...)` are now
         // dispatched by the RULES table above. The factory body below
         // focuses on the procedural call-site scans that don't
         // reduce to a single regex.
-        const clauseLines = splitSingleLineIfClauses(callScanLine);
+        const clauseLines = procStartBodyClauses ?? splitSingleLineIfClauses(callScanLine);
         for (const clauseLine of clauseLines) {
           const stmtCall = detectStatementCall(clauseLine);
           if (stmtCall) {
@@ -411,6 +413,11 @@ export function createCallsAndSqlClassifier(
         // masked line, paren + Add forms scan the original.
         sweepTempVars(ctx, callScanLine, line, lineNum, caller2);
       }
+
+      if (endsProcedure) {
+        const ending = stack.pop()!;
+        procEndLines.set(ending.startLine, lineNum);
+      }
     },
     finalize(ctx) {
       // Apply endLine to every emitted function node keyed by its startLine.
@@ -425,24 +432,6 @@ export function createCallsAndSqlClassifier(
     },
   };
 
-  // Issue #52: reset the shared scope state on the first call so leftover
-  // state from a previous extract() (impossible in production but possible
-  // in unit tests that construct a fresh extractor and run twice) never
-  // leaks across sweeps. The walker here updates the scope every iteration
-  // AFTER the enums-consts classifier runs (it runs first per line); on the
-  // first call we also reset, so the initial state matches the legacy
-  // pre-loop setup.
-  let initialized = false;
-  const originalClassify = cls.classifyLine;
-  cls.classifyLine = function (line, i, ctx) {
-    if (!initialized) {
-      ctx.procStack.length = 0;
-      ctx.currentProcKey = 'module';
-      ctx.vbaWithStack.length = 0;
-      initialized = true;
-    }
-    return originalClassify.call(this, line, i, ctx);
-  };
   return cls;
 }
 

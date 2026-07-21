@@ -55,8 +55,9 @@ const CONST_DECL_RE =
  *                      + `contains` edge ONLY when not inside a proc
  *                      (proc-local Consts are not module symbols).
  *
- * The inter-line `ctx.procStack` / `ctx.currentProcKey` state is
- * SHARED with the calls/SQL classifier (issue #52 protocol). The
+ * This classifier exclusively owns the inter-line `ctx.procStack` /
+ * `ctx.currentProcKey` state. The calls/SQL classifier keeps its own
+ * `ProcInfo` stack and only reads the shared current-scope key. The
  * `ctx.vbaEnumBlock` state is local to this concern and lives on
  * `ctx` for the same RULES-table-friendliness reason as
  * `vbaDeclTypeBlock`.
@@ -235,24 +236,15 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
  * `ctx.vbaEnumBlock` — lives on `ctx` so the RULES table's `emit`
  * functions can read/write it without taking a closure reference.
  *
- * Issue #52: the first invocation also resets the shared proc-stack
- * + lookup key so leftover state from a previous `extract()` (only
- * possible in tests that construct a fresh extractor and run twice)
- * never leaks across sweeps. The walk below updates both every
- * iteration; `sweepCallsAndSql` resets again at its own start, so
- * the protocol stays consistent across both classifiers.
+ * A fresh `VbaExtractorContext` owns fresh stack state; classifiers never
+ * lazily reset it. This makes the result independent of whether a procedure
+ * begins on the first or a later physical line.
  */
 export function createEnumsConstsClassifier(): VbaClassifier {
-  let initialized = false;
   const cls: VbaClassifier = {
     name: 'enumsConsts',
     count: 0,
     classifyLine(line, i, ctx) {
-      if (!initialized) {
-        ctx.procStack.length = 0;
-        ctx.currentProcKey = 'module';
-        initialized = true;
-      }
       const lineNum = i + 1;
       for (const rule of RULES) {
         if (rule.requires === 'inside-enum-block' && !ctx.vbaEnumBlock) continue;

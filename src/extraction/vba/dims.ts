@@ -6,7 +6,7 @@
  */
 import { Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
-import { PRIMITIVE_TYPES } from './constants';
+import { PRIMITIVE_TYPES, PROC_RE, PROCEDURE_END_RE } from './constants';
 import { VbaExtractorContext, VbaClassifier } from './context';
 import { defineRule, matchRule, VbaExtractionRule } from './rules';
 
@@ -149,8 +149,11 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
 
         // Fix 2 (Issue #2): populate the local var type map so that
         // `sweepCallsAndSql` can gate qualified statement-form calls.
+        // Issue #205: the write is scoped to the current procedure's
+        // bucket (or `'module'` when no procedure is open) — see
+        // `currentVarTypeProcKey` on the context.
         if (varName && outerType) {
-          ctx.localVarTypeMap.set(varName.toLowerCase(), {
+          ctx.setLocalVarTypeInScope(ctx.currentVarTypeProcKey, varName, {
             outer: outerType,
             qualified: !!innerType,
             isArray: isArrayDeclaration(line, varName),
@@ -190,14 +193,20 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       if (bm) {
         const varName = bm[1] ?? '';
         if (varName) {
-          const key = varName.toLowerCase();
-          if (!ctx.localVarTypeMap.has(key)) {
+          // Issue #205: the existing-key check is scoped to the
+          // CURRENT procedure's bucket via `lookupLocalVarType`
+          // (proc-bucket first, then module-bucket). Without the
+          // scoping, a bare `Dim x` inside a procedure would NOT
+          // register when a MODULE-LEVEL `Dim x` exists, which is
+          // wrong — the proc-local declaration should win inside
+          // the proc.
+          if (!ctx.lookupLocalVarType(varName)) {
             // Look for an `As <Type>` continuation on the same line so the
             // outer type matches the existing typed-form behaviour. If
             // absent, the variable is implicit `Variant` per VBA semantics.
             const asMatch = DIM_AS_TYPE_RE.exec(line);
             const outer = asMatch ? (asMatch[1] ?? '').toLowerCase() : 'variant';
-            ctx.localVarTypeMap.set(key, {
+            ctx.setLocalVarTypeInScope(ctx.currentVarTypeProcKey, varName, {
               outer,
               qualified: false,
               isArray: isArrayDeclaration(line, varName),
@@ -220,7 +229,11 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       const weVarM = WITHEVENTS_VAR_RE.exec(line);
       const weVarName = weVarM?.[1] ?? '';
       if (weVarName) {
-        ctx.localVarTypeMap.set(weVarName.toLowerCase(), {
+        // Issue #205: write to the current procedure's bucket so a
+        // `WithEvents` field in `Form_Foo` does not pollute the
+        // `'module'` bucket's `weVarName` key for sibling forms or
+        // unrelated code.
+        ctx.setLocalVarTypeInScope(ctx.currentVarTypeProcKey, weVarName, {
           outer: formType,
           qualified: false,
           withEvents: true,
@@ -268,14 +281,44 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
  * rules are independent: `dim-decl` handles typed declarations
  * (REJECTED if the line is a `WithEvents` because the prefix
  * negative-lookahead excludes `WithEvents`), `withevents-decl`
- * handles WithEvents. No inter-line state.
+ * handles WithEvents.
+ *
+ * Issue #205: the classifier maintains a closure-local proc stack
+ * (parallel to the calls-sweep's `ctx.procStack` in
+ * `call-sweep.ts:213`) and writes the top of that stack into
+ * `ctx.currentVarTypeProcKey` so `localVarTypeMap` writes are scoped
+ * to the procedure whose body the `Dim` is inside (or `'module'`
+ * when no procedure is open). The two stacks track the same
+ * `PROC_RE` / `PROCEDURE_END_RE` boundaries so they stay in sync at
+ * every line.
  */
 export function createDimsClassifier(): VbaClassifier {
+  // Issue #205: per-instance proc stack. Holds the `startLine` of
+  // every procedure whose `End Sub`/`End Function`/`End Property`
+  // the classifier has not yet seen. Initialized empty so module-
+  // level `Dim`s write to the `'module'` bucket.
+  const stack: number[] = [];
   return {
     name: 'dims',
     count: 0,
     classifyLine(line, i, ctx) {
       const lineNum = i + 1;
+      // Issue #205: track proc scope BEFORE rule dispatch so a
+      // `Dim x As Y` declaration on the same line as `Sub Foo()` is
+      // written to the `'module'` bucket (the proc isn't open yet
+      // at that point — VBA declares inside the proc, but a `Sub`
+      // line is not a `Dim` line, so the gate is theoretical; we
+      // still process the line as a proc start first to mirror the
+      // call-sweep's order).
+      const procStart = PROC_RE.exec(line);
+      if (procStart) {
+        stack.push(lineNum);
+        ctx.currentVarTypeProcKey = String(lineNum);
+      } else if (PROCEDURE_END_RE.test(line) && stack.length > 0) {
+        stack.pop();
+        ctx.currentVarTypeProcKey =
+          stack.length > 0 ? String(stack[stack.length - 1]) : 'module';
+      }
       for (const rule of RULES) {
         const m = matchRule(rule.pattern, line);
         if (!m) continue;

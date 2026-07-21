@@ -143,20 +143,52 @@ export class VbaExtractorContext {
   public synthTempVarNodeIds = new Set<string>();
 
   /**
-   * Maps `variableName.toLowerCase()` → declared type info.
-   * Built by `sweepDimsAndWithEvents`; consulted by the unified qualified-call
-   * gate (`shouldProcessQualifiedCall`) so declared project-class locals emit
-   * edges, declared primitive/external locals stay silent, and undeclared
-   * receivers remain module-name candidates for the resolver (Fix 2 / Issue #2).
+   * Issue #205: `variableName.toLowerCase()` → declared type info,
+   * **scoped per procedure**. The outer key is `'module'` for module-
+   * level `Dim`s, or the procedure's `startLine` (stringified) for
+   * proc-local `Dim`s — mirroring `localConstants` directly above and
+   * `ProcInfo.arrayParameters` (`context.ts:42`).
+   *
+   * The pre-#205 shape was a flat `Map<string, …>` keyed on the bare
+   * name, so the last `Dim` in a file silently won for the whole file
+   * and qualified calls (`item.Method`) resolved to whichever
+   * procedure declared `item` most recently — even when the call site
+   * was in a different procedure that had its OWN `Dim item As
+   * <OtherType>`. Worse, a module-level `Dim` was overwritten by the
+   * first proc-local `Dim` of the same name and never re-asserted, so
+   * a different procedure without its own local `Dim` would resolve
+   * `item.Method` to the wrong class with no diagnostic.
+   *
+   * Built by the dims classifier (which tracks the current scope via
+   * `currentVarTypeProcKey`); consulted by the unified qualified-call
+   * gate (`shouldProcessQualifiedCall`, `isLocalProjectClassVar`,
+   * `resolveReceiverType`) so declared project-class locals emit
+   * edges, declared primitive/external locals stay silent, and
+   * undeclared receivers remain module-name candidates for the
+   * resolver (Fix 2 / Issue #2). The proc bucket is consulted first
+   * and the `'module'` bucket is the fallback — same two-tier lookup
+   * `resolveLocalConst` performs.
    */
-  public localVarTypeMap = new Map<string, {
+  public localVarTypeMap: Map<'module' | string, Map<string, {
     outer: string;
     qualified: boolean;
     withEvents?: boolean;
     variableName?: string;
     assignedWithSet?: boolean;
     isArray?: boolean;
-  }>();
+  }>> = new Map();
+
+  /**
+   * Issue #205: the current scope the dims classifier writes to. Set
+   * to `'module'` when no procedure is open, otherwise the top of the
+   * dims classifier's per-instance proc stack (the startLine of the
+   * procedure whose `End Sub`/`End Function`/`End Property` has not
+   * been seen yet). The dims classifier updates this on every
+   * `PROC_RE` / `PROCEDURE_END_RE` boundary so the bucket the call
+   * sweep later consults (via the per-proc-then-module lookup) lines
+   * up with the procedure the call site is inside.
+   */
+  public currentVarTypeProcKey: 'module' | string = 'module';
 
   /**
    * Issue #52: Const resolution buckets, scoped per procedure. Key is
@@ -316,11 +348,19 @@ export class VbaExtractorContext {
    * Qualified types (e.g. `DAO.Recordset`) and primitives (`String`, `Long`)
    * return false so runtime/DAO calls are suppressed. Brackets are stripped
    * from the lookup key defensively (Issue #54).
+   *
+   * Issue #205: the lookup is two-tier — the current procedure's bucket is
+   * consulted first, then the `'module'` bucket — so a proc-local
+   * `Dim x As Producto` in `Sub Foo` does NOT make `x` a project class
+   * in `Sub Bar` (where `Dim x As Variant` is the only declaration, or
+   * `x` is undeclared). Without the per-proc scoping, the last `Dim` in
+   * the file would silently win and the wrong class would propagate
+   * into `x.Method` qualified-call stub edges.
    */
   public isLocalProjectClassVar(receiverName: string): boolean {
     // Issue #54: strip a single leading `[` and/or trailing `]` if present.
     const key = receiverName.replace(/^\[|\]$/g, '').toLowerCase();
-    const entry = this.localVarTypeMap.get(key);
+    const entry = this.lookupLocalVarType(key);
     if (!entry) return false; // not declared in this file → silent
     if (entry.qualified) return false; // DAO.Recordset etc. → silent
     if (PRIMITIVE_TYPES.has(entry.outer.toLowerCase())) return false;
@@ -333,10 +373,15 @@ export class VbaExtractorContext {
    * project-class locals are processed after type resolution, declared
    * primitive/external locals are silent, and undeclared receivers remain
    * candidate module names.
+   *
+   * Issue #205: the underlying `localVarTypeMap` lookup is two-tier
+   * (current proc → module) so the eligibility check inherits the
+   * same scoping discipline.
    */
   public shouldProcessQualifiedCall(receiverName: string): boolean {
     if (this.isLocalProjectClassVar(receiverName)) return true;
-    return !this.localVarTypeMap.has(receiverName.toLowerCase());
+    const key = receiverName.replace(/^\[|\]$/g, '').toLowerCase();
+    return !this.lookupLocalVarType(key);
   }
 
   /**
@@ -347,11 +392,14 @@ export class VbaExtractorContext {
    * → `'NCOperaciones'`) so the stub matches the real `.cls` method's
    * `${className}.${proc}` shape. Otherwise returns `receiverName` unchanged
    * (the `.bas`-qualified module call case).
+   *
+   * Issue #205: lookup is two-tier (current proc → module) so the
+   * resolved class name matches the procedure the call site is inside.
    */
   public resolveReceiverType(receiverName: string): string {
     if (this.isLocalProjectClassVar(receiverName)) {
       const key = receiverName.replace(/^\[|\]$/g, '').toLowerCase();
-      const entry = this.localVarTypeMap.get(key);
+      const entry = this.lookupLocalVarType(key);
       if (entry) return entry.outer;
     }
     return receiverName;
@@ -550,6 +598,75 @@ export class VbaExtractorContext {
       this.localConstants.set(scopeKey, bucket);
     }
     bucket.set(name.toLowerCase(), value);
+    return bucket;
+  }
+
+  /**
+   * Issue #205: shared lookup helper for the procedure-scoped
+   * `localVarTypeMap`. The current scope is the procedure whose
+   * `startLine` is on top of the dims classifier's proc stack, kept in
+   * sync via `currentVarTypeProcKey` (or `'module'` when no procedure
+   * is open). Per-proc bucket first; the `'module'` bucket is the
+   * fallback — mirrors `resolveLocalConst` and the `arrayParameters`
+   * rationale spelled out at `calls.ts:86-90` ("a same-named
+   * parameter on a different procedure cannot suppress a genuine
+   * missing-call elsewhere in the file").
+   *
+   * `name` is normalized to lowercase so the dim sweep's
+   * `varName.toLowerCase()` key matches the call sweep's
+   * `receiverName.toLowerCase()` key.
+   */
+  public lookupLocalVarType(name: string): {
+    outer: string;
+    qualified: boolean;
+    withEvents?: boolean;
+    variableName?: string;
+    assignedWithSet?: boolean;
+    isArray?: boolean;
+  } | undefined {
+    const lower = name.toLowerCase();
+    const procBucket = this.localVarTypeMap.get(this.currentVarTypeProcKey);
+    if (procBucket) {
+      const v = procBucket.get(lower);
+      if (v !== undefined) return v;
+    }
+    const moduleBucket = this.localVarTypeMap.get('module');
+    return moduleBucket?.get(lower);
+  }
+
+  /**
+   * Issue #205: shared writer for the procedure-scoped
+   * `localVarTypeMap`. `scopeKey` is `'module'` for module-level
+   * `Dim`s, or the procedure's `startLine` (stringified) for
+   * proc-local `Dim`s — the same shape the dims classifier uses for
+   * `currentVarTypeProcKey`. Creates the bucket lazily. Returns the
+   * bucket the entry was written to (mostly useful for tests).
+   */
+  public setLocalVarTypeInScope(
+    scopeKey: 'module' | string,
+    name: string,
+    entry: {
+      outer: string;
+      qualified: boolean;
+      withEvents?: boolean;
+      variableName?: string;
+      assignedWithSet?: boolean;
+      isArray?: boolean;
+    },
+  ): Map<string, {
+    outer: string;
+    qualified: boolean;
+    withEvents?: boolean;
+    variableName?: string;
+    assignedWithSet?: boolean;
+    isArray?: boolean;
+  }> {
+    let bucket = this.localVarTypeMap.get(scopeKey);
+    if (!bucket) {
+      bucket = new Map();
+      this.localVarTypeMap.set(scopeKey, bucket);
+    }
+    bucket.set(name.toLowerCase(), entry);
     return bucket;
   }
 }

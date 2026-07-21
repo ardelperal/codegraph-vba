@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- VBA SQL extraction now ignores reserved words exposed by dynamic table-name concatenation instead of emitting misleading table references. (#203)
 - VBA continued statements are now parsed as one logical line while retaining their original source locations, restoring class references, qualified calls, procedure headers, and API declarations split with line continuations. (#202)
 - VBA SQL variables now stay within their procedure while module-level SQL remains available as a fallback, preventing same-named variables in separate procedures from creating false table references. (#204)
 - VBA: colon-separated single-line procedures now close their scope on the same physical line and scan calls in their inline body, preventing later module constants from being misclassified and making procedure tracking consistent regardless of header placement. (#208)

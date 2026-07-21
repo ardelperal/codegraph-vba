@@ -610,6 +610,89 @@ End Sub`;
   });
 });
 
+// Issue #203 — REGRESSION GUARDS for the silently-wrong captures that
+// motivated the SQL-table scan consolidation. Every SQL reserved word
+// that can legitimately follow FROM/JOIN/INTO/UPDATE was previously
+// captured as a table reference when the chain had a dropped operand
+// (a variable or expression between two `&`-concatenated literals).
+// The fix lives in `src/extraction/sql-table-scan.ts` and emits a `?`
+// sentinel for dropped operands plus a reserved-word reject list.
+// These tests pin the bug at the VbaExtractor level so any future
+// refactor that re-introduces it fails loudly.
+describe('VbaExtractor — SQL table scan rejects reserved words as table names (Issue #203)', () => {
+  function sqlEdges(r: ReturnType<typeof extract>) {
+    return r.edges.filter((e) => e.metadata?.synthesizedBy === 'vba-sql-table');
+  }
+  function sqlEdgeNames(r: ReturnType<typeof extract>) {
+    return sqlEdges(r).map((e) => r.nodes.find((n) => n.id === e.target)?.name);
+  }
+
+  it('"DELETE FROM " & tabla & " WHERE x" emits NO vba-sql-table reference (not a wrong one)', () => {
+    const src = `Public Sub Borra(ByVal tabla As String)
+    getdb().Execute "DELETE FROM " & tabla & " WHERE x"
+End Sub`;
+    const r = extract('src/modules/Borra.bas', src);
+    expect(sqlEdges(r)).toHaveLength(0);
+    // No phantom WHERE/WHERE/SET node should appear either.
+    const reserved = ['WHERE', 'ORDER', 'SET', 'GROUP', 'HAVING'];
+    for (const kw of reserved) {
+      expect(r.nodes.some((n) => n.name === kw)).toBe(false);
+    }
+  });
+
+  it('"SELECT * FROM " & tabla & " WHERE x=1" emits NO vba-sql-table reference', () => {
+    const src = `Public Sub Q(ByVal tabla As String)
+    DoCmd.RunSQL "SELECT * FROM " & tabla & " WHERE x=1"
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    expect(sqlEdges(r)).toHaveLength(0);
+    expect(r.nodes.some((n) => n.name === 'WHERE')).toBe(false);
+  });
+
+  it('"UPDATE " & tabla & " SET a=1" emits NO vba-sql-table reference (was poisoning write reports)', () => {
+    const src = `Public Sub U(ByVal tabla As String)
+    DoCmd.RunSQL "UPDATE " & tabla & " SET a=1"
+End Sub`;
+    const r = extract('src/modules/U.bas', src);
+    expect(sqlEdges(r)).toHaveLength(0);
+    // The previous behaviour emitted a node named `SET` with
+    // metadata.access === 'write', poisoning "who writes to table X"
+    // queries. After the fix neither `SET` nor any other reserved
+    // keyword should be a node.
+    expect(r.nodes.some((n) => n.name === 'SET')).toBe(false);
+  });
+
+  it('a reserved word on the SECOND literal still produces no edge', () => {
+    // `db.Execute "SELECT 1" & " FROM tblA" & " WHERE x"` — the second
+    // literal's leading `FROM tblA` is real; the third literal's
+    // leading ` WHERE x` is the bug. Only tblA should be captured.
+    const src = `Public Sub Q()
+    db.Execute "SELECT 1" & " FROM tblA" & " WHERE x"
+End Sub`;
+    const r = extract('src/modules/Q.bas', src);
+    expect(sqlEdgeNames(r)).toEqual(['tblA']);
+  });
+
+  it('variable-form SQL: m_SQL = "DELETE FROM " & tabla & " WHERE x" emits NO edge', () => {
+    const src = `Public Sub V(ByVal tabla As String)
+    Dim m_SQL As String
+    m_SQL = "DELETE FROM " & tabla & " WHERE x"
+    getdb().Execute m_SQL
+End Sub`;
+    const r = extract('src/modules/V.bas', src);
+    expect(sqlEdges(r)).toHaveLength(0);
+    expect(r.nodes.some((n) => n.name === 'WHERE')).toBe(false);
+  });
+
+  it('regression: a real table name in a concatenated literal still emits (no false negatives)', () => {
+    const src = `Public Sub Real()
+    db.Execute "DELETE FROM tblOld " & " WHERE x=1"
+End Sub`;
+    const r = extract('src/modules/Real.bas', src);
+    expect(sqlEdgeNames(r)).toEqual(['tblOld']);
+  });
+});
+
 describe('VbaExtractor — .form.txt rejection (REQ-CODE-9)', () => {
   it('emits zero function/class/module nodes when given a .form.txt input', () => {
     const src = `Sub Form_Load()

@@ -120,13 +120,12 @@ export const VBA_RULE_TABLES: Readonly<Record<string, readonly VbaExtractionRule
  * Issue #153: the canonical list of concern keys `VBA_RULE_TABLES`
  * must contain. Order matches the per-line dispatch order in
  * `extract()`: events/types/declares → implements → dims → enums/consts
- * → calls/sql. The procedures sweep is the only one that runs BEFORE
- * the main walk (so `ctx.localProcs` is populated for the call sweep
- * to consult) and is therefore referenced in `VBA_RULE_TABLES` but NOT
- * in this list — it is intentionally validated as a separate concern
- * because the pre-walk contract is different.
+ * → calls/sql. The procedures sweep runs before the main walk so
+ * `ctx.localProcs` is populated for the call sweep, but its rule table
+ * has the same non-empty invariant as every per-line classifier.
  */
 const REQUIRED_DISPATCH_TABLES: readonly string[] = [
+  'procedures',
   'declarations',
   'implements',
   'dims',

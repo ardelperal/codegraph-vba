@@ -81,7 +81,9 @@ export function joinLineContinuations(src: string): string {
 // 2. stripVbaComments
 // -----------------------------------------------------------------------------
 
-const REM_PREFIX = /^Rem(\s|$)/i;
+// Leading indentation is still line-start in VBA; recognize it directly
+// rather than relying on the mid-line fallback to slice from column zero.
+const REM_PREFIX = /^\s*Rem(\s|$)/i;
 // Fix 5: handle trailing bare `Rem` at EOL (`\s|$` instead of `\s` alone).
 const REM_MIDLINE = /\s+Rem(\s|$)/i;
 const OPTION_DIRECTIVE = /^\s*Option\s+\w+/i;

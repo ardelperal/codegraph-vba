@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- VBA `Me.Name` and `Me!Field` references inside comparisons, `MsgBox` arguments, and `IIf` expressions are now classified as reads (`property-get` / `bang-get`) instead of writes, while statement-form assignments such as `Me.Name = "X"` and `Me!Field = 0` still classify as writes; all three reference-classification branches now share one direct-assignment predicate. (#211)
+
 
 ## [1.15.0] - 2026-07-20
 

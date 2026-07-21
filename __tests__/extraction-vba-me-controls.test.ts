@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { CodeGraph } from '../src';
 import { VbaExtractor } from '../src/extraction/vba-extractor';
+import { UnresolvedReference } from '../src/types';
 
 const open: Array<{ cg: CodeGraph; dir: string }> = [];
 
@@ -150,5 +151,87 @@ End`,
       .filter(Boolean)
       .sort();
     expect(callers).toEqual(['EstableceColorBordes', 'EstablecerDatos', 'HaHabidoCambios']);
+  });
+});
+
+describe('issue #211 Me.<X> / Me!<X> read/write classification', () => {
+  function meRefs(source: string): UnresolvedReference[] {
+    const result = new VbaExtractor('forms/Form_Prueba.cls', source).extract();
+    return result.unresolvedReferences.filter(
+      (ref) => ref.metadata?.synthesizedBy === 'vba-me-control',
+    );
+  }
+
+  function findByName(refs: UnresolvedReference[], name: string, line: number): UnresolvedReference {
+    const ref = refs.find((r) => r.referenceName === name && r.line === line);
+    if (!ref) {
+      throw new Error(`expected ${name}@${line}, got ${JSON.stringify(refs.map((r) => [r.referenceName, r.line, r.referenceKind]))}`);
+    }
+    return ref;
+  }
+
+  it('Me.Name in a comparison is classified as a read (builtIn branch: property-get)', () => {
+    const src = `Attribute VB_Name = "Form_Prueba"
+Private Sub Uno()
+  If Me.Name = "frmX" Then Debug.Print "x"
+End Sub`;
+    const refs = meRefs(src);
+    const ref = findByName(refs, 'Name', 3);
+    expect(ref.referenceKind).toBe('property-get');
+    expect(ref.metadata?.builtIn).toBe(true);
+  });
+
+  it('Me!importe in a comparison is classified as a read (bang branch: bang-get)', () => {
+    const src = `Attribute VB_Name = "Form_Prueba"
+Private Sub Uno()
+  If Me!importe = 0 Then Debug.Print "x"
+End Sub`;
+    const refs = meRefs(src);
+    const ref = findByName(refs, 'importe', 3);
+    expect(ref.referenceKind).toBe('bang-get');
+  });
+
+  it('Me.txtNombre as a statement-form assignment is still classified as a write (control branch)', () => {
+    const src = `Attribute VB_Name = "Form_Prueba"
+Private Sub Uno()
+  Me.txtNombre = "x"
+End Sub`;
+    const refs = meRefs(src);
+    const ref = findByName(refs, 'txtNombre', 3);
+    expect(ref.referenceKind).toBe('references');
+    expect(ref.metadata?.access).toBe('write');
+  });
+
+  it('Me!importe as a statement-form assignment is still classified as a write (bang branch: bang-set)', () => {
+    const src = `Attribute VB_Name = "Form_Prueba"
+Private Sub Uno()
+  Me!importe = 0
+End Sub`;
+    const refs = meRefs(src);
+    const ref = findByName(refs, 'importe', 3);
+    expect(ref.referenceKind).toBe('bang-set');
+  });
+
+  it('Me.txtNombre in a comparison is classified as a read (control branch)', () => {
+    const src = `Attribute VB_Name = "Form_Prueba"
+Private Sub Uno()
+  If Me.txtNombre = "x" Then Debug.Print "y"
+End Sub`;
+    const refs = meRefs(src);
+    const ref = findByName(refs, 'txtNombre', 3);
+    expect(ref.referenceKind).toBe('references');
+    expect(ref.metadata?.access).toBe('read');
+  });
+
+  it('mixed line: read then assignment on the same line is read (builtIn branch sanity)', () => {
+    // A pathological line that has both an `=` in the after and a prior
+    // before-content. The unified predicate must reject this as a read.
+    const src = `Attribute VB_Name = "Form_Prueba"
+Private Sub Uno()
+  If (Me.Name = "frmX") Then Debug.Print "x"
+End Sub`;
+    const refs = meRefs(src);
+    const ref = findByName(refs, 'Name', 3);
+    expect(ref.referenceKind).toBe('property-get');
   });
 });

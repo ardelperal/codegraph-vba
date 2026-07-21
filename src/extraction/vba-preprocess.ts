@@ -54,15 +54,27 @@ import type { ExtractionError } from '../types';
  */
 export function joinLineContinuations(src: string): string {
   if (!src) return src;
-  // VBA convention: " _\n" → join. **Preserve the newline AND the
-  // leading space** so the transformed source has the same line count
-  // AND the same intra-line whitespace as the original — the sweep
-  // patterns downstream are anchored and the space before `_` is
-  // meaningful for the joined line.
-  //
-  // Dangling ` _` at end-of-file (malformed input defensive) has no
-  // newline to preserve; replace with a single space.
-  return src.replace(/ _(?:(\r?\n)|$)/g, (_m, nl) => ' ' + (nl ?? ''));
+  const newline = src.includes('\r\n') ? '\r\n' : '\n';
+  const lines = src.split(/\r?\n/);
+  const out: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    let logicalLine = lines[i] ?? '';
+    let consumed = 0;
+
+    while (/ _$/.test(logicalLine)) {
+      logicalLine = logicalLine.slice(0, -1);
+      if (i + consumed + 1 >= lines.length) break;
+      logicalLine += lines[i + consumed + 1] ?? '';
+      consumed++;
+    }
+
+    out.push(logicalLine);
+    for (let placeholder = 0; placeholder < consumed; placeholder++) out.push('');
+    i += consumed;
+  }
+
+  return out.join(newline);
 }
 
 // -----------------------------------------------------------------------------

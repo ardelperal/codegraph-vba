@@ -2701,6 +2701,40 @@ describe('VbaExtractor — SQL wrapper captures multi-literal concat chains', ()
 });
 
 
+describe('VbaExtractor — SQL wrappers are case-insensitive (Issue #210)', () => {
+  function sqlTableNames(r: ReturnType<typeof extract>): string[] {
+    return r.edges
+      .filter((e) => e.kind === 'references' && e.metadata?.synthesizedBy === 'vba-sql-table')
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .filter((n): n is string => typeof n === 'string');
+  }
+
+  it('extracts mixed-case SQL wrappers across every wrapper family', () => {
+    const src = [
+      'Sub Q()',
+      '  DoCmd.RunSql "DELETE FROM tblRunSql"',
+      '  docmd.runsql "UPDATE tblRunSqlLower SET value = 1"',
+      '  CURRENTdb.openrecordset "SELECT * FROM tblOpenRecordset"',
+      '  mYdB.eXeCuTe "DELETE FROM tblExecute"',
+      '  gEtDb().oPeNrEcOrDsEt "SELECT * FROM tblGetDbOpen"',
+      '  GETDB().ExEcUtE "DELETE FROM tblGetDbExecute"',
+      'End Sub',
+    ].join('\\n');
+    const r = extract('src/modules/Q.bas', src);
+    const tableNames = sqlTableNames(r);
+    expect(tableNames).toHaveLength(6);
+    expect(tableNames).toEqual(expect.arrayContaining([
+      'tblRunSql',
+      'tblRunSqlLower',
+      'tblOpenRecordset',
+      'tblExecute',
+      'tblGetDbOpen',
+      'tblGetDbExecute',
+    ]));
+  });
+});
+
+
 // ---------------------------------------------------------------------------
 // Issue #42: `DoCmd.RunSQL <identifier>` (variable form) must emit the same
 // `vba-sql-table` references the literal form already emits.

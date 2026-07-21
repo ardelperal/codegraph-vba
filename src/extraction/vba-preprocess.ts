@@ -32,6 +32,7 @@
  *
  * Source unchanged guarantee: every helper treats `src` as read-only.
  */
+import type { ExtractionError } from '../types';
 
 // -----------------------------------------------------------------------------
 // 1. joinLineContinuations
@@ -177,6 +178,13 @@ interface ConditionalFrame {
   parentActive: boolean;
   active: boolean;
   branchTaken: boolean;
+  /**
+   * 0-based source line where the `#If` / `#ElseIf` directive that
+   * pushed this frame was read. Used by Issue #206 to find the
+   * earliest unclosed frame after the loop drains, so the warning
+   * and the line-restore can target the right scope.
+   */
+  line: number;
 }
 
 const IF_DIRECTIVE = /^\s*#If\s+(.+?)\s+Then\s*$/i;
@@ -216,8 +224,36 @@ const CONST_DIRECTIVE = /^\s*#Const\s+([A-Za-z_][A-Za-z_0-9]*)\s*=\s*(.+?)\s*$/i
  * promote this evaluator to full integer arithmetic.
  *
  * Directives and inactive branch lines are replaced with empty strings so
- * downstream extraction keeps source-line parity. Unsupported/unsafe
- * expressions evaluate to false rather than throwing.
+ * downstream extraction keeps source-line parity.
+ *
+ * **Issue #206 contract change.** Previously the docstring read
+ * *"Unsupported/unsafe expressions evaluate to false rather than
+ * throwing"* — accurate, but it framed silent whole-branch source
+ * deletion as a safety property. It was not: false-negative extraction is
+ * indistinguishable from correct extraction to every downstream consumer
+ * (an `#If MODE = "DEBUG" Then` whose `"` throws silently blanks the
+ * branch and the symbol vanishes from the graph).
+ *
+ * The new contract:
+ *
+ *   1. **Unterminated `#If`/`#ElseIf`**: if the directive stack is
+ *      non-empty after the loop ends, an `ExtractionError` (severity
+ *      `warning`, code `unterminated_if`) is pushed onto the optional
+ *      `errors` array AND the un-blanked lines from the earliest
+ *      unclosed `#If` are re-emitted. An unterminated `#If` is far
+ *      more likely a typo than a genuinely dead file tail.
+ *   2. **Could-not-evaluate expressions**: `evaluateConditionalExpression`
+ *      now distinguishes `evaluated: false` (a definitive false — e.g.
+ *      `#If 0 Then`, unknown identifier falling through to 0) from
+ *      `could-not-evaluate` (the lexer/parser hit an unsupported token,
+ *      or `tokenize`/`parse` threw). On could-not-evaluate, the branch
+ *      is **kept active** (conservative for a code-intelligence tool —
+ *      a spurious symbol is recoverable, a missing one is invisible)
+ *      and a warning is emitted through the same `errors` channel.
+ *
+ * The `errors` channel is OPTIONAL — every existing call site (and
+ * existing test) continues to work without it. The orchestrator can
+ * supply it to surface the warnings through `ctx.errors`.
  */
 export function preprocessConditionalCompilation(
   src: string,
@@ -232,6 +268,27 @@ export function preprocessConditionalCompilation(
    * `if (timings)` null-check on every CC line).
    */
   timings?: Map<string, number> | null,
+  /**
+   * Issue #206: optional `ExtractionError` sink for diagnostics the
+   * preprocessor wants to surface to extraction callers:
+   *   - `unterminated_if` (warning) — `#If` / `#ElseIf` pushed but
+   *     never closed by `#End If` (a likely typo).
+   *   - `unparseable_expression` (warning) — a `#If` / `#ElseIf`
+   *     expression the lexer/parser could not handle (the branch is
+   *     still kept active under the conservative contract).
+   *
+   * Undefined → no-op, zero cost (the `if (errors)` null-check on
+   * every warning site). The orchestrator passes `this.ctx.errors` so
+   * the warnings route through `ExtractionResult.errors`.
+   */
+  errors?: ExtractionError[],
+  /**
+   * Issue #206: optional file path included on every pushed error
+   * when the caller wants telemetry to know which file the warning
+   * came from. Independent of `errors` so a caller can attach the
+   * path even when collecting warnings elsewhere.
+   */
+  filePath?: string,
 ): string {
   if (!src) return src;
   const lines = src.split('\n');
@@ -246,7 +303,8 @@ export function preprocessConditionalCompilation(
   const constTable = new Map<string, string>();
   const CC_STAGE = 'preprocess.cc.lexer+parser';
 
-  for (const line of lines) {
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx] ?? '';
     // Parse #Const BEFORE the other directives so the table is up-to-date
     // when a subsequent #If expression references it. The line itself is
     // always blanked (line-count parity invariant).
@@ -265,8 +323,23 @@ export function preprocessConditionalCompilation(
     const ifMatch = IF_DIRECTIVE.exec(line);
     if (ifMatch) {
       const parentActive = stack.every((frame) => frame.active);
-      const active = parentActive && evaluateConditionalExpression(ifMatch[1] ?? '', constTable, customTargets, timings, CC_STAGE);
-      stack.push({ parentActive, active, branchTaken: active });
+      const evaluation = evaluateConditionalExpression(
+        ifMatch[1] ?? '',
+        constTable,
+        customTargets,
+        timings,
+        CC_STAGE,
+      );
+      // Issue #206: a could-not-evaluate expression (string literal, float,
+      // unknown syntax) is treated as ACTIVE so the branch stays in the
+      // graph rather than silently vanishing. A warning is recorded so
+      // downstream tooling can flag the file.
+      const active =
+        parentActive && (evaluation.kind === 'evaluated' ? evaluation.value : true);
+      if (parentActive && evaluation.kind === 'could-not-evaluate' && errors) {
+        pushExpressionWarning(errors, ifMatch[1] ?? '', lineIdx, filePath);
+      }
+      stack.push({ parentActive, active, branchTaken: active, line: lineIdx });
       out.push('');
       continue;
     }
@@ -275,12 +348,30 @@ export function preprocessConditionalCompilation(
     if (elseIfMatch) {
       const frame = stack[stack.length - 1];
       if (frame) {
-        const active =
-          frame.parentActive &&
-          !frame.branchTaken &&
-          evaluateConditionalExpression(elseIfMatch[1] ?? '', constTable, customTargets, timings, CC_STAGE);
+        const evaluation = evaluateConditionalExpression(
+          elseIfMatch[1] ?? '',
+          constTable,
+          customTargets,
+          timings,
+          CC_STAGE,
+        );
+        // Issue #206: same conservative-on-could-not-evaluate rule for
+        // #ElseIf as for #If — keep the branch active and warn.
+        // A later sibling might already have taken the branch;
+        // could-not-evaluate must NOT falsely take it (the gate
+        // `!frame.branchTaken` already prevents that).
+        const exprTrue = evaluation.kind === 'evaluated' ? evaluation.value : true;
+        const active = frame.parentActive && !frame.branchTaken && exprTrue;
         frame.active = active;
         if (active) frame.branchTaken = true;
+        if (
+          frame.parentActive &&
+          !frame.branchTaken &&
+          evaluation.kind === 'could-not-evaluate' &&
+          errors
+        ) {
+          pushExpressionWarning(errors, elseIfMatch[1] ?? '', lineIdx, filePath);
+        }
       }
       out.push('');
       continue;
@@ -306,7 +397,76 @@ export function preprocessConditionalCompilation(
     out.push(stack.every((frame) => frame.active) ? line : '');
   }
 
+  // Issue #206: after the loop, if the stack is non-empty the source had
+  // an unterminated `#If` (or several). The previous implementation
+  // simply left the rest of the file blanked, with no warning —
+  // producing a silent whole-file deletion. Restore the un-blanked
+  // lines from the earliest unclosed frame (the most inclusive scope
+  // we can attribute) and push an `ExtractionError` so callers learn
+  // about it.
+  if (stack.length > 0) {
+    // Walk back through the stack to find the lowest (earliest in source)
+    // unclosed frame. Anything earlier than it was already correct on
+    // output; restoring from its line produces the conservative
+    // behavior the issue calls for.
+    let earliestLine = lines.length;
+    for (const frame of stack) {
+      if (frame.line < earliestLine) earliestLine = frame.line;
+    }
+    for (let i = earliestLine; i < lines.length; i++) {
+      out[i] = lines[i] ?? '';
+    }
+    if (errors) {
+      const messageParts: string[] = [];
+      if (stack.length === 1) {
+        messageParts.push(
+          `Unterminated #If/#ElseIf block at line ${earliestLine + 1} ` +
+            `(no matching #End If). Lines after it were preserved verbatim — ` +
+            'this is almost certainly an authoring typo.',
+        );
+      } else {
+        messageParts.push(
+          `Unterminated #If/#ElseIf blocks at ${stack.length} scope(s), ` +
+            `earliest at line ${earliestLine + 1} (no matching #End If). ` +
+            'Lines after the earliest unclosed block were preserved verbatim.',
+        );
+      }
+      errors.push({
+        message: messageParts[0] ?? '',
+        severity: 'warning',
+        code: 'unterminated_if',
+        ...(filePath ? { filePath } : {}),
+      });
+    }
+  }
+
   return out.join('\n');
+}
+
+/**
+ * Issue #206: push an `unparseable_expression` warning onto the optional
+ * `errors` array. Trims the expression and reports it in the message so
+ * the maintainer can see which `#If` triggered the warning without
+ * needing a separate cross-reference table.
+ */
+function pushExpressionWarning(
+  errors: ExtractionError[],
+  expr: string,
+  lineIdx: number,
+  filePath?: string,
+): void {
+  const trimmed = expr.trim();
+  errors.push({
+    message:
+      `Unparseable #If / #ElseIf expression at line ${lineIdx + 1}: ` +
+      `'${trimmed.length > 80 ? trimmed.slice(0, 77) + '...' : trimmed}'. ` +
+      'Branch kept active (conservative); verify or remove the unsupported ' +
+      'expression.',
+    line: lineIdx + 1,
+    severity: 'warning',
+    code: 'unparseable_expression',
+    ...(filePath ? { filePath } : {}),
+  });
 }
 
 /**
@@ -426,6 +586,16 @@ function tokenize(
       while (i < expr.length && /\d/.test(expr[i] ?? '')) {
         i++;
       }
+      // Issue #206: a trailing `.` would make this a floating-point
+      // literal (`1.5`). The parser only handles 32-bit integers, so the
+      // FLOOR is the integer prefix and the `.` is rejected below with
+      // a `float_literal` reason — explicit routing to the
+      // could-not-evaluate path. We deliberately do NOT consume the
+      // `.` into the NUMBER token; that would mask the issue behind a
+      // silent parse.
+      if (expr[i] === '.') {
+        throw new UnparseableExpressionError('float_literal', expr.substring(start, i + 2));
+      }
       const numStr = expr.substring(start, i);
       tokens.push({ type: 'NUMBER', numberValue: parseInt(numStr, 10) | 0 });
       continue;
@@ -503,8 +673,26 @@ function tokenize(
       continue;
     }
 
-    // Any other character is a lexing error
-    throw new Error(`Unexpected character in expression: ${ch}`);
+    // Any other character is a lexing error.
+    //
+    // Issue #206: string literals are explicit — they were the #1 source
+    // of silent whole-branch deletion (`#If MODE = "DEBUG" Then`). We
+    // throw `UnparseableExpressionError` with the explicit reason so the
+    // caller routes to the could-not-evaluate path AND can attach the
+    // precise reason to the warning it emits.
+    if (ch === '"') {
+      // Consume the literal token (just so the message reflects the
+      // what-not-just-where): open-quote + … + close-quote on the same
+      // logical line.
+      let j = i + 1;
+      while (j < expr.length && expr[j] !== '"') {
+        if (expr[j] === '\\' && j + 1 < expr.length) j++;
+        j++;
+      }
+      const literal = expr.substring(i, Math.min(j + 1, expr.length));
+      throw new UnparseableExpressionError('string_literal', literal);
+    }
+    throw new UnparseableExpressionError('unsupported_character', ch ?? '');
   }
 
   tokens.push({ type: 'EOF' });
@@ -682,27 +870,71 @@ class Parser {
   }
 }
 
+/**
+ * Issue #206 discriminated return value for `evaluateConditionalExpression`.
+ *
+ *   - `{ kind: 'evaluated', value }` — the lexer+parser produced a
+ *     definitive answer. `value` is the truthiness of the expression
+ *     under VBA semantics (non-zero = true).
+ *   - `{ kind: 'could-not-evaluate' }` — the lexer/parser threw
+ *     (unsupported token: string literal, floating-point literal,
+ *     unrecognized character, mismatched paren, etc.). The caller MUST
+ *     treat this as ACTIVE under the conservative contract from
+ *     Issue #206 — see `preprocessConditionalCompilation`.
+ */
+export type ConditionalEvaluation =
+  | { readonly kind: 'evaluated'; readonly value: boolean }
+  | { readonly kind: 'could-not-evaluate' };
+
+/**
+ * Issue #206: marker error class for explicitly-unsupported VBA
+ * conditional-compilation tokens. The legacy `throw new Error(...)`
+ * from `tokenize` was indistinguishable from a real bug
+ * (`Unexpected trailing token`, mismatched paren); both bubbled into
+ * the same `catch { return false }`. The new helper carries the
+ * specific reason so the caller can attribute warnings precisely and
+ * distinguish "the lexer simply cannot handle this token" from a
+ * legitimate parse failure (which is also routed to
+ * could-not-evaluate, but with the original message preserved).
+ */
+export class UnparseableExpressionError extends Error {
+  /** Coarse category: `string_literal`, `float_literal`, `unsupported_character`. */
+  public readonly reason: string;
+  /** The verbatim fragment that triggered the throw (for diagnostics). */
+  public readonly fragment: string;
+  constructor(reason: string, fragment: string) {
+    super(`Unparseable conditional-compilation expression: ${reason} (${JSON.stringify(fragment)})`);
+    this.name = 'UnparseableExpressionError';
+    this.reason = reason;
+    this.fragment = fragment;
+  }
+}
+
 function evaluateConditionalExpression(
   expr: string,
   constTable: ReadonlyMap<string, string> = new Map(),
   customTargets?: Record<string, boolean>,
   timings?: Map<string, number> | null,
   stageName: string = 'preprocess.cc.lexer+parser',
-): boolean {
+): ConditionalEvaluation {
   try {
     let exprClean = expr.trim();
     if (exprClean.toLowerCase().endsWith('then')) {
       exprClean = exprClean.slice(0, -4).trim();
     }
-    return timeLexerParser(timings, stageName, () => {
+    return timeLexerParser(timings, stageName, (): ConditionalEvaluation => {
       const tokens = tokenize(exprClean, constTable, customTargets);
       const parser = new Parser(tokens);
       const result = parser.parseExpression();
       parser.ensureEOF();
-      return result !== 0;
+      return { kind: 'evaluated', value: result !== 0 };
     });
   } catch {
-    return false;
+    // Issue #206: every parse failure (including the new explicit
+    // `UnparseableExpressionError`) routes here. The caller
+    // distinguishes evaluated from could-not-evaluate and applies the
+    // conservative-on-unknown contract.
+    return { kind: 'could-not-evaluate' };
   }
 }
 

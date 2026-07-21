@@ -8,7 +8,7 @@
 import { PROC_RE, PROCEDURE_END_RE, PRIMITIVE_TYPES, isVbaKeyword } from './constants';
 import { maskStringContent } from './text-utils';
 import { ProcInfo, VbaClassifier } from './context';
-import { defineRule, matchRuleForScan, VbaExtractionRule } from './rules';
+import { defineRule, runRules, VbaExtractionRule } from './rules';
 import {
   scanRaiseEvents,
   scanCallSites,
@@ -175,6 +175,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
     pattern: WITH_END_RE,
     scan: 'masked',
     requires: 'inside-procedure',
+    terminal: true,
     emit: (_m, ctx) => {
       ctx.vbaWithStack.pop();
       return { kind: 'with-end' as const };
@@ -274,18 +275,9 @@ export function createCallsAndSqlClassifier(
       // rules only fire when the call-sweep's per-instance proc stack
       // is non-empty (matching the legacy cascade's `if (stack.length
       // > 0)` gate).
-      for (const rule of RULES) {
-        if (rule.requires === 'inside-procedure' && stack.length === 0) continue;
-        const matched = matchRuleForScan(rule, line, callScanLine);
-        if (!matched) continue;
-        const result = rule.emit(matched.match, ctx, matched.line, lineNum);
-        if (result !== null && result !== undefined) {
-          this.count += rule.count ? rule.count(result as never) : 1;
-        }
-        // `with-end` is short-circuited: a line that's `End With` is
-        // not also a `Set x = New ...`, so break the loop.
-        if (rule.id === 'with-end') break;
-      }
+      this.count += runRules(RULES, ctx, line, callScanLine, lineNum, {
+        'inside-procedure': stack.length > 0,
+      });
 
       // Don't scan call sites on the line that declares the procedure — it
       // would match the proc name itself in `Sub Outer()`.

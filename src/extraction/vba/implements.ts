@@ -6,7 +6,7 @@
 import { Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { VbaClassifier } from './context';
-import { defineRule, matchRule, VbaExtractionRule } from './rules';
+import { defineRule, runRules, VbaExtractionRule } from './rules';
 
 /** Implements regex. */
 const IMPLEMENTS_RE = /^\s*Implements\s+(\p{L}[\p{L}\p{N}_]*)/iu;
@@ -77,14 +77,7 @@ export function createImplementsClassifier(): VbaClassifier {
     count: 0,
     classifyLine(line, i, ctx) {
       const lineNum = i + 1;
-      for (const rule of RULES) {
-        const m = matchRule(rule.pattern, line);
-        if (!m) continue;
-        const result = rule.emit(m, ctx, line, lineNum);
-        if (result !== null && result !== undefined) {
-          this.count += rule.count ? rule.count(result as never) : 1;
-        }
-      }
+      this.count += runRules(RULES, ctx, line, line, lineNum, {});
     },
   };
 }

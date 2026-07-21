@@ -9,7 +9,7 @@ import { Node } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { foldVisibility } from './text-utils';
 import { VbaClassifier } from './context';
-import { defineRule, matchRule, VbaExtractionRule } from './rules';
+import { defineRule, runRules, VbaExtractionRule } from './rules';
 
 /** `[visibility] Event <Name>(...)` custom event declaration. */
 const EVENT_DECL_RE =
@@ -126,6 +126,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       'Match `End Type` while inside a type block; emit nothing and clear `ctx.vbaDeclTypeBlock` so subsequent lines route back to the outside-type-block rules.',
     pattern: TYPE_END_RE,
     requires: 'inside-type-block',
+    terminal: true,
     emit: (_m, ctx) => {
       ctx.vbaDeclTypeBlock = null;
       return { kind: 'end-type-block' as const };
@@ -231,28 +232,10 @@ export function createEventsTypesDeclaresClassifier(): VbaClassifier {
     count: 0,
     classifyLine(line, i, ctx) {
       const lineNum = i + 1;
-      for (const rule of RULES) {
-        // Gate by the rule's `requires` precondition. The
-        // `outside-type-block` / `inside-type-block` values are the
-        // concrete preconditions the dispatcher knows about today;
-        // unknown strings are treated as "always" so adding new
-        // preconditions does not require touching this loop.
-        if (rule.requires === 'inside-type-block' && !ctx.vbaDeclTypeBlock) continue;
-        if (rule.requires === 'outside-type-block' && ctx.vbaDeclTypeBlock) continue;
-        const m = matchRule(rule.pattern, line);
-        if (!m) continue;
-        const result = rule.emit(m, ctx, line, lineNum);
-        if (result !== null && result !== undefined) {
-          this.count += rule.count ? rule.count(result as never) : 1;
-        }
-        // `type-end` cleared the type block — nothing else on this
-        // line can apply (a VBA `End Type` line cannot also be an
-        // `Event <Name>` declaration). The legacy cascade did the
-        // same short-circuit via `return`. Break out of the loop
-        // explicitly so a later refactor cannot accidentally let an
-        // outside-type-block rule fire on the same line.
-        if (rule.id === 'type-end') break;
-      }
+      this.count += runRules(RULES, ctx, line, line, lineNum, {
+        'inside-type-block': ctx.vbaDeclTypeBlock !== null,
+        'outside-type-block': ctx.vbaDeclTypeBlock === null,
+      });
     },
   };
   return cls;

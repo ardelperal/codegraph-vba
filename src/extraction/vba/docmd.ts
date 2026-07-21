@@ -93,6 +93,7 @@ const DOCMD_OPEN_DISPATCH: ReadonlyArray<DoCmdOpenDispatch> = [
 export function scanDoCmdOpenCalls(
   ctx: VbaExtractorContext,
   line: string,
+  maskedLine: string,
   caller: ProcInfo,
   lineNum: number,
 ): void {
@@ -103,6 +104,7 @@ export function scanDoCmdOpenCalls(
     const localRe = new RegExp(dispatch.re.source, dispatch.re.flags);
     let m: RegExpExecArray | null;
     while ((m = localRe.exec(line)) !== null) {
+      if (maskedLine.slice(m.index, m.index + 5).toLowerCase() !== 'docmd') continue;
       const rawArg = (m[1] ?? '').trim();
       // Issue #52: const lookup is now per-proc-bucket with module
       // fallback (see `resolveLocalConst`). Two procs declaring the
@@ -191,12 +193,14 @@ function emitOpensStubEdge(
 export function scanDoCmdOpenQuery(
   ctx: VbaExtractorContext,
   line: string,
+  maskedLine: string,
   caller: ProcInfo,
   lineNum: number,
 ): void {
   const localRe = new RegExp(OPEN_QUERY_ARG_RE.source, OPEN_QUERY_ARG_RE.flags);
   let m: RegExpExecArray | null;
   while ((m = localRe.exec(line)) !== null) {
+    if (maskedLine.slice(m.index, m.index + 5).toLowerCase() !== 'docmd') continue;
     const rawArg = (m[1] ?? '').trim();
     // Issue #52: same per-proc-with-module-fallback lookup as
     // `scanDoCmdOpenCalls`.

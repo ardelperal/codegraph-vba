@@ -414,12 +414,12 @@ export function createCallsAndSqlClassifier(
         const caller2 = stack[stack.length - 1]!;
         // Issue #48: shared OpenForm/OpenReport dispatch; OpenQuery emits an
         // `UnresolvedReference` and stays separate.
-        scanDoCmdOpenCalls(ctx, line, caller2, lineNum);
-        scanDoCmdOpenQuery(ctx, line, caller2, lineNum);
+        scanDoCmdOpenCalls(ctx, line, callScanLine, caller2, lineNum);
+        scanDoCmdOpenQuery(ctx, line, callScanLine, caller2, lineNum);
         // Issue #44: cross-form bang references (`Forms!X` / `Forms("X")!Y`) —
         // scan the unmasked line (form name lives in a string literal in the
         // paren form).
-        scanFormsBang(ctx, line, caller2, lineNum);
+        scanFormsBang(ctx, line, callScanLine, caller2, lineNum);
 
         // Issue #50: cross-form TempVars key accesses. Bang form scans the
         // masked line, paren + Add forms scan the original.

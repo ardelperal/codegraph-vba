@@ -210,12 +210,18 @@ export function scanMeControlReferences(
 export function scanFormsBang(
   ctx: VbaExtractorContext,
   line: string,
+  maskedLine: string,
   from: ProcInfo,
   lineNum: number,
 ): void {
   FORMS_BANG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = FORMS_BANG_RE.exec(line)) !== null) {
+    // The original line is required for Forms("name") payloads, but the
+    // keyword itself must still be executable code rather than prose inside
+    // a string literal. maskStringContent preserves columns, so this check is
+    // both cheap and exact for every regex match.
+    if (maskedLine.slice(m.index, m.index + 5).toLowerCase() !== 'forms') continue;
     // Group 1: bang form name (bare or `[bracketed]`); group 2: paren
     // form name in `"quotes"`; group 3: paren form name bare or
     // `[bracketed]`. Take whichever the regex alternative produced and

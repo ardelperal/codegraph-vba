@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- VBA references mentioned only inside messages, logs, and other string literals no longer create false form, query, or temporary-variable relationships. (#209)
 - VBA SQL extraction now ignores reserved words exposed by dynamic table-name concatenation instead of emitting misleading table references. (#203)
 - VBA continued statements are now parsed as one logical line while retaining their original source locations, restoring class references, qualified calls, procedure headers, and API declarations split with line continuations. (#202)
 - VBA SQL variables now stay within their procedure while module-level SQL remains available as a fallback, preventing same-named variables in separate procedures from creating false table references. (#204)

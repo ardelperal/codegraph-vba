@@ -135,6 +135,7 @@ export function sweepTempVars(
   const parenRe = new RegExp(TEMP_VAR_PAREN_RE.source, TEMP_VAR_PAREN_RE.flags);
   let pm: RegExpExecArray | null;
   while ((pm = parenRe.exec(originalLine)) !== null) {
+    if (maskedLine.slice(pm.index, pm.index + 8).toLowerCase() !== 'tempvars') continue;
     const key = pm[1] ?? '';
     if (!key) continue;
     const access = detectAssignmentSuffix(originalLine, pm.index + pm[0].length)
@@ -147,6 +148,7 @@ export function sweepTempVars(
   const addRe = new RegExp(TEMP_VAR_ADD_RE.source, TEMP_VAR_ADD_RE.flags);
   let am: RegExpExecArray | null;
   while ((am = addRe.exec(originalLine)) !== null) {
+    if (maskedLine.slice(am.index, am.index + 8).toLowerCase() !== 'tempvars') continue;
     const key = am[1] ?? '';
     if (!key) continue;
     emitTempVarReference(ctx, caller, key, lineNum, am.index, 'write');

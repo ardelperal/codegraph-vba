@@ -2822,6 +2822,50 @@ describe('VbaExtractor — DoCmd.RunSQL with variable argument emits SQL table r
   });
 });
 
+describe('VbaExtractor — SQL variable procedure scope (#204)', () => {
+  function sqlTableNamesAtLine(r: ReturnType<typeof extract>, line: number): string[] {
+    return r.edges
+      .filter(
+        (e) =>
+          e.line === line &&
+          e.kind === 'references' &&
+          e.metadata?.synthesizedBy === 'vba-sql-table',
+      )
+      .map((e) => r.nodes.find((n) => n.id === e.target)?.name)
+      .filter((n): n is string => typeof n === 'string');
+  }
+
+  it('does not reuse a same-named SQL variable from a previous procedure', () => {
+    const src = [
+      'Public Sub PurgaLog()',
+      '  Dim strSQL As String',
+      '  strSQL = "DELETE FROM tblLog"',
+      '  getdb().Execute strSQL',
+      'End Sub',
+      'Public Sub ActualizaNada()',
+      '  DoCmd.RunSQL strSQL',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/SqlScope.bas', src);
+
+    expect(sqlTableNamesAtLine(r, 4)).toContain('tblLog');
+    expect(sqlTableNamesAtLine(r, 7)).toEqual([]);
+  });
+
+  it('retains module-level SQL variables as a fallback inside procedures', () => {
+    const src = [
+      'Private sharedSql As String',
+      'sharedSql = "DELETE FROM tblShared"',
+      'Public Sub PurgaCompartida()',
+      '  DoCmd.RunSQL sharedSql',
+      'End Sub',
+    ].join('\n');
+    const r = extract('src/modules/SqlModuleScope.bas', src);
+
+    expect(sqlTableNamesAtLine(r, 4)).toContain('tblShared');
+  });
+});
+
 
 describe('VbaExtractor � API declarations and VBA conditional compilation', () => {
   it('extracts Public Declare PtrSafe Sub as a single-line declare node with metadata', () => {

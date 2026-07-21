@@ -22,9 +22,25 @@ import { defineRule, matchRule, VbaExtractionRule } from './rules';
  * `references` edge and `localVarTypeMap` registration as their `Dim`
  * siblings today. The negative lookahead is unchanged: `Const` is still
  * routed to `sweepEnumsAndConsts`.
+ * Issue #207: extend the negative lookahead with `Declare|Event|Enum|Type`
+ * so the four other header keywords that own their own sweeps are not
+ * misread as variable declarations. Before the fix:
+ *   - `Private Declare PtrSafe Function Foo Lib "k32" (ByVal h As T) As Long`
+ *     emitted a phantom `vba-name-resolution` edge to `T` and registered
+ *     `h` in `localVarTypeMap` (the map has no procedure scope — #205
+ *     territory — so a param name that collides with a real local
+ *     silently changes that local's call-emission behavior).
+ *   - `Public Event SomethingHappened(ByVal payload As T)` emitted a
+ *     phantom edge to `T` and registered `payload` in the map.
+ *   - `Public Enum Foo` / `Public Type Foo` registered the keyword itself
+ *     (`Enum` / `Type`) in the map via `BARE_DIM_VAR_RE`.
+ * Each header has its own classifier (`dll-declare`, `event-decl`,
+ * `type-start`, plus `sweepEnumsAndConsts` for `Enum`) — they own the
+ * registration, so excluding them here is the correct separation of
+ * concerns and prevents silent graph pollution.
  */
 const DIM_DECL_PREFIX_RE =
-  /^\s*(?:Dim|Private|Public|Global|Static)\s+(?!(?:Function|Sub|Property|Const|WithEvents)\b)/i;
+  /^\s*(?:Dim|Private|Public|Global|Static)\s+(?!(?:Function|Sub|Property|Const|WithEvents|Declare|Event|Enum|Type)\b)/i;
 
 /**
  * Globally scan all `identifier As [New] TypePart1[.TypePart2]` on a

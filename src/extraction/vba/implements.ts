@@ -5,7 +5,7 @@
  */
 import { Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
-import { VbaExtractorContext, VbaClassifier } from './context';
+import { VbaClassifier } from './context';
 import { defineRule, matchRule, VbaExtractionRule } from './rules';
 
 /** Implements regex. */
@@ -87,17 +87,4 @@ export function createImplementsClassifier(): VbaClassifier {
       }
     },
   };
-}
-
-/**
- * Backward-compat wrapper (see procedures.ts). Returns the classifier's
- * `count` so the orchestrator can decide `hasAnySymbols`.
- */
-export function sweepImplements(ctx: VbaExtractorContext, src: string): number {
-  const cls = createImplementsClassifier();
-  const lines = src.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    cls.classifyLine(lines[i] ?? '', i, ctx);
-  }
-  return cls.count;
 }

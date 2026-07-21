@@ -7,7 +7,7 @@
 import { Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { PRIMITIVE_TYPES, PROC_RE, PROCEDURE_END_RE } from './constants';
-import { VbaExtractorContext, VbaClassifier } from './context';
+import { VbaClassifier } from './context';
 import { defineRule, matchRule, VbaExtractionRule } from './rules';
 
 /**
@@ -345,17 +345,4 @@ export function createDimsClassifier(): VbaClassifier {
       }
     },
   };
-}
-
-/**
- * Backward-compat wrapper (see procedures.ts). Returns the classifier's
- * `count` so the orchestrator can decide `hasAnySymbols`.
- */
-export function sweepDimsAndWithEvents(ctx: VbaExtractorContext, src: string): number {
-  const cls = createDimsClassifier();
-  const lines = src.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    cls.classifyLine(lines[i] ?? '', i, ctx);
-  }
-  return cls.count;
 }

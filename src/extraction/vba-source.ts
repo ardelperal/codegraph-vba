@@ -122,16 +122,3 @@ export function readVbaSource(
     return { text, bomStripped };
   }
 }
-
-/**
- * String-level BOM strip — survives when the upstream `fsp.readFile(path, 'utf-8')`
- * already decoded the bytes (it's the only way the `\uFEFF` char survives in
- * a string). Used as a defensive last resort when a read site has NOT gone
- * through `readVbaSource` and the source text starts with the BOM marker.
- *
- * Most call sites should prefer `readVbaSource` for fresh reads; this is
- * a string post-process for callers that already have a `string` in hand.
- */
-export function stripUtf8Bom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
-}

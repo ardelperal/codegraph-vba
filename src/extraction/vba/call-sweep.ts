@@ -7,7 +7,7 @@
  */
 import { PROC_RE, PROCEDURE_END_RE, PRIMITIVE_TYPES, isVbaKeyword } from './constants';
 import { maskStringContent } from './text-utils';
-import { VbaExtractorContext, ProcInfo, VbaClassifier } from './context';
+import { ProcInfo, VbaClassifier } from './context';
 import { defineRule, matchRuleForScan, VbaExtractionRule } from './rules';
 import {
   scanRaiseEvents,
@@ -449,18 +449,4 @@ export function createCallsAndSqlClassifier(
   };
 
   return cls;
-}
-
-/**
- * Backward-compat wrapper (see procedures.ts). Returns void — the calls
- * sweep never contributed to `hasAnySymbols` directly (every other
- * concern's `count` is the signal the orchestrator reads).
- */
-export function sweepCallsAndSql(ctx: VbaExtractorContext, src: string): void {
-  const lines = src.split('\n');
-  const cls = createCallsAndSqlClassifier(lines);
-  for (let i = 0; i < lines.length; i++) {
-    cls.classifyLine(lines[i] ?? '', i, ctx);
-  }
-  cls.finalize?.(ctx);
 }

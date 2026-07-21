@@ -84,7 +84,7 @@ export function parseConstDeclarations(
   return declarations;
 }
 
-export function splitOutsideVbaStrings(value: string, separator: string): string[] {
+function splitOutsideVbaStrings(value: string, separator: string): string[] {
   const parts: string[] = [];
   let current = '';
   let inString = false;

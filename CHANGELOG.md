@@ -13,7 +13,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - VBA `Me.Name` and `Me!Field` references inside comparisons, `MsgBox` arguments, and `IIf` expressions are now classified as reads (`property-get` / `bang-get`) instead of writes, while statement-form assignments such as `Me.Name = "X"` and `Me!Field = 0` still classify as writes; all three reference-classification branches now share one direct-assignment predicate. (#211)
 - VBA extraction no longer returns a graph fragment with a dangling edge when a `.bas` / `.cls` parse throws: malformed source still produces a `parse_error` and a valid (possibly partial) result, but edges that were being held pending module/class attribution are now dropped on the throw path instead of leaking into the returned graph. (#213)
-
+- VBA `Declare`, `Event`, `Enum`, and `Type` header lines no longer leak phantom parameter-type references into the graph or pollute the qualified-call gate with parameter names, so the symbols these headers describe (real project classes, Win32 APIs, custom events, UDTs) keep their declared shape instead of being mistaken for project-local variables. (#207)
 
 ## [1.15.0] - 2026-07-20
 

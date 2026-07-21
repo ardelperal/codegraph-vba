@@ -202,6 +202,7 @@ export function createCallsAndSqlClassifier(
   // Walk the source once, emitting call edges and SQL edges per line and
   // tracking the current procedure stack.
   const stack: ProcInfo[] = [];
+  const moduleSqlVariables = new Map<string, string>();
   const sqlVariables = new Map<string, string>();
   // C2 fix: track each procedure's `endLine` (the line containing the
   // matching `End Sub`/`End Function`/`End Property`) keyed by its
@@ -218,6 +219,13 @@ export function createCallsAndSqlClassifier(
 
       const procStart = PROC_RE.exec(line);
       if (procStart) {
+        // SQL variables are procedure-scoped, with module assignments as a
+        // fallback. Seed a fresh procedure bucket so common names such as
+        // `strSQL` cannot leak from the preceding procedure.
+        sqlVariables.clear();
+        for (const [name, value] of moduleSqlVariables) {
+          sqlVariables.set(name, value);
+        }
         const name = procStart[3] ?? '';
         const bucket = ctx.localProcs.get(name);
         if (bucket) {
@@ -304,6 +312,10 @@ export function createCallsAndSqlClassifier(
       if (stack.length > 0) {
         trackSqlVariableAssignment(lines as string[], i, sqlVariables);
         scanSqlInLine(ctx, line, lineNum, sqlTargetsThisFile, sqlVariables);
+      } else {
+        // Preserve file/module-level assignments for use as the fallback in
+        // every procedure without mixing one procedure's locals into another.
+        trackSqlVariableAssignment(lines as string[], i, moduleSqlVariables);
       }
 
       // H1 fix: detect statement-form Sub calls (no parens, no `Call` keyword).
@@ -417,6 +429,10 @@ export function createCallsAndSqlClassifier(
       if (endsProcedure) {
         const ending = stack.pop()!;
         procEndLines.set(ending.startLine, lineNum);
+        sqlVariables.clear();
+        for (const [name, value] of moduleSqlVariables) {
+          sqlVariables.set(name, value);
+        }
       }
     },
     finalize(ctx) {

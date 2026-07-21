@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- VBA SQL variables now stay within their procedure while module-level SQL remains available as a fallback, preventing same-named variables in separate procedures from creating false table references. (#204)
 - VBA: colon-separated single-line procedures now close their scope on the same physical line and scan calls in their inline body, preventing later module constants from being misclassified and making procedure tracking consistent regardless of header placement. (#208)
 - VBA: a local variable declared with `Dim` inside a procedure now keeps that procedure's type for the lifetime of the procedure instead of being silently overwritten by the last `Dim` of the same name anywhere in the file, so a `item.Guardar` call inside `Sub AltaProducto` (where `Dim item As Producto` was declared) no longer resolves to the `Cliente` class declared in `Sub AltaCliente` later in the same file. (#205)
 - VBA conditional-compilation directives no longer silently delete a branch: an unterminated `#If` now emits a warning and restores the affected lines, and expressions the lexer cannot handle (string literals, floating-point, unknown syntax) are treated as `could-not-evaluate` and kept active by default. (#206)

@@ -29,8 +29,9 @@ describe('joinLineContinuations', () => {
     const out = joinLineContinuations(src);
     // Line count preserved.
     expect(out.split('\n').length).toBe(src.split('\n').length);
-    // The `_` continuation marker is removed; the newline stays.
-    expect(out).toContain('DoCmd.RunSQL \n');
+    // The continued content moves onto the first physical line; the consumed
+    // line becomes an empty placeholder so source locations stay aligned.
+    expect(out).toContain('DoCmd.RunSQL     "SELECT * FROM tbl"\n');
     expect(out).not.toContain(' _\n');
     // The continued line's content is preserved verbatim.
     expect(out).toContain('"SELECT * FROM tbl"');
@@ -39,7 +40,7 @@ describe('joinLineContinuations', () => {
   it('joins a Debug.Print continuation across lines — preserves line count', () => {
     const src = 'Debug.Print _\n  "hello"';
     const out = joinLineContinuations(src);
-    expect(out).toBe('Debug.Print \n  "hello"');
+    expect(out).toBe('Debug.Print   "hello"\n');
     expect(out.split('\n').length).toBe(src.split('\n').length);
   });
 
@@ -52,15 +53,16 @@ describe('joinLineContinuations', () => {
     const src = 'x = a _\n  + b _\n  + c';
     const out = joinLineContinuations(src);
     expect(out.split('\n').length).toBe(src.split('\n').length);
-    // Both `_` markers removed, both newlines preserved.
-    expect(out).toContain('x = a \n  + b \n  + c');
+    // Both `_` markers are collapsed into one logical statement; blank
+    // placeholders preserve the two consumed physical lines.
+    expect(out).toBe('x = a   + b   + c\n\n');
   });
 
   it('joins continuations across many statements — preserves line count', () => {
     const src = 'A _\n+ 1\nB _\n+ 2';
     const out = joinLineContinuations(src);
     expect(out.split('\n').length).toBe(src.split('\n').length);
-    expect(out).toContain('A \n+ 1\nB \n+ 2');
+    expect(out).toBe('A + 1\n\nB + 2\n');
     expect(out).not.toContain(' _\n');
   });
 
@@ -82,11 +84,9 @@ describe('joinLineContinuations', () => {
     expect(out).toBe(src);
   });
 
-  it('strips the continuation marker but keeps the newline', () => {
-    // VBA convention: " _\n" → the `_` is consumed and the `\n` stays
-    // so the transformed source has the same line count as the input.
+  it('joins the continued content and leaves a blank physical-line placeholder', () => {
     const src = 'X _\nY';
-    expect(joinLineContinuations(src)).toBe('X \nY');
+    expect(joinLineContinuations(src)).toBe('X Y\n');
   });
 
   it('does not join when the underscore is mid-line (not at the end)', () => {
@@ -98,7 +98,7 @@ describe('joinLineContinuations', () => {
     const src = 'Function Foo() As Long\n  Foo = 1 _\n    + 2\nEnd Function';
     const out = joinLineContinuations(src);
     expect(out.split('\n').length).toBe(src.split('\n').length);
-    expect(out).toContain('Foo = 1 \n    + 2\nEnd Function');
+    expect(out).toContain('Foo = 1     + 2\n\nEnd Function');
   });
 
   it('handles a continuation that ends a file (no following line)', () => {

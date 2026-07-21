@@ -20,13 +20,16 @@ describe('Issue #202: VBA line continuations are logical statements', () => {
     ]);
 
     const result = extract(source);
-    const typeReference = result.unresolvedReferences.find(
-      (reference) => reference.referenceName === 'MiClase',
+    const typeNode = result.nodes.find(
+      (node) => node.kind === 'class' && node.name === 'MiClase',
+    );
+    const typeReference = result.edges.find(
+      (edge) => edge.kind === 'references' && edge.target === typeNode?.id,
     );
     expect(typeReference?.line).toBe(2);
     expect(
-      result.unresolvedReferences.some(
-        (reference) => reference.referenceName === 'Hacer',
+      result.nodes.some(
+        (node) => node.kind === 'function' && node.name === 'MiClase.Hacer',
       ),
     ).toBe(true);
   });
@@ -54,6 +57,6 @@ describe('Issue #202: VBA line continuations are logical statements', () => {
       (node) => node.kind === 'declare' && node.name === 'GetTickCount',
     );
     expect(declaration?.startLine).toBe(1);
-    expect(declaration?.signature).toContain('Alias "GetTickCount"');
+    expect(declaration?.metadata?.aliasName).toBe('GetTickCount');
   });
 });

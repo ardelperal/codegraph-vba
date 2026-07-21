@@ -59,15 +59,6 @@ function parseArrayParameters(line: string): string[] {
   return out;
 }
 
-function parenthesisDelta(line: string): number {
-  let depth = 0;
-  for (const ch of line) {
-    if (ch === '(') depth++;
-    else if (ch === ')') depth--;
-  }
-  return depth;
-}
-
 /**
  * Issue #153: the declarative rule table for the procedures concern.
  * One rule — `procedure` — matches a `Sub` / `Function` /
@@ -302,42 +293,17 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
 ];
 
 export function createProceduresClassifier(): VbaClassifier {
-  let pendingHeader:
-    | { proc: ProcInfo; text: string; depth: number }
-    | undefined;
-
   return {
     name: 'procedures',
     count: 0,
     classifyLine(line, i, ctx) {
-      if (pendingHeader) {
-        pendingHeader.text += ` ${line}`;
-        pendingHeader.depth += parenthesisDelta(line);
-        if (pendingHeader.depth <= 0) {
-          pendingHeader.proc.arrayParameters = parseArrayParameters(
-            pendingHeader.text,
-          );
-          pendingHeader = undefined;
-        }
-      }
-
       const lineNum = i + 1;
       for (const rule of RULES) {
         const m = matchRule(rule.pattern, line);
         if (!m) continue;
-        const previousProcCount = ctx.procedures.length;
         const result = rule.emit(m, ctx, line, lineNum);
         if (result !== null && result !== undefined) {
           this.count += rule.count ? rule.count(result as never) : 1;
-        }
-
-        const proc = ctx.procedures[previousProcCount];
-        const openIdx = line.indexOf('(');
-        if (proc && openIdx >= 0) {
-          const depth = parenthesisDelta(line.slice(openIdx));
-          if (depth > 0) {
-            pendingHeader = { proc, text: line, depth };
-          }
         }
       }
     },

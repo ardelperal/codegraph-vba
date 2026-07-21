@@ -260,6 +260,8 @@ export class VbaExtractor {
             joined,
             this.vbaTargets,
             this.ctx.timings,
+            this.ctx.errors,
+            this.filePath,
           ),
       );
 

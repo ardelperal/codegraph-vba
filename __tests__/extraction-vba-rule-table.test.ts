@@ -17,4 +17,13 @@ describe('VBA rule-table validation', () => {
       empty: ['dims'],
     });
   });
+
+  it('validates the procedures pre-walk rule table', () => {
+    const tables = { ...VBA_RULE_TABLES, procedures: [] };
+
+    expect(validateVbaRuleTables(tables)).toEqual({
+      ok: false,
+      empty: ['procedures'],
+    });
+  });
 });

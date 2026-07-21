@@ -939,5 +939,158 @@ describe('custom targets and precedence', () => {
   });
 });
 
+/**
+ * Issue #212 — `#ElseIf` had zero coverage across the entire repository
+ * (`grep -rin "elseif" __tests__/` returned nothing). The state machine in
+ * `preprocessConditionalCompilation` uses a `branchTaken` latch combined
+ * with `parentActive` to decide whether a second, third, or nth branch may
+ * activate — a bug there silently blanks live code or activates dead code,
+ * and downstream every symbol in the affected branch vanishes from the
+ * graph with no error.
+ *
+ * Each atom asserts both the kept-or-blanked behavior AND line-count
+ * parity (the core invariant — downstream extraction's `startLine` values
+ * depend on it). Tests are written against current behavior; if #206
+ * ships a different shape (warnings, re-emitted unblanked lines) these
+ * land alongside that fix.
+ */
+describe('Issue #212: #ElseIf + unbalanced-directive coverage', () => {
+  // ---- atom 1: First branch wins across #If / #ElseIf / #Else ---------
+  it('atom 1: #If Win64 keeps the first branch; #ElseIf and #Else are blanked', () => {
+    const src = [
+      '#If Win64 Then',
+      'Public Sub FirstBranch()',
+      '#ElseIf Mac Then',
+      'Public Sub ElseIfBranch()',
+      '#Else',
+      'Public Sub ElseBranch()',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(7);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toContain('FirstBranch');
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe('');
+    expect(lines[4]).toBe('');
+    expect(lines[5]).toBe('');
+    expect(lines[6]).toBe('');
+  });
+
+  // ---- atom 2: Second #ElseIf is taken when the first is false ---------
+  it('atom 2: second #ElseIf is taken when the first is false', () => {
+    // #If Mac (false), #ElseIf Win16 (false), #ElseIf Win64 (true).
+    // The branchTaken latch stays false through the first #ElseIf, so the
+    // second #ElseIf is allowed to activate.
+    const src = [
+      '#If Mac Then',
+      'Public Sub MacBranch()',
+      '#ElseIf Win16 Then',
+      'Public Sub Win16Branch()',
+      '#ElseIf Win64 Then',
+      'Public Sub Win64Branch()',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(7);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe('');
+    expect(lines[4]).toBe('');
+    expect(lines[5]).toContain('Win64Branch');
+    expect(lines[6]).toBe('');
+  });
+
+  // ---- atom 3: No branch taken when all are false (no #Else) -----------
+  it('atom 3: all branches blanked when #If and every #ElseIf are false (no #Else)', () => {
+    const src = [
+      '#If Mac Then',
+      'Public Sub MacBranch()',
+      '#ElseIf Win16 Then',
+      'Public Sub Win16Branch()',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(5);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe('');
+    expect(lines[4]).toBe('');
+    expect(out).not.toContain('MacBranch');
+    expect(out).not.toContain('Win16Branch');
+  });
+
+  // ---- atom 4: #ElseIf inside an inactive parent stays inactive --------
+  it('atom 4: #ElseIf inside an inactive parent block stays inactive', () => {
+    // Outer #If Mac (false) pushes an inactive frame. Inner #If Win64 would
+    // be true standalone, but parentActive=false so it is inactive; the
+    // inner #ElseIf must NOT activate even though its expression is true.
+    const src = [
+      '#If Mac Then',
+      '#If Win64 Then',
+      'Public Sub InnerIf()',
+      '#ElseIf VBA7 Then',
+      'Public Sub InnerElseIf()',
+      '#End If',
+      '#End If',
+    ].join('\n');
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(7);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('');
+    expect(lines[2]).toBe('');
+    expect(lines[3]).toBe('');
+    expect(lines[4]).toBe('');
+    expect(lines[5]).toBe('');
+    expect(lines[6]).toBe('');
+    expect(out).not.toContain('InnerIf');
+    expect(out).not.toContain('InnerElseIf');
+  });
+
+  // ---- atom 5: A stray #End If with no matching #If does not throw -----
+  it('atom 5: a stray #End If does not throw and leaves subsequent code live', () => {
+    // stack.pop() on an empty array returns undefined; it must not throw.
+    // Code after the stray #End If is kept (stack is empty, so the
+    // `every(active)` vacuously-true guard lets it through).
+    const src = [
+      '#End If',
+      'Sub X()',
+      'End Sub',
+    ].join('\n');
+    expect(() => preprocessConditionalCompilation(src)).not.toThrow();
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toBe('Sub X()');
+    expect(lines[2]).toBe('End Sub');
+  });
+
+  // ---- atom 6: An unclosed #If does not throw --------------------------
+  it('atom 6: an unclosed #If does not throw and keeps an active branch', () => {
+    // #If Win64 is true so the inner branch is active. The stack never
+    // drains, but the function must not throw — downstream extraction
+    // surfaces the missing #End If as a separate concern (#206).
+    const src = [
+      '#If Win64 Then',
+      'Public Sub Active()',
+      'End Sub',
+    ].join('\n');
+    expect(() => preprocessConditionalCompilation(src)).not.toThrow();
+    const out = preprocessConditionalCompilation(src);
+    const lines = out.split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe('');
+    expect(lines[1]).toContain('Active');
+    expect(lines[2]).toBe('End Sub');
+  });
+});
+
 
 

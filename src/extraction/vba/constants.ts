@@ -13,8 +13,8 @@ export const PROC_RE =
  * Promoted from a local regex in `sweepCallsAndSql` so `sweepEnumsAndConsts`
  * can walk the same proc boundaries and decide Const scope per line.
  * The `(?:^|:\s*)` prefix tolerates colon-separated single-line procs
- * (`Public Sub X(): ... : End Sub`) so the proc stack pops on the same
- * physical line.
+ * (`Public Sub X(): ... : End Sub`). Classifiers must test procedure start
+ * and end independently because both can occur on the same physical line.
  */
 export const PROCEDURE_END_RE =
   /(?:^|:\s*)End\s+(?:Sub|Function|Property)\b/i;

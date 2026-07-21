@@ -9,7 +9,7 @@ import { Node, Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { PROC_RE, PRIMITIVE_TYPES } from './constants';
 import { parseEventHandlerName } from './text-utils';
-import { VbaExtractorContext, ProcInfo, VbaClassifier } from './context';
+import { ProcInfo, VbaClassifier } from './context';
 import { defineRule, matchRule, VbaExtractionRule } from './rules';
 
 /**
@@ -308,20 +308,4 @@ export function createProceduresClassifier(): VbaClassifier {
       }
     },
   };
-}
-
-/**
- * Backward-compat wrapper: pre-#83 callers (e.g. legacy test fixtures)
- * used `sweepProcedures(ctx, src)` and got back the ProcInfo[].
- * Now it returns `ctx.procedures` (the same flat list the factory
- * appends to). The implementation still calls the classifier once per
- * pre-split line, so the count is identical to the new walker path.
- */
-export function sweepProcedures(ctx: VbaExtractorContext, src: string): ProcInfo[] {
-  const cls = createProceduresClassifier();
-  const lines = src.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    cls.classifyLine(lines[i] ?? '', i, ctx);
-  }
-  return ctx.procedures;
 }

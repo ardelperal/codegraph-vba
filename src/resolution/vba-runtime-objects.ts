@@ -63,7 +63,7 @@ export function isRuntimeObject(receiver: string | null | undefined): boolean {
 }
 
 /** Canonical VBA and Access built-in functions that never resolve to project code. */
-export const VBA_STDLIB_FUNCTIONS: ReadonlySet<string> = new Set([
+const VBA_STDLIB_FUNCTIONS: ReadonlySet<string> = new Set([
   'cstr', 'cint', 'clng', 'cdbl', 'csng', 'cbyte', 'cbool', 'cdate', 'cverr',
   'isnull', 'isempty', 'isnumeric', 'isdate', 'isarray', 'isobject', 'ismissing',
   'typename', 'vartype', 'len', 'lenb', 'instr', 'instrb', 'instrrev', 'lcase',

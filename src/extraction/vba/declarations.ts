@@ -8,7 +8,7 @@
 import { Node } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { foldVisibility } from './text-utils';
-import { VbaExtractorContext, VbaClassifier } from './context';
+import { VbaClassifier } from './context';
 import { defineRule, matchRule, VbaExtractionRule } from './rules';
 
 /** `[visibility] Event <Name>(...)` custom event declaration. */
@@ -256,17 +256,4 @@ export function createEventsTypesDeclaresClassifier(): VbaClassifier {
     },
   };
   return cls;
-}
-
-/**
- * Backward-compat wrapper (see procedures.ts). Returns the classifier's
- * `count` so the orchestrator can decide `hasAnySymbols`.
- */
-export function sweepEventsTypesAndDeclares(ctx: VbaExtractorContext, src: string): number {
-  const cls = createEventsTypesDeclaresClassifier();
-  const lines = src.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    cls.classifyLine(lines[i] ?? '', i, ctx);
-  }
-  return cls.count;
 }

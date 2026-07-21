@@ -37,7 +37,7 @@ interface ManifestTestEntry {
  * array with at least one item carrying a string `procedure`? Pure; the file's
  * basename is gated separately by `isVbaTestManifestFile` in `grammars.ts`.
  */
-export function isVbaTestManifestShape(parsed: unknown): boolean {
+function isVbaTestManifestShape(parsed: unknown): boolean {
   if (!parsed || typeof parsed !== 'object') return false;
   const tests = (parsed as { tests?: unknown }).tests;
   if (!Array.isArray(tests)) return false;

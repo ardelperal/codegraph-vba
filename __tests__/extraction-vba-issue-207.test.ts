@@ -24,7 +24,7 @@
 import { describe, it, expect } from 'vitest';
 import { VbaExtractor } from '../src/extraction/vba-extractor';
 import { VbaExtractorContext } from '../src/extraction/vba/context';
-import { sweepDimsAndWithEvents } from '../src/extraction/vba/dims';
+import { createDimsClassifier } from '../src/extraction/vba/dims';
 
 function extract(filePath: string, source: string) {
   return new VbaExtractor(filePath, source).extract();
@@ -56,7 +56,11 @@ function dimMapFor(source: string): Map<
   { outer: string; qualified: boolean }
 > {
   const ctx = new VbaExtractorContext('src/modules/m.bas');
-  sweepDimsAndWithEvents(ctx, source);
+  const classifier = createDimsClassifier();
+  const lines = source.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    classifier.classifyLine(lines[i] ?? '', i, ctx);
+  }
   return ctx.localVarTypeMap;
 }
 

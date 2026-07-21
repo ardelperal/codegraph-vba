@@ -18,6 +18,12 @@
  *    table references), so the data layer is queryable and table usage is
  *    traceable. Bracketed names (`[Order Details]`) are unwrapped; a table
  *    referenced multiple times in one query produces exactly one node + edge.
+ *
+ * Issue #203: the table-name regex and reserved-word reject list live in
+ * the shared leaf module `src/extraction/sql-table-scan.ts` — the same
+ * scanner every other call site (`vba/sql-wrapper.ts`,
+ * `vba-form-extractor.ts`) imports, so a SQL reserved word can never
+ * be emitted as a table name across the project.
  */
 import * as path from 'path';
 import {
@@ -27,6 +33,7 @@ import {
   ExtractionError,
 } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
+import { scanSqlTables } from './sql-table-scan';
 
 export class SqlQueryExtractor {
   private filePath: string;
@@ -39,22 +46,6 @@ export class SqlQueryExtractor {
     this.filePath = filePath;
     this.source = source;
   }
-
-  /**
-   * Table name following `FROM` / `JOIN` / `INTO` / `UPDATE`. Captures an optional
-   * bracketed/unbracketed schema prefix followed by `.`, so `FROM dbo.tblCustomers`
-   * and `FROM [My Schema].[My Table]` come through as one composite reference.
-   * Without the prefix the regex still matches a single identifier (bracketed
-   * or bare) byte-identical to the old shape. `\p{L}` covers accented identifiers
-   * common in localized schemas.
-   *
-   * The captured composite goes to `sweepTables`, which strips ALL brackets
-   * (including internal ones in the bracketed-schema case) — so the public
-   * node name is the unwrapped form `dbo.tblCustomers` / `My Schema.My Table`,
-   * matching how plain `[Order Details]` is also unwrapped to `Order Details`.
-   */
-  private static readonly TABLE_RE =
-    /\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
 
   extract(): ExtractionResult {
     const startTime = Date.now();
@@ -121,34 +112,25 @@ export class SqlQueryExtractor {
    * Scan the SQL for table names and emit one synthetic `class` node + one
    * `references` edge per distinct table. The table node id is line-independent
    * (line 0) so the same table referenced N times collapses to one node.
+   *
+   * Issue #203: delegates to the shared `scanSqlTables` scanner in
+   * `src/extraction/sql-table-scan.ts` so a SQL reserved word can never
+   * be emitted as a table name — `WHERE x=1`, `ORDER BY a`, `SET a=1`
+   * never become phantom `class` nodes here.
    */
   private sweepTables(queryId: string): void {
     const seen = new Set<string>();
-    const re = new RegExp(
-      SqlQueryExtractor.TABLE_RE.source,
-      SqlQueryExtractor.TABLE_RE.flags,
-    );
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(this.source)) !== null) {
-      const raw = (m[1] ?? '').trim();
-      // Strip ALL brackets (including internal ones in the bracketed-schema case
-      // `[My Schema].[My Table]`), so the public node name is the unwrapped form
-      // `My Schema.My Table`. Same shape `VbaExtractor.emitSqlTableReferences`
-      // already produces. A plain bracketed name `[Order Details]` reduces to
-      // `Order Details` here too (no internal brackets), so existing tests are
-      // unaffected.
-      const table = raw.replace(/[\[\]]/g, '').trim();
-      if (!table) continue;
-      const key = table.toLowerCase();
+    for (const row of scanSqlTables(this.source)) {
+      const key = row.table.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const tableId = generateNodeId(this.filePath, 'class', table, 0);
+      const tableId = generateNodeId(this.filePath, 'class', row.table, 0);
       this.nodes.push({
         id: tableId,
         kind: 'class', // placeholder kind; cross-file resolution re-types at lookup
-        name: table,
-        qualifiedName: table,
+        name: row.table,
+        qualifiedName: row.table,
         filePath: this.filePath,
         language: 'sql',
         startLine: 1,

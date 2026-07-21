@@ -47,6 +47,7 @@ import {
 import { generateNodeId } from './tree-sitter-helpers';
 import { stripVbaComments } from './vba-preprocess';
 import { ACCESS_EVENT_PROPERTIES } from './vba/events';
+import { scanSqlTables } from './sql-table-scan';
 
 interface FormBlockFrame {
   controlType: string;
@@ -604,24 +605,10 @@ export class VbaFormExtractor {
   // ---------------------------------------------------------------------------
 
   /**
-   * Issue #49 — copy of `VbaExtractor.SQL_TABLE_RE`. Same source / flags:
-   * captures the table name that follows `FROM`/`JOIN`/`INTO`/`UPDATE`,
-   * tolerates bracketed `[Order Details]` identifiers and `\p{L}` Unicode
-   * identifiers, and allows an optional schema prefix (`[dbo].[tblA]`).
-   *
-   * We duplicate the regex (rather than exporting it from `VbaExtractor`)
-   * because `VbaExtractor.SQL_TABLE_RE` is `private static` and the
-   * project's per-extractor state rule keeps each extractor's helpers
-   * self-contained — see the file-level JSDoc on `VbaExtractor`.
-   */
-  private static readonly SQL_TABLE_RE =
-    /\b(?:FROM|JOIN|INTO|UPDATE)\s+((?:(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*)\.)?(?:\[[^\]]+\]|\p{L}[\p{L}\p{N}_]*))/giu;
-
-  /**
    * Issue #49 — classify a RecordSource/RowSource value as SQL.
    * Anything starting with a SQL keyword (`SELECT`, `PARAMETERS`, `WITH`,
    * `UPDATE`, `INSERT`, `DELETE`) — case-insensitive — is treated as a
-   * SQL statement and run through `SQL_TABLE_RE`. Anything else is a
+   * SQL statement and run through `scanSqlTables`. Anything else is a
    * bare table-or-query name and emitted as a single reference.
    *
    * `WITH` is included because Access/JET supports CTE-style `WITH` queries
@@ -726,7 +713,7 @@ export class VbaFormExtractor {
 
   /**
    * Issue #49 — dispatch the value of a RecordSource/RowSource binding.
-   * If SQL, run `SQL_TABLE_RE` over the value and emit one edge per
+   * If SQL, run `scanSqlTables` over the value and emit one edge per
    * distinct table (within-value dedup so `FROM tblA JOIN tblA` emits a
    * single edge). If a bare name, emit a single edge with the name as-is
    * — the resolver handles the dual-match against `query` and `class`
@@ -736,6 +723,10 @@ export class VbaFormExtractor {
    * the regex capture already includes them as part of the value, so a
    * single `.replace(/""/g, '"')` collapses them — same technique the
    * `extractStringLiterals` helper uses for its emitted `text` field.
+   *
+   * Issue #203: `scanSqlTables` also drops SQL reserved-word captures
+   * (`WHERE`, `ORDER`, `SET`, …) so a malformed SQL string never
+   * poisons the graph with phantom `class` nodes.
    */
   private emitBinding(
     sourceNodeId: string,
@@ -749,12 +740,10 @@ export class VbaFormExtractor {
     const value = rawValue.replace(/""/g, '"');
     if (this.isLikelySql(value)) {
       const seen = new Set<string>();
-      for (const m of value.matchAll(VbaFormExtractor.SQL_TABLE_RE)) {
-        const table = (m[1] ?? '').replace(/[\[\]]/g, '');
-        if (!table) continue;
-        if (seen.has(table)) continue;
-        seen.add(table);
-        this.emitTableReference(sourceNodeId, table, lineNum, synthesizedBy);
+      for (const row of scanSqlTables(value)) {
+        if (seen.has(row.table)) continue;
+        seen.add(row.table);
+        this.emitTableReference(sourceNodeId, row.table, lineNum, synthesizedBy);
       }
       return;
     }

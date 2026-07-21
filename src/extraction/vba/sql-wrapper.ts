@@ -11,14 +11,9 @@ import { VbaExtractorContext } from './context';
 
 /** SQL wrapper helpers — order matters because `db.Execute` is a suffix of others. */
 const SQL_WRAPPERS: ReadonlyArray<{ name: string; re: RegExp }> = [
-  { name: 'DoCmd.RunSQL', re: /\bDoCmd\.RunSQL\s+"((?:[^"]|"")*)"/g },
+  { name: 'DoCmd.RunSQL', re: /\bDoCmd\.RunSQL\s+"((?:[^"]|"")*)"/giu },
   { name: '*db.OpenRecordset', re: /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.OpenRecordset\s+"((?:[^"]|"")*)"/giu },
   { name: '*db.Execute', re: /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.Execute\s+"((?:[^"]|"")*)"/giu },
-  // Fix 4 (Issue #4): inline-literal forms `getdb().Execute "..."` and
-  // `getdb().OpenRecordset "..."` — the variable form is covered by
-  // SQL_VAR_EXEC_RE but the direct-literal form was missing.
-  { name: 'getdb().Execute', re: /\bgetdb\(\)\.Execute\s+"((?:[^"]|"")*)"/g },
-  { name: 'getdb().OpenRecordset', re: /\bgetdb\(\)\.OpenRecordset\s+"((?:[^"]|"")*)"/g },
 ];
 
 /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */

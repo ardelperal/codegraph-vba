@@ -13,6 +13,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - VBA extraction now exposes only the classifier factories used by the shared source walker, removing obsolete compatibility entry points and other unused public helpers. (#217)
 
+### Tests
+
+- Removed documentation-prose and tautological assertions while retaining behavioral rule-table validation. (#214)
+
 ### Fixes
 
 - VBA references mentioned only inside messages, logs, and other string literals no longer create false form, query, or temporary-variable relationships. (#209)

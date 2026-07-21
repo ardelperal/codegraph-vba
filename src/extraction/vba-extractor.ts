@@ -378,6 +378,18 @@ export class VbaExtractor {
         severity: 'error',
         code: 'parse_error',
       });
+    } finally {
+      // Issue #213: a throw anywhere in the walks (or in the post-walk
+      // stages) leaves edges with `source: ''` in `ctx.edges` —
+      // placeholders that the success path drains once the module/class
+      // node exists. The catch alone does not run that drain, so the
+      // caller would receive a dangling edge pointing nowhere. Drop any
+      // edge still holding `source: ''` here so the returned result is
+      // always a coherent graph fragment, even on the throw path. On
+      // the success path this is a no-op because the drain at
+      // `:358-361` already cleared the placeholders.
+      this.ctx.edges = this.ctx.edges.filter((e) => e.source !== '');
+      this.ctx.pendingModuleOrClassSource.length = 0;
     }
 
     const result = this.result(startTime);

@@ -379,7 +379,7 @@ export class MCPServer {
       const lock = tryAcquireDaemonLock(root);
 
       if (lock.kind === 'acquired') {
-        const daemon = new Daemon(root);
+        const daemon = new Daemon(root, { generation: lock.info });
         await daemon.start();
         this.daemon = daemon;
         this.mode = 'daemon';

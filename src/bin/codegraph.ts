@@ -29,6 +29,7 @@
 import '../mcp/early-ppid';
 
 import { Command } from 'commander';
+import { registerDaemonStopCommand } from './daemon-release';
 import * as path from 'path';
 import * as fs from 'fs';
 import { getCodeGraphDir, isInitialized, unsafeIndexRootReason, findNearestCodeGraphRoot, planFrontload, hasStructuralKeyword, extractCodeTokens } from '../directory';
@@ -1640,7 +1641,7 @@ function printFileTree(
  * to pick one (the current project's daemon floats to the top, auto-selected),
  * enter to stop it. Falls back to a plain list when output isn't a TTY.
  */
-program
+const daemonCommand = program
   .command('daemon')
   .aliases(['daemons'])
   .description('Manage running CodeGraph background daemons — pick one and press enter to stop it')
@@ -1682,6 +1683,8 @@ program
       done: (m) => clack.outro(m),
     });
   });
+
+registerDaemonStopCommand(daemonCommand);
 
 /**
  * codegraph serve

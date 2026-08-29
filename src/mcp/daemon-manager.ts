@@ -109,7 +109,11 @@ export async function runDaemonPicker(deps: PickerDeps): Promise<void> {
     }
 
     const result = await deps.stop(String(choice));
-    deps.note(`Stopped daemon (pid ${result.pid}) — ${choice}`);
+    if (result.outcome === 'released' || result.outcome === 'not-running') {
+      deps.note(`Stopped daemon (pid ${result.pid}) — ${choice}`);
+    } else {
+      deps.note(`Daemon not stopped (${result.outcome}) — ${choice}`);
+    }
     // Loop: the next iteration re-lists; if more remain it re-prompts, otherwise
     // the top-of-loop empty check prints "All daemons stopped."
   }

@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Command } from 'commander';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { registerDaemonStopCommand, runDaemonStop } from '../src/bin/daemon-release';
 import { DaemonWatchdog } from '../src/mcp/daemon-watchdog';
 import { decodeLockInfo, getDaemonPidPath, getDaemonReleaseLeasePath, getDaemonReleaseRecoveryPath, getDaemonSocketCandidates } from '../src/mcp/daemon-paths';
 import { clearStaleDaemonLock, Daemon, tryAcquireDaemonLock } from '../src/mcp/daemon';
@@ -162,6 +164,33 @@ describe('project-scoped daemon release', () => {
     if (previousTools === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
     else process.env.CODEGRAPH_MCP_TOOLS = previousTools;
     fs.rmSync(temp, { recursive: true, force: true });
+  });
+
+  it('dispatches the CLI handler with the explicit root without reading dist', async () => {
+    const root = project(temp, 'cli');
+    let received = '';
+    const output = await runDaemonStop(root, async (pathArg) => {
+      received = pathArg;
+      return { root, pid: null, outcome: 'no-daemon' };
+    });
+    expect(received).toBe(root);
+    expect(JSON.parse(output)).toEqual({ root, pid: null, outcome: 'no-daemon' });
+  });
+
+  it('parses daemon stop --path through the same source registration used by the CLI', async () => {
+    const root = project(temp, 'cli-parser');
+    const program = new Command().exitOverride();
+    const daemon = program.command('daemon');
+    let received = '';
+    let output = '';
+    registerDaemonStopCommand(
+      daemon,
+      async (pathArg) => { received = pathArg; return JSON.stringify({ root: pathArg, outcome: 'no-daemon' }); },
+      (value) => { output = value; },
+    );
+    await program.parseAsync(['node', 'codegraph', 'daemon', 'stop', '--path', root]);
+    expect(received).toBe(root);
+    expect(JSON.parse(output)).toEqual({ root, outcome: 'no-daemon' });
   });
 
   it('authenticates daemon root and generation over the existing socket handshake', async () => {

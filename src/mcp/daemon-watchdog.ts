@@ -22,7 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { findNearestCodeGraphRoot, getCodeGraphDir } from '../directory';
 import { decodeLockInfo, getDaemonPidPath, getDaemonSocketCandidates } from './daemon-paths';
-import { isProcessAlive } from './daemon-registry';
+import { canonicalDaemonRoot, canonicalDaemonRootKey, isProcessAlive, releaseDaemonAt, type StopResult } from './daemon-registry';
 
 const DAEMON_INTERNAL_ENV = 'CODEGRAPH_DAEMON_INTERNAL';
 const HOST_PPID_ENV = 'CODEGRAPH_HOST_PPID';
@@ -60,6 +60,10 @@ export interface DaemonWatchdogOptions {
    * leave this unset to use the real `child_process.spawn`.
    */
   spawnFn?: (nodePath: string, args: string[], opts: { detached: boolean; env: NodeJS.ProcessEnv; windowsHide?: boolean; stdio?: 'ignore' | [ 'ignore', number, number ] }) => boolean;
+  /** Release seam for deterministic overlap/failure tests. */
+  releaseFn?: (root: string) => Promise<StopResult>;
+  /** Async boundary before spawn; defaults to one microtask for release ordering. */
+  beforeSpawn?: () => Promise<void>;
 }
 
 /**
@@ -75,12 +79,15 @@ const SPAWN_BIND_RETRY_DELAY_MS = 25;
  * `intervalMs`; respawns a daemon if the live one dies.
  */
 export class DaemonWatchdog {
-  private readonly roots = new Set<string>();
+  private readonly roots = new Map<string, string>();
+  private readonly releasing = new Set<string>();
   private interval: NodeJS.Timeout | null = null;
   private readonly intervalMs: number;
   private readonly scriptPath: string;
   private readonly nodePath: string;
   private readonly spawnFn: (nodePath: string, args: string[], opts: { detached: boolean; env: NodeJS.ProcessEnv; windowsHide?: boolean; stdio?: 'ignore' | [ 'ignore', number, number ] }) => boolean;
+  private readonly releaseFn: (root: string) => Promise<StopResult>;
+  private readonly beforeSpawn: () => Promise<void>;
 
   constructor(opts: DaemonWatchdogOptions = {}) {
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -90,16 +97,36 @@ export class DaemonWatchdog {
     this.scriptPath = opts.scriptPath ?? process.argv[1] ?? '';
     this.nodePath = opts.nodePath ?? process.execPath;
     this.spawnFn = opts.spawnFn ?? defaultSpawnFn;
+    this.releaseFn = opts.releaseFn ?? releaseDaemonAt;
+    this.beforeSpawn = opts.beforeSpawn ?? (() => Promise.resolve());
   }
 
   /** Watch a project root: if its daemon dies, respawn it. Idempotent. */
   watch(root: string): void {
-    this.roots.add(path.resolve(root));
+    const canonical = canonicalDaemonRoot(root);
+    const key = canonicalDaemonRootKey(canonical);
+    if (this.releasing.has(key)) return;
+    this.roots.set(key, canonical);
+  }
+
+  /** Begin a new lifecycle for an intentionally released root. */
+  resume(root: string): void {
+    const canonical = canonicalDaemonRoot(root);
+    this.releasing.delete(canonicalDaemonRootKey(canonical));
+    this.watch(canonical);
   }
 
   /** Stop watching a root. Idempotent. */
   unwatch(root: string): void {
-    this.roots.delete(path.resolve(root));
+    this.roots.delete(canonicalDaemonRootKey(root));
+  }
+
+  /** Intentionally release one project without allowing the next tick to respawn it. */
+  async release(root: string): Promise<StopResult> {
+    const canonicalRoot = canonicalDaemonRoot(root);
+    this.releasing.add(canonicalDaemonRootKey(canonicalRoot));
+    this.unwatch(canonicalRoot);
+    return this.releaseFn(canonicalRoot);
   }
 
   /** Number of roots currently being watched. */
@@ -134,7 +161,7 @@ export class DaemonWatchdog {
    * if missing. Exposed for tests + manual triggers.
    */
   async tick(): Promise<void> {
-    for (const root of this.roots) {
+    for (const root of this.roots.values()) {
       await this.checkAndRespawn(root);
     }
   }
@@ -145,16 +172,22 @@ export class DaemonWatchdog {
    * was already running or no `.codegraph/` is reachable from `root`.
    */
   async checkAndRespawn(root: string): Promise<boolean> {
+    const canonicalRoot = canonicalDaemonRoot(root);
+    const key = canonicalDaemonRootKey(canonicalRoot);
+    if (this.releasing.has(key)) return false;
     // We can't trust `listDaemons` to surface a dead daemon for us — it filters
     // out dead entries from its return value (even with `prune: false`, see
     // daemon-registry.ts). So we check the pidfile directly: it IS the
     // authoritative pointer (the registry is a discovery index, the lockfile
     // is the source of truth).
-    if (this.hasLiveDaemon(root)) return false;
+    if (this.hasLiveDaemon(canonicalRoot)) return false;
     // Only spawn if the project has a `.codegraph/` — no point spawning a
     // daemon for an uninitialized project.
-    if (!findNearestCodeGraphRoot(root)) return false;
-    return this.spawn(root);
+    if (!findNearestCodeGraphRoot(canonicalRoot)) return false;
+    await this.beforeSpawn();
+    // A release may have started while liveness/index checks were awaiting.
+    if (this.releasing.has(key) || !this.roots.has(key)) return false;
+    return this.spawn(canonicalRoot);
   }
 
   /** Spawn a fresh daemon for `root`. Detached; safe to call from any context. */

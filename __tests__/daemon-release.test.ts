@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { DaemonWatchdog } from '../src/mcp/daemon-watchdog';
 import { decodeLockInfo, getDaemonPidPath, getDaemonReleaseLeasePath, getDaemonReleaseRecoveryPath, getDaemonSocketCandidates } from '../src/mcp/daemon-paths';
 import { clearStaleDaemonLock, Daemon, tryAcquireDaemonLock } from '../src/mcp/daemon';
 import {
@@ -409,6 +410,71 @@ describe('project-scoped daemon release', () => {
     expect(result.outcome).toBe('released');
     expect(fs.existsSync(getDaemonPidPath(root))).toBe(false);
     expect(fs.existsSync(getDaemonReleaseLeasePath(root))).toBe(false);
+  });
+
+  it('closes an overlapping watchdog tick/release race before spawn', async () => {
+    const root = project(temp, 'watchdog');
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    let spawns = 0;
+    const released: StopResult = { root, pid: null, outcome: 'no-daemon' };
+    const watchdog = new DaemonWatchdog({
+      scriptPath: 'codegraph',
+      spawnFn: () => { spawns++; return true; },
+      beforeSpawn: () => gate,
+      releaseFn: async () => released,
+    });
+    watchdog.watch(root);
+    const tick = watchdog.checkAndRespawn(root);
+    const release = watchdog.release(root);
+    openGate();
+    await Promise.all([tick, release]);
+    expect(watchdog.size()).toBe(0);
+    expect(spawns).toBe(0);
+  });
+
+  it('uses one canonical watchdog key across a junction alias during tick/release', async () => {
+    const root = project(temp, 'canonical-root');
+    const alias = path.join(temp, 'canonical-alias');
+    fs.symlinkSync(root, alias, 'junction');
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    let spawns = 0;
+    const watchdog = new DaemonWatchdog({
+      scriptPath: 'codegraph',
+      spawnFn: () => { spawns++; return true; },
+      beforeSpawn: () => gate,
+      releaseFn: async (releasedRoot) => ({ root: releasedRoot, pid: null, outcome: 'no-daemon' }),
+    });
+    watchdog.watch(alias);
+    const tick = watchdog.checkAndRespawn(alias);
+    const release = watchdog.release(root);
+    openGate();
+    await Promise.all([tick, release]);
+    expect(watchdog.size()).toBe(0);
+    expect(spawns).toBe(0);
+  });
+
+  it('keeps a canonical release tombstone across watch aliases until explicit resume', async () => {
+    const root = project(temp, 'watch-resume-root');
+    const alias = path.join(temp, 'watch-resume-alias');
+    fs.symlinkSync(root, alias, 'junction');
+    let spawns = 0;
+    const watchdog = new DaemonWatchdog({
+      scriptPath: 'codegraph',
+      spawnFn: () => { spawns++; return true; },
+      releaseFn: async (releasedRoot) => ({ root: releasedRoot, pid: null, outcome: 'no-daemon' }),
+    });
+    watchdog.watch(root);
+    await watchdog.release(root);
+    watchdog.watch(alias);
+    expect(watchdog.size()).toBe(0);
+    expect(await watchdog.checkAndRespawn(alias)).toBe(false);
+    expect(spawns).toBe(0);
+    watchdog.resume(alias);
+    expect(watchdog.size()).toBe(1);
+    expect(await watchdog.checkAndRespawn(root)).toBe(true);
+    expect(spawns).toBe(1);
   });
 
 });

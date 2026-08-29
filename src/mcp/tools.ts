@@ -543,13 +543,13 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
 export const tools: ToolDefinition[] = [
   {
     name: 'codegraph_release',
-    description: 'Release the daemon, watcher, workers, SQLite handles, and lock artifacts for one explicit canonical project root. Disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
+    description: 'Destructively release CodeGraph resources for one explicit project root before deleting that worktree. Disabled by default; enable with CODEGRAPH_MCP_TOOLS=explore,release. Release only the selected root, never all Node or CodeGraph processes. This tool does not remove the worktree.',
     inputSchema: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description: 'Explicit project root to release. The path is canonicalized before daemon lookup.',
+          description: 'Required worktree or project root to release. The path is canonicalized before daemon lookup.',
         },
       },
       required: ['path'],

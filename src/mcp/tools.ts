@@ -33,6 +33,7 @@ import { clamp, validatePathWithinRoot, validateProjectPath, isConfigLeafNode, C
 import { isGeneratedFile } from '../extraction/generated-detection';
 import { scanDynamicDispatch } from './dynamic-boundaries';
 import { getUpdateNotice } from '../upgrade/update-check';
+import { releaseDaemonAt } from './daemon-registry';
 
 /** Narrow subprocess seam for testing CLI-only MCP wrappers. */
 export const cliProcess = { spawnSync };
@@ -540,6 +541,26 @@ const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
  * All tools support cross-project queries via the optional `projectPath` parameter.
  */
 export const tools: ToolDefinition[] = [
+  {
+    name: 'codegraph_release',
+    description: 'Release the daemon, watcher, workers, SQLite handles, and lock artifacts for one explicit canonical project root. Disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: {
+          type: 'string',
+          description: 'Explicit project root to release. The path is canonicalized before daemon lookup.',
+        },
+      },
+      required: ['path'],
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
+  },
   {
     name: 'codegraph_affected',
     description: 'Map changed source files to affected tests via the codegraph CLI. Read-only and disabled unless explicitly enabled via CODEGRAPH_MCP_TOOLS.',
@@ -1141,7 +1162,7 @@ export class ToolHandler {
     if (allow) return allow.has(shortName);
     // Preserve backwards compatibility for direct read-only calls. Mutating
     // lifecycle tools must be explicitly enabled even when tools/list is bypassed.
-    return shortName !== 'init' && shortName !== 'sync' && shortName !== 'index' && shortName !== 'affected';
+    return shortName !== 'init' && shortName !== 'sync' && shortName !== 'index' && shortName !== 'affected' && shortName !== 'release';
   }
 
   /**
@@ -1595,6 +1616,13 @@ export class ToolHandler {
 
       if (toolName === 'codegraph_init') {
         return this.executeMutatingTool('init', args);
+      }
+
+      if (toolName === 'codegraph_release') {
+        const target = this.validateString(args.path, 'path', MAX_PATH_LENGTH);
+        if (typeof target !== 'string') return target;
+        const result = await releaseDaemonAt(target);
+        return this.textResult(JSON.stringify(result));
       }
 
       if (toolName === 'codegraph_index') {

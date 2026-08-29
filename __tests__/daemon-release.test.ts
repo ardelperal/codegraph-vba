@@ -111,7 +111,7 @@ describe('project-scoped daemon release', () => {
     const acquired = tryAcquireDaemonLock(root);
     expect(acquired.kind).toBe('acquired');
     if (acquired.kind !== 'acquired') return;
-    const daemon = new Daemon(root, { generation: acquired.info, idleTimeoutMs: 0, maxIdleMs: 0 });
+    const daemon = new Daemon(root, { generation: acquired.info, idleTimeoutMs: 0, maxIdleMs: 0, exit: () => {} });
     const started = await daemon.start();
 
     expect(started.lock).toEqual(acquired.info);
@@ -133,6 +133,7 @@ describe('project-scoped daemon release', () => {
       generation: acquired.info,
       idleTimeoutMs: 0,
       maxIdleMs: 0,
+      exit: () => {},
       listenSocket: (socketPath, onConnection) => {
         if (socketPath === candidates[0]) {
           const error = new Error('unsupported socket location') as NodeJS.ErrnoException;

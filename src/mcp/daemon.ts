@@ -192,6 +192,7 @@ export class Daemon {
   private startedAt = 0;
   private acquiredGeneration: DaemonLockInfo | null;
   private listenSocket: ((socketPath: string, onConnection: (socket: net.Socket) => void) => Promise<net.Server>) | null;
+  private exit: (code: number) => void;
 
   constructor(
     private projectRoot: string,
@@ -200,6 +201,7 @@ export class Daemon {
       maxIdleMs?: number;
       generation?: DaemonLockInfo;
       listenSocket?: (socketPath: string, onConnection: (socket: net.Socket) => void) => Promise<net.Server>;
+      exit?: (code: number) => void;
     } = {},
   ) {
     this.socketPath = getDaemonSocketPath(projectRoot);
@@ -209,6 +211,7 @@ export class Daemon {
     this.acquiredGeneration = opts.generation ?? null;
     this.startedAt = this.acquiredGeneration?.startedAt ?? 0;
     this.listenSocket = opts.listenSocket ?? null;
+    this.exit = opts.exit ?? ((code) => process.exit(code));
     // Daemon mode serves many concurrent clients on one event loop, so off-load
     // read-tool dispatch to a worker pool — otherwise concurrent explores
     // serialize and starve the MCP transport (clients time out). Direct mode
@@ -372,7 +375,7 @@ export class Daemon {
     // POSIX exits here; Windows drains first (engine.stop() above began closing
     // the file watcher, and exiting mid-teardown aborts the process). See
     // finalizeDaemonExit / DAEMON_SHUTDOWN_BACKSTOP_MS.
-    finalizeDaemonExit(process.platform, (code) => process.exit(code));
+    finalizeDaemonExit(process.platform, this.exit);
   }
 
   private handleConnection(socket: net.Socket): void {

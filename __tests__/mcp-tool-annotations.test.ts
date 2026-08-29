@@ -27,7 +27,9 @@ const ALL_TOOLS = tools.map((t) => t.name).join(',');
 function expectReadOnly(tool: ToolDefinition): void {
   expect(tool.annotations, `${tool.name} is missing annotations`).toBeDefined();
   // The hint Cursor Ask mode (and other clients) gate on.
-  expect(tool.annotations!.readOnlyHint).toBe(!['codegraph_index', 'codegraph_sync'].includes(tool.name));
+  expect(tool.annotations!.readOnlyHint).toBe(
+    !['codegraph_index', 'codegraph_sync', 'codegraph_release'].includes(tool.name),
+  );
   // The exact triplet the issue asks for, plus the honest closed-world hint.
   expect(tool.annotations!.destructiveHint).toBe(false);
   expect(tool.annotations!.idempotentHint).toBe(true);
@@ -36,6 +38,15 @@ function expectReadOnly(tool: ToolDefinition): void {
 
 /** Assert each tool's exact read-only or mutating contract. */
 function expectToolAnnotations(tool: ToolDefinition): void {
+  if (tool.name === 'codegraph_release') {
+    expect(tool.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    return;
+  }
   if (tool.name === 'codegraph_uninit') {
     expect(tool.annotations).toEqual({
       readOnlyHint: false,
@@ -86,7 +97,7 @@ describe('Read-only annotations on the codegraph MCP tools (#1018)', () => {
     for (const tool of got) {
       expectToolAnnotations(tool);
       // Sanity: this IS the clone path (projectPath got marked required).
-      if (tool.name !== 'codegraph_init') {
+      if (!['codegraph_init', 'codegraph_release'].includes(tool.name)) {
         expect(tool.inputSchema.required ?? []).toContain('projectPath');
       }
     }

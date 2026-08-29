@@ -39,6 +39,22 @@ CODEGRAPH_MCP_TOOLS=explore,node,search,callers
 
 Each also has a CLI equivalent (`codegraph node` / `query` / `callers` / `callees` / `impact` / `files` / `status`) for scripts and non-MCP harnesses.
 
+## Project release
+
+`codegraph_release` is a destructive lifecycle tool and is disabled by default. Enable it explicitly:
+
+```bash
+CODEGRAPH_MCP_TOOLS=explore,release
+```
+
+Call it with the selected worktree or project root:
+
+```json
+{ "path": "/absolute/path/to/project-root" }
+```
+
+Use it immediately before deleting that worktree. It releases CodeGraph resources for the canonicalized root but does not remove the worktree. Never kill all Node or CodeGraph processes as cleanup: unrelated projects may still be active.
+
 ## How agents should use it
 
 CodeGraph *is* the pre-built search index. For "how does X work?", architecture, a flow ("how does X reach Y"), or where-is-X questions — and while editing code — an agent should answer with `codegraph_explore` and stop, typically with **zero file reads**, rather than re-deriving the answer with `grep` + `Read`. A direct CodeGraph answer is one to a few calls; a grep/read exploration is dozens.

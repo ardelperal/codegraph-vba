@@ -55,7 +55,7 @@ import {
   getDaemonSocketPath,
 } from './daemon-paths';
 import { CodeGraphPackageVersion } from './version';
-import { registerDaemon, deregisterDaemon } from './daemon-registry';
+import { registerDaemon, deregisterDaemon, hasActiveDaemonReleaseLease, releaseDaemonLifecycleLock, tryAcquireDaemonLifecycleLock } from './daemon-registry';
 
 /** Default idle linger after the last client disconnects. */
 const DEFAULT_IDLE_TIMEOUT_MS = 300_000;
@@ -128,7 +128,17 @@ export interface DaemonHello {
   codegraph: string; // package version (must match the proxy's own version)
   pid: number;       // daemon pid (informational; for `ps` debugging)
   socketPath: string; // echoed back so the proxy can log it
+  root: string;      // canonical project root this daemon owns
+  startedAt: number; // lock/registry generation, prevents PID-reuse mistakes
   protocol: 1;       // bump if the hello shape changes
+}
+
+export interface DaemonReleaseControl {
+  codegraph_control: 1;
+  action: 'release';
+  root: string;
+  pid: number;
+  startedAt: number;
 }
 
 /**
@@ -179,15 +189,29 @@ export class Daemon {
   private stopping = false;
   private socketPath: string;
   private pidPath: string;
+  private startedAt = 0;
+  private acquiredGeneration: DaemonLockInfo | null;
+  private listenSocket: ((socketPath: string, onConnection: (socket: net.Socket) => void) => Promise<net.Server>) | null;
+  private exit: (code: number) => void;
 
   constructor(
     private projectRoot: string,
-    opts: { idleTimeoutMs?: number; maxIdleMs?: number } = {},
+    opts: {
+      idleTimeoutMs?: number;
+      maxIdleMs?: number;
+      generation?: DaemonLockInfo;
+      listenSocket?: (socketPath: string, onConnection: (socket: net.Socket) => void) => Promise<net.Server>;
+      exit?: (code: number) => void;
+    } = {},
   ) {
     this.socketPath = getDaemonSocketPath(projectRoot);
     this.pidPath = getDaemonPidPath(projectRoot);
     this.idleTimeoutMs = opts.idleTimeoutMs ?? resolveIdleTimeoutMs();
     this.maxIdleMs = opts.maxIdleMs ?? resolveMaxIdleMs();
+    this.acquiredGeneration = opts.generation ?? null;
+    this.startedAt = this.acquiredGeneration?.startedAt ?? 0;
+    this.listenSocket = opts.listenSocket ?? null;
+    this.exit = opts.exit ?? ((code) => process.exit(code));
     // Daemon mode serves many concurrent clients on one event loop, so off-load
     // read-tool dispatch to a worker pool — otherwise concurrent explores
     // serialize and starve the MCP transport (clients time out). Direct mode
@@ -217,8 +241,9 @@ export class Daemon {
     // before each attempt — safe because we hold the lockfile, so no live daemon
     // owns it; without it `listen` would wedge on EADDRINUSE.
     const candidates = getDaemonSocketCandidates(this.projectRoot);
-    const listen = (socketPath: string): Promise<net.Server> =>
-      new Promise<net.Server>((resolve, reject) => {
+    const listen = (socketPath: string): Promise<net.Server> => {
+      if (this.listenSocket) return this.listenSocket(socketPath, (socket) => this.handleConnection(socket));
+      return new Promise<net.Server>((resolve, reject) => {
         if (process.platform !== 'win32') {
           try { fs.unlinkSync(socketPath); } catch { /* not-exists is fine */ }
         }
@@ -233,6 +258,7 @@ export class Daemon {
           resolve(server);
         });
       });
+    };
 
     let bound: { server: net.Server; socketPath: string };
     try {
@@ -268,8 +294,9 @@ export class Daemon {
       pid: process.pid,
       version: CodeGraphPackageVersion,
       socketPath: this.socketPath,
-      startedAt: Date.now(),
+      startedAt: this.acquiredGeneration?.startedAt ?? Date.now(),
     };
+    this.startedAt = lock.startedAt;
 
     // `tryAcquireDaemonLock` wrote the pidfile with the PREFERRED path (candidate
     // 0) before we knew which one would bind. If we relocated, rewrite it so the
@@ -348,7 +375,7 @@ export class Daemon {
     // POSIX exits here; Windows drains first (engine.stop() above began closing
     // the file watcher, and exiting mid-teardown aborts the process). See
     // finalizeDaemonExit / DAEMON_SHUTDOWN_BACKSTOP_MS.
-    finalizeDaemonExit(process.platform, (code) => process.exit(code));
+    finalizeDaemonExit(process.platform, this.exit);
   }
 
   private handleConnection(socket: net.Socket): void {
@@ -358,6 +385,8 @@ export class Daemon {
       codegraph: CodeGraphPackageVersion,
       pid: process.pid,
       socketPath: this.socketPath,
+      root: this.projectRoot,
+      startedAt: this.startedAt,
       protocol: 1,
     };
     socket.write(JSON.stringify(hello) + '\n');
@@ -366,7 +395,23 @@ export class Daemon {
     // peer pids, then hand the socket to the session. Fail-safe: any problem —
     // timeout, a non-hello first line, an early close — yields null pids and we
     // fall back to the socket-close lifecycle exactly as before (#692).
-    void readClientHello(socket).then((peers) => {
+    void readClientHello(socket).then((initial) => {
+      if (initial.control) {
+        const control = initial.control;
+        const accepted =
+          control.root === this.projectRoot &&
+          control.pid === process.pid &&
+          control.startedAt === this.startedAt;
+        if (!accepted) {
+          socket.end(JSON.stringify({ codegraph_control: 1, outcome: 'identity-mismatch' }) + '\n');
+          return;
+        }
+        socket.end(JSON.stringify({ codegraph_control: 1, outcome: 'releasing' }) + '\n', () => {
+          void this.stop('project release');
+        });
+        return;
+      }
+      const peers = initial.peers;
       const transport = new SocketTransport(socket);
       const session = new MCPSession(transport, this.engine, {
         explicitProjectPath: this.projectRoot,
@@ -552,11 +597,33 @@ export type AcquireResult =
  * widened). The race's worst case is two daemons briefly; on a single external
  * drive that's strictly better than the daemon never starting at all.
  */
-export function tryAcquireDaemonLock(projectRoot: string): AcquireResult {
+export function tryAcquireDaemonLock(
+  projectRoot: string,
+  options: { afterLifecycleAcquired?: () => void } = {},
+): AcquireResult {
+  const pidPath = getDaemonPidPath(projectRoot);
+  fs.mkdirSync(path.dirname(pidPath), { recursive: true });
+  const lifecycle = tryAcquireDaemonLifecycleLock(projectRoot);
+  if (!lifecycle) return { kind: 'taken', existing: null, pidPath };
+  try {
+    options.afterLifecycleAcquired?.();
+    return tryAcquireDaemonLockUnderLifecycle(projectRoot);
+  } finally {
+    releaseDaemonLifecycleLock(projectRoot, lifecycle);
+  }
+}
+
+function tryAcquireDaemonLockUnderLifecycle(projectRoot: string): AcquireResult {
   const pidPath = getDaemonPidPath(projectRoot);
   // Make sure the .codegraph/ directory exists — the daemon may be the first
   // thing to touch it on a fresh-clone-but-already-initialized checkout.
   fs.mkdirSync(path.dirname(pidPath), { recursive: true });
+
+  // Intentional release owns the root lifecycle through artifact cleanup.
+  // Every daemon startup passes here, so no successor can enter that interval.
+  if (hasActiveDaemonReleaseLease(projectRoot)) {
+    return { kind: 'taken', existing: null, pidPath };
+  }
 
   const info: DaemonLockInfo = {
     pid: process.pid,
@@ -591,7 +658,21 @@ export function tryAcquireDaemonLock(projectRoot: string): AcquireResult {
     try { fs.unlinkSync(tmp); } catch { /* temp already gone */ }
   }
 
-  if (acquired) return { kind: 'acquired', pidPath, info };
+  if (acquired) {
+    // Close the check→link race: release may claim the lifecycle after our first
+    // check but before the atomic daemon lock appears. Roll back only our exact
+    // generation and report contention instead of starting under a live lease.
+    if (hasActiveDaemonReleaseLease(projectRoot)) {
+      try {
+        const current = decodeLockInfo(fs.readFileSync(pidPath, 'utf8'));
+        if (current?.pid === info.pid && current.startedAt === info.startedAt && current.socketPath === info.socketPath) {
+          fs.unlinkSync(pidPath);
+        }
+      } catch { /* release cleanup may already have removed it */ }
+      return { kind: 'taken', existing: null, pidPath };
+    }
+    return { kind: 'acquired', pidPath, info };
+  }
 
   // Taken. Because the pidfile was link'd atomically it always holds a complete
   // record — `existing` is null only for a genuinely corrupt leftover, never a
@@ -792,13 +873,19 @@ export function peerIsDead(
  */
 function readClientHello(
   socket: net.Socket,
-): Promise<{ pid: number | null; hostPid: number | null }> {
+): Promise<{
+  peers: { pid: number | null; hostPid: number | null };
+  control: DaemonReleaseControl | null;
+}> {
   return new Promise((resolve) => {
     let chunks: Buffer[] = [];
     let total = 0;
     let settled = false;
     const finish = (
-      peers: { pid: number | null; hostPid: number | null },
+      initial: {
+        peers: { pid: number | null; hostPid: number | null };
+        control: DaemonReleaseControl | null;
+      },
       putBack?: Buffer,
     ) => {
       if (settled) return;
@@ -819,12 +906,12 @@ function readClientHello(
       socket.removeListener('close', onEnd);
       clearTimeout(timer);
       if (process.env.CODEGRAPH_MCP_DEBUG) {
-        process.stderr.write(`[mcp-debug] clientHello finish pid=${String(peers.pid)} putBack=${putBack ? putBack.length : 0} flowing=${String(socket.readableFlowing)}\n`);
+        process.stderr.write(`[mcp-debug] clientHello finish pid=${String(initial.peers.pid)} putBack=${putBack ? putBack.length : 0} flowing=${String(socket.readableFlowing)}\n`);
       }
       if (putBack && putBack.length > 0 && !socket.destroyed) {
         try { socket.unshift(putBack); } catch { /* stream already gone */ }
       }
-      resolve(peers);
+      resolve(initial);
     };
     const onData = (chunk: Buffer | string) => {
       const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
@@ -835,32 +922,57 @@ function readClientHello(
       if (nl === -1) {
         // No newline yet. If it's already too long to be a hello, it isn't one —
         // hand the bytes back as data; otherwise keep accumulating.
-        if (total > MAX_HELLO_LINE_BYTES) finish({ pid: null, hostPid: null }, all);
+        if (total > MAX_HELLO_LINE_BYTES) finish({ peers: { pid: null, hostPid: null }, control: null }, all);
         else chunks = [all];
         return;
       }
-      const peers = parseClientHelloLine(all.subarray(0, nl).toString('utf8'));
+      const line = all.subarray(0, nl).toString('utf8');
+      const control = parseReleaseControlLine(line);
+      if (control) {
+        finish({ peers: { pid: null, hostPid: null }, control });
+        return;
+      }
+      const peers = parseClientHelloLine(line);
       if (peers) {
         const tail = all.subarray(nl + 1);
-        finish(peers, tail.length > 0 ? tail : undefined);
+        finish({ peers, control: null }, tail.length > 0 ? tail : undefined);
       } else {
         // First line is not a client-hello (legacy/direct client) — hand the
         // whole buffer back so the transport sees the message verbatim.
-        finish({ pid: null, hostPid: null }, all);
+        finish({ peers: { pid: null, hostPid: null }, control: null }, all);
       }
     };
-    const onEnd = () => finish({ pid: null, hostPid: null });
+    const onEnd = () => finish({ peers: { pid: null, hostPid: null }, control: null });
     // On timeout, hand back whatever partial bytes accumulated — discarding
     // them would tear the first message the transport parses.
     const timer = setTimeout(() => {
       const partial = chunks.length === 0 ? undefined : (chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, total));
-      finish({ pid: null, hostPid: null }, partial);
+      finish({ peers: { pid: null, hostPid: null }, control: null }, partial);
     }, CLIENT_HELLO_TIMEOUT_MS);
     timer.unref?.();
     socket.on('data', onData);
     socket.on('error', onEnd);
     socket.on('close', onEnd);
   });
+}
+
+export function parseReleaseControlLine(line: string): DaemonReleaseControl | null {
+  let parsed: unknown;
+  try { parsed = JSON.parse(line); } catch { return null; }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const value = parsed as Record<string, unknown>;
+  if (
+    value.codegraph_control !== 1 || value.action !== 'release' ||
+    typeof value.root !== 'string' || typeof value.pid !== 'number' ||
+    typeof value.startedAt !== 'number'
+  ) return null;
+  return {
+    codegraph_control: 1,
+    action: 'release',
+    root: value.root,
+    pid: value.pid,
+    startedAt: value.startedAt,
+  };
 }
 
 /** Exported for test stubs that need to bound the hello-line read. */

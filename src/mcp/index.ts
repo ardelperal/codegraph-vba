@@ -379,7 +379,7 @@ export class MCPServer {
       const lock = tryAcquireDaemonLock(root);
 
       if (lock.kind === 'acquired') {
-        const daemon = new Daemon(root);
+        const daemon = new Daemon(root, { generation: lock.info });
         await daemon.start();
         this.daemon = daemon;
         this.mode = 'daemon';
@@ -452,7 +452,18 @@ export class MCPServer {
       }
       return null; // never bound — the proxy serves this session in-process
     };
-    await runLocalHandshakeProxy({ getDaemonSocket, makeEngine: () => new MCPEngine(), root });
+    await runLocalHandshakeProxy({
+      getDaemonSocket,
+      makeEngine: () => new MCPEngine(),
+      root,
+      releaseProject: async (target) => {
+        if (!this.daemonWatchdog) {
+          const { releaseDaemonAt } = await import('./daemon-registry');
+          return releaseDaemonAt(target);
+        }
+        return this.daemonWatchdog.release(target);
+      },
+    });
   }
 
   /** Standard SIGINT/SIGTERM handlers that route to our `stop()` (direct mode). */

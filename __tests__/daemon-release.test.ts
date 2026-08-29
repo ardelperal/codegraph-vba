@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Command } from 'commander';
 import * as fs from 'fs';
 import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { registerDaemonStopCommand, runDaemonStop } from '../src/bin/daemon-release';
 import { DaemonWatchdog } from '../src/mcp/daemon-watchdog';
 import { decodeLockInfo, getDaemonPidPath, getDaemonReleaseLeasePath, getDaemonReleaseRecoveryPath, getDaemonSocketCandidates } from '../src/mcp/daemon-paths';
 import { clearStaleDaemonLock, Daemon, tryAcquireDaemonLock } from '../src/mcp/daemon';
@@ -19,6 +21,8 @@ import {
   type ExpectedDaemon,
   type StopResult,
 } from '../src/mcp/daemon-registry';
+import { ProxyReleaseCoordinator, ProxyRequestBarrier } from '../src/mcp/proxy';
+import { getStaticTools, ToolHandler } from '../src/mcp/tools';
 
 function project(parent: string, name: string): string {
   const root = path.join(parent, name);
@@ -161,6 +165,33 @@ describe('project-scoped daemon release', () => {
     if (previousTools === undefined) delete process.env.CODEGRAPH_MCP_TOOLS;
     else process.env.CODEGRAPH_MCP_TOOLS = previousTools;
     fs.rmSync(temp, { recursive: true, force: true });
+  });
+
+  it('dispatches the CLI handler with the explicit root without reading dist', async () => {
+    const root = project(temp, 'cli');
+    let received = '';
+    const output = await runDaemonStop(root, async (pathArg) => {
+      received = pathArg;
+      return { root, pid: null, outcome: 'no-daemon' };
+    });
+    expect(received).toBe(root);
+    expect(JSON.parse(output)).toEqual({ root, pid: null, outcome: 'no-daemon' });
+  });
+
+  it('parses daemon stop --path through the same source registration used by the CLI', async () => {
+    const root = project(temp, 'cli-parser');
+    const program = new Command().exitOverride();
+    const daemon = program.command('daemon');
+    let received = '';
+    let output = '';
+    registerDaemonStopCommand(
+      daemon,
+      async (pathArg) => { received = pathArg; return JSON.stringify({ root: pathArg, outcome: 'no-daemon' }); },
+      (value) => { output = value; },
+    );
+    await program.parseAsync(['node', 'codegraph', 'daemon', 'stop', '--path', root]);
+    expect(received).toBe(root);
+    expect(JSON.parse(output)).toEqual({ root, outcome: 'no-daemon' });
   });
 
   it('authenticates daemon root and generation over the existing socket handshake', async () => {
@@ -478,4 +509,141 @@ describe('project-scoped daemon release', () => {
     expect(spawns).toBe(1);
   });
 
+  it('exposes opt-in destructive MCP metadata and typed idempotency', async () => {
+    const root = project(temp, 'mcp');
+    expect((await new ToolHandler(null).execute('codegraph_release', { path: root })).isError).toBe(true);
+    process.env.CODEGRAPH_MCP_TOOLS = 'explore,release';
+    const definition = getStaticTools().find((tool) => tool.name === 'codegraph_release');
+    expect(definition?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: true });
+    const result = await new ToolHandler(null).execute('codegraph_release', { path: root });
+    expect(JSON.parse(result.content[0]!.text)).toEqual({ root, pid: null, outcome: 'no-daemon' });
+  });
+
+  it('makes proxy release a barrier, deduplicates concurrent release, and rejects later calls', async () => {
+    const root = project(temp, 'proxy');
+    const coordinator = new ProxyReleaseCoordinator(root);
+    const writes: Record<string, unknown>[] = [];
+    let resolveRelease!: (value: StopResult) => void;
+    let calls = 0;
+    const release = () => { calls++; return new Promise<StopResult>((resolve) => { resolveRelease = resolve; }); };
+    const message = (id: number, name: string) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: { path: root } } });
+
+    expect(coordinator.handle(message(1, 'codegraph_release'), true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+    expect(coordinator.getState()).toBe('releasing');
+    expect(coordinator.handle(message(2, 'codegraph_release'), true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+    expect(coordinator.handle(message(3, 'codegraph_explore'), true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls).toBe(1);
+    resolveRelease({ root, pid: 7, outcome: 'released' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(coordinator.getState()).toBe('released');
+    const releaseResponses = writes.filter((value) => {
+      const result = value.result as { content?: Array<{ text?: string }> } | undefined;
+      const text = result?.content?.[0]?.text;
+      if (!text || !text.startsWith('{')) return false;
+      return JSON.parse(text).outcome === 'released';
+    });
+    expect(releaseResponses).toHaveLength(2);
+    expect(JSON.stringify(writes)).toContain('no longer accepts project calls');
+    expect(coordinator.handle(message(4, 'codegraph_explore'), true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+  });
+
+  it('does not intercept proxy release when the tool is not opted in', () => {
+    const root = project(temp, 'proxy-opt-in');
+    const coordinator = new ProxyReleaseCoordinator(root);
+    const handled = coordinator.handle(
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codegraph_release', arguments: { path: root } } },
+      false,
+      async () => ({ root, pid: null, outcome: 'no-daemon' }),
+      () => { throw new Error('must not write'); },
+    );
+    expect(handled).toBe(false);
+    expect(coordinator.getState()).toBe('active');
+  });
+
+  it('drains an unresolved earlier request before release and rejects later requests synchronously', async () => {
+    const root = project(temp, 'proxy-drain');
+    let finishEarlier!: () => void;
+    const earlier = new Promise<void>((resolve) => { finishEarlier = resolve; });
+    const coordinator = new ProxyReleaseCoordinator(root, () => earlier);
+    const writes: Record<string, unknown>[] = [];
+    let releaseCalls = 0;
+    const release = async (): Promise<StopResult> => {
+      releaseCalls++;
+      return { root, pid: 9, outcome: 'released' };
+    };
+    const releaseMessage = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'codegraph_release', arguments: { path: root } } };
+    const laterMessage = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'codegraph_explore', arguments: { query: 'x' } } };
+
+    expect(coordinator.handle(releaseMessage, true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+    expect(coordinator.getState()).toBe('releasing');
+    expect(coordinator.handle(laterMessage, true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+    expect(releaseCalls).toBe(0);
+    expect(JSON.stringify(writes)).toContain('no longer accepts project calls');
+    finishEarlier();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(releaseCalls).toBe(1);
+    expect(coordinator.getState()).toBe('released');
+  });
+
+  it('drains a real pending-before-connect request after it transitions to inflight', async () => {
+    const root = project(temp, 'proxy-pending');
+    const barrier = new ProxyRequestBarrier();
+    const coordinator = new ProxyReleaseCoordinator(root, () => barrier.drain());
+    const earlier = JSON.stringify({ jsonrpc: '2.0', id: 41, method: 'tools/call', params: { name: 'codegraph_explore' } });
+    barrier.buffer(earlier);
+    const sent: string[] = [];
+    const writes: Record<string, unknown>[] = [];
+    let releaseCalls = 0;
+    const release = async (): Promise<StopResult> => {
+      releaseCalls++;
+      return { root, pid: 9, outcome: 'released' };
+    };
+    const releaseMessage = { jsonrpc: '2.0', id: 42, method: 'tools/call', params: { name: 'codegraph_release', arguments: { path: root } } };
+    const laterMessage = { jsonrpc: '2.0', id: 43, method: 'tools/call', params: { name: 'codegraph_explore', arguments: { query: 'later' } } };
+
+    expect(coordinator.handle(releaseMessage, true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+    expect(coordinator.handle(laterMessage, true, release, (value) => writes.push(value as Record<string, unknown>))).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(releaseCalls).toBe(0);
+    expect(barrier.pendingCount()).toBe(1);
+    barrier.flush((line) => sent.push(line));
+    expect(sent).toEqual([earlier]);
+    expect(barrier.pendingCount()).toBe(0);
+    expect(barrier.inflightCount()).toBe(1);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(releaseCalls).toBe(0);
+    barrier.settle(41);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(releaseCalls).toBe(1);
+    expect(JSON.stringify(writes)).toContain('no longer accepts project calls');
+  });
+
+  it('keys concurrent owned and foreign releases independently', async () => {
+    const owned = project(temp, 'proxy-owned');
+    const foreign = project(temp, 'proxy-foreign');
+    const coordinator = new ProxyReleaseCoordinator(owned);
+    const resolvers = new Map<string, (result: StopResult) => void>();
+    const calls: string[] = [];
+    const release = (root: string) => {
+      calls.push(root);
+      return new Promise<StopResult>((resolve) => resolvers.set(root, resolve));
+    };
+    const write = () => { /* response shape is covered by the owned release test */ };
+    const message = (id: number, root: string) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'codegraph_release', arguments: { path: root } } });
+
+    expect(coordinator.handle(message(1, owned), true, release, write)).toBe(true);
+    expect(coordinator.handle(message(2, foreign), true, release, write)).toBe(true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(new Set(calls)).toEqual(new Set([owned, foreign]));
+    expect(coordinator.getState(owned)).toBe('releasing');
+    expect(coordinator.getState(foreign)).toBe('releasing');
+    resolvers.get(foreign)!({ root: foreign, pid: 2, outcome: 'released' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(coordinator.getState(foreign)).toBe('released');
+    expect(coordinator.getState(owned)).toBe('releasing');
+    resolvers.get(owned)!({ root: owned, pid: 1, outcome: 'released' });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(coordinator.getState(owned)).toBe('released');
+  });
 });

@@ -32,6 +32,7 @@ import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { getStaticTools } from './tools';
 import { getTelemetry, ClientInfo } from '../telemetry';
 import type { MCPEngine } from './engine';
+import { canonicalDaemonRoot, canonicalDaemonRootKey } from './daemon-registry';
 
 /** Default poll cadence for the PPID watchdog (same as the direct server). */
 const DEFAULT_PPID_POLL_MS = 5000;
@@ -187,6 +188,149 @@ function sendClientHello(socket: net.Socket): void {
 
 type JsonRpc = Record<string, unknown>;
 
+type ProxyWrite = (obj: JsonRpc | string) => void;
+
+/** Tracks request order across the proxy's pending-before-connect and in-flight phases. */
+export class ProxyRequestBarrier {
+  private readonly pending: string[] = [];
+  private readonly inflight = new Map<unknown, string>();
+  private readonly drainWaiters = new Set<() => void>();
+
+  private track(line: string): void {
+    try {
+      const message = JSON.parse(line) as JsonRpc;
+      if (message.id !== undefined && typeof message.method === 'string' && message.method !== 'initialize') {
+        this.inflight.set(message.id, line);
+      }
+    } catch { /* unparseable requests cannot participate in response ordering */ }
+  }
+
+  private requestId(line: string): unknown {
+    try { return (JSON.parse(line) as JsonRpc).id; } catch { return undefined; }
+  }
+
+  private resolveDrain(): void {
+    if (this.pending.length !== 0 || this.inflight.size !== 0) return;
+    for (const resolve of this.drainWaiters) resolve();
+    this.drainWaiters.clear();
+  }
+
+  buffer(line: string): void {
+    this.pending.push(line);
+  }
+
+  forward(line: string, send: (line: string) => void): void {
+    this.track(line);
+    send(line);
+  }
+
+  flush(send: (line: string) => void): void {
+    for (const line of this.pending.splice(0)) this.forward(line, send);
+    this.resolveDrain();
+  }
+
+  settle(id: unknown): void {
+    this.inflight.delete(id);
+    this.resolveDrain();
+  }
+
+  settleLine(line: string): void {
+    const id = this.requestId(line);
+    if (id !== undefined) this.settle(id);
+    else this.resolveDrain();
+  }
+
+  inflightLines(): string[] {
+    return [...this.inflight.values()];
+  }
+
+  pendingCount(): number { return this.pending.length; }
+  inflightCount(): number { return this.inflight.size; }
+
+  drain(): Promise<void> {
+    if (this.pending.length === 0 && this.inflight.size === 0) return Promise.resolve();
+    return new Promise((resolve) => this.drainWaiters.add(resolve));
+  }
+}
+
+/** Per-proxy barrier for intentional release of the project this session owns. */
+export class ProxyReleaseCoordinator {
+  private readonly entries = new Map<string, {
+    state: 'releasing' | 'released';
+    promise: Promise<unknown>;
+    result?: unknown;
+  }>();
+  private readonly sessionKey: string;
+
+  constructor(
+    sessionRoot: string,
+    private readonly drainEarlierRequests: () => Promise<void> = () => Promise.resolve(),
+  ) {
+    this.sessionKey = canonicalDaemonRootKey(sessionRoot);
+  }
+
+  getState(root?: string): 'active' | 'releasing' | 'released' {
+    const key = root ? canonicalDaemonRootKey(root) : this.sessionKey;
+    return this.entries.get(key)?.state ?? 'active';
+  }
+
+  handle(
+    msg: JsonRpc,
+    enabled: boolean,
+    releaseProject: ((root: string) => Promise<unknown>) | undefined,
+    write: ProxyWrite,
+  ): boolean {
+    if (msg.method !== 'tools/call' || msg.id === undefined) return false;
+    const params = (msg.params || {}) as { name?: string; arguments?: Record<string, unknown> };
+    if (params.name !== 'codegraph_release') {
+      const state = this.getState();
+      if (state === 'active') return false;
+      write({ jsonrpc: '2.0', id: msg.id, result: {
+        isError: true,
+        content: [{ type: 'text', text: `Error: project release ${state}; this proxy no longer accepts project calls` }],
+      } });
+      return true;
+    }
+    if (!enabled || !releaseProject) return false;
+    const requested = params.arguments?.path;
+    if (typeof requested !== 'string' || requested.length === 0) {
+      write({ jsonrpc: '2.0', id: msg.id, result: { isError: true, content: [{ type: 'text', text: 'Error: path must be a non-empty string' }] } });
+      return true;
+    }
+    let canonicalTarget: string;
+    let targetKey: string;
+    try {
+      canonicalTarget = canonicalDaemonRoot(requested);
+      targetKey = canonicalDaemonRootKey(canonicalTarget);
+    } catch (err) {
+      write({ jsonrpc: '2.0', id: msg.id, result: { isError: true, content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }] } });
+      return true;
+    }
+    const existing = this.entries.get(targetKey);
+    if (existing?.state === 'released') {
+      write({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: JSON.stringify(existing.result) }] } });
+      return true;
+    }
+    const ownsTarget = targetKey === this.sessionKey;
+    let current = existing?.promise;
+    if (!current) {
+      // Insert the releasing tombstone synchronously; only then await older work.
+      current = Promise.resolve()
+        .then(() => ownsTarget ? this.drainEarlierRequests() : undefined)
+        .then(() => releaseProject(canonicalTarget));
+      this.entries.set(targetKey, { state: 'releasing', promise: current });
+    }
+    void current.then((result) => {
+      this.entries.set(targetKey, { state: 'released', promise: current!, result });
+      write({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } });
+    }, (err) => {
+      this.entries.set(targetKey, { state: 'released', promise: current! });
+      write({ jsonrpc: '2.0', id: msg.id, result: { isError: true, content: [{ type: 'text', text: `Error: ${err instanceof Error ? err.message : String(err)}` }] } });
+    });
+    return true;
+  }
+}
+
 /** Dependencies the local-handshake proxy needs, injected by MCPServer (which
  *  owns the daemon-spawn machinery and the engine factory). */
 export interface LocalHandshakeDeps {
@@ -198,6 +342,8 @@ export interface LocalHandshakeDeps {
   makeEngine(): MCPEngine;
   /** Project root for the fallback engine's lazy init. */
   root: string;
+  /** Release one root locally so the proxy can suppress watchdog respawn first. */
+  releaseProject?(root: string): Promise<unknown>;
 }
 
 /**
@@ -221,7 +367,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   // the daemon are counted by the daemon's own session (which receives the
   // forwarded initialize, clientInfo included), never double-counted here.
   let telemetryClient: ClientInfo | undefined;
-  const pending: string[] = [];            // client lines buffered until the daemon resolves
+  const requestBarrier = new ProxyRequestBarrier();
   let engine: MCPEngine | null = null;
   let engineReady: Promise<void> | null = null;
   let shuttingDown = false;
@@ -229,15 +375,6 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   // If the daemon dies mid-session (#662 — e.g. an MCP host SIGTERM's it when a
   // new session starts), these would otherwise hang forever; we re-serve them
   // in-process so the host always gets a reply.
-  const inflight = new Map<unknown, string>();
-  const trackInflight = (line: string): void => {
-    try {
-      const m = JSON.parse(line) as JsonRpc;
-      if (m && m.id !== undefined && typeof m.method === 'string' && m.method !== 'initialize') {
-        inflight.set(m.id, line);
-      }
-    } catch { /* unparseable — nothing we could re-serve anyway */ }
-  };
 
   const writeClient = (obj: JsonRpc | string): void => {
     try { process.stdout.write((typeof obj === 'string' ? obj : JSON.stringify(obj)) + '\n'); } catch { /* host gone */ }
@@ -278,16 +415,20 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
   };
   const routeToDaemon = (line: string): void => {
     if (daemonStatus === 'ready' && daemonSocket) {
-      trackInflight(line);
       if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] proxy->daemon ${line.slice(0, 80)}\n`);
-      try { daemonSocket.write(line.endsWith('\n') ? line : line + '\n'); } catch { /* close path */ }
+      requestBarrier.forward(line, (request) => {
+        try { daemonSocket!.write(request.endsWith('\n') ? request : request + '\n'); } catch { /* close path */ }
+      });
     } else if (daemonStatus === 'failed') {
-      void handleLocally(line);
+      requestBarrier.forward(line, (request) => {
+        void handleLocally(request).finally(() => requestBarrier.settleLine(request));
+      });
     } else {
       if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] proxy-buffer(${daemonStatus}) ${line.slice(0, 80)}\n`);
-      pending.push(line);
+      requestBarrier.buffer(line);
     }
   };
+  const releaseCoordinator = new ProxyReleaseCoordinator(deps.root, () => requestBarrier.drain());
 
   // ---- client (stdin) ----
   let stdinBuf = '';
@@ -321,6 +462,14 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
         writeClient({ jsonrpc: '2.0', id: msg.id, result: { resourceTemplates: [] } });
       } else if (msg.method === 'prompts/list') {
         writeClient({ jsonrpc: '2.0', id: msg.id, result: { prompts: [] } });
+      } else if (msg.method === 'tools/call') {
+        const handled = releaseCoordinator.handle(
+          msg,
+          getStaticTools().some((tool) => tool.name === 'codegraph_release'),
+          deps.releaseProject,
+          writeClient,
+        );
+        if (!handled) routeToDaemon(line);
       } else {
         routeToDaemon(line);
       }
@@ -368,7 +517,7 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
         try { resp = JSON.parse(line) as JsonRpc; } catch { /* not JSON — relay verbatim */ }
         if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] daemon->proxy ${line.slice(0, 80)}\n`);
         if (resp && resp.id !== undefined && ('result' in resp || 'error' in resp)) {
-          inflight.delete(resp.id); // answered — no longer in flight
+          requestBarrier.settle(resp.id); // answered — no longer in flight
           // Suppress the daemon's reply to the initialize we forwarded to prime it
           // (the client already got the local handshake response).
           if (clientInitId !== undefined && resp.id === clientInitId) continue;
@@ -387,25 +536,25 @@ export async function runLocalHandshakeProxy(deps: LocalHandshakeDeps): Promise<
       try { daemonSocket?.destroy(); } catch { /* ignore */ }
       daemonSocket = null;
       process.stderr.write(
-        `[CodeGraph MCP] Shared daemon connection lost; serving this session in-process (degraded), re-serving ${inflight.size} in-flight request(s).\n`
+        `[CodeGraph MCP] Shared daemon connection lost; serving this session in-process (degraded), re-serving ${requestBarrier.inflightCount()} in-flight request(s).\n`
       );
-      const orphaned = [...inflight.values()];
-      inflight.clear();
-      for (const line of orphaned) void handleLocally(line);
+      const orphaned = requestBarrier.inflightLines();
+      for (const line of orphaned) {
+        void handleLocally(line).finally(() => requestBarrier.settleLine(line));
+      }
     };
     socket.on('close', onDaemonLost);
     socket.on('error', onDaemonLost);
-    for (const line of pending) {
-      trackInflight(line);
+    requestBarrier.flush((line) => {
       if (process.env.CODEGRAPH_MCP_DEBUG) process.stderr.write(`[mcp-debug] proxy-flush ${line.slice(0, 80)}\n`);
       try { socket.write(line + '\n'); } catch { /* ignore */ }
-    }
-    pending.length = 0;
+    });
   } else if (!shuttingDown) {
     daemonStatus = 'failed';
     process.stderr.write('[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n');
-    const buffered = pending.splice(0);
-    for (const line of buffered) await handleLocally(line);
+    requestBarrier.flush((line) => {
+      void handleLocally(line).finally(() => requestBarrier.settleLine(line));
+    });
   }
 
   await new Promise<void>(() => { /* stdin keeps the loop alive; exit via shutdown() */ });

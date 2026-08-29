@@ -93,6 +93,21 @@ export function getDaemonPidPath(projectRoot: string): string {
   return path.join(getCodeGraphDir(projectRoot), 'daemon.pid');
 }
 
+/** Root-scoped lease held while intentional release owns lifecycle cleanup. */
+export function getDaemonReleaseLeasePath(projectRoot: string): string {
+  return path.join(getCodeGraphDir(projectRoot), 'daemon.release');
+}
+
+/** Exclusive marker for release-lease recovery/heartbeat publication. */
+export function getDaemonReleaseRecoveryPath(projectRoot: string): string {
+  return path.join(getCodeGraphDir(projectRoot), 'daemon.release.recovery');
+}
+
+/** Short root-scoped arbitration lock shared by startup and release publication. */
+export function getDaemonLifecyclePath(projectRoot: string): string {
+  return path.join(getCodeGraphDir(projectRoot), 'daemon.lifecycle');
+}
+
 /** Structured contents of the pid lockfile. */
 export interface DaemonLockInfo {
   pid: number;

@@ -21,7 +21,8 @@ codegraph callers <symbol>        # Find what calls a function/method (--limit, 
 codegraph callees <symbol>        # Find what a function/method calls (--limit, --json)
 codegraph impact <symbol>         # Analyze what code is affected by changing a symbol (--depth, --json)
 codegraph affected [files...]     # Find test files affected by changes (see below)
-codegraph daemon                  # Manage background daemons — pick one to stop (alias: daemons)
+codegraph daemon                  # Manage background daemons (alias: daemons)
+codegraph daemon stop --path <project-root> # Release one project's daemon resources
 codegraph telemetry [on|off]      # Show or change anonymous usage telemetry
 codegraph upgrade [version]       # Update to the latest release (--check, --force)
 codegraph version                 # Print the installed version (also -v, --version)
@@ -49,3 +50,13 @@ codegraph impact AuthMiddleware --depth 3
 ## affected
 
 Traces import dependencies transitively to find which test files are affected by changed source files. See [Affected Tests in CI](/codegraph/guides/affected-tests/) for options and a CI example.
+
+## daemon stop
+
+Release CodeGraph resources for one project before deleting its worktree:
+
+```bash
+codegraph daemon stop --path <project-root>
+```
+
+The command is non-interactive and releases only the canonical project root selected by `--path`. It does not remove the worktree or affect CodeGraph daemons for unrelated projects.

@@ -26,6 +26,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Calls into Access and VBA built-ins no longer create thousands of phantom symbols that show up in search results and node counts. (#245)
 - Class setup and teardown routines in Access class modules are now recognised; the previous check looked for a constructor spelling that only exists in VB.NET, so it never matched real VBA code. (#248)
 - VBA references mentioned only inside messages, logs, and other string literals no longer create false form, query, or temporary-variable relationships. (#209)
 - VBA SQL extraction now ignores reserved words exposed by dynamic table-name concatenation instead of emitting misleading table references. (#203)

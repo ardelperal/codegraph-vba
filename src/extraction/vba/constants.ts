@@ -96,38 +96,9 @@ export function isVbaKeyword(name: string): boolean {
 }
 
 /**
- * Access runtime objects and singletons. Calls on these receivers are
- * real VBA calls but the targets are NOT user-defined modules or
- * classes — they're Access/DAO/ADO runtime types. Synthesizing a
- * `function` node for each would pollute the graph with ~20+ junk
- * nodes per real-world file (audit W4, June 2026). Skip synthesis
- * for any receiver or member in this set.
- *
- * Note: `DoCmd.RunSQL`, `DoCmd.OpenForm`, etc. still get SQL/edge
- * tracking via the dedicated `SQL_WRAPPERS` regex path (REQ-CODE-8),
- * which fires BEFORE this scan and uses its own dispatch — so
- * blacklisting DoCmd here doesn't lose the SQL-flow edges.
+ * Access runtime objects and singletons whose calls the call-site scans drop
+ * outright. Issue #245 collapsed this literal into the canonical
+ * `RUNTIME_OBJECT_DEFS` in `./runtime-objects.ts`; it is re-exported here so
+ * every existing `from './constants'` import keeps working unchanged.
  */
-export const RUNTIME_RECEIVER_BLACKLIST = new Set([
-  // Form / page references
-  'Screen',
-  // Access application singletons
-  'Application',
-  'DoCmd',
-  'SysCmd',
-  // VBA debugging intrinsic — Debug.Print / Debug.Assert
-  'Debug',
-  // Access object collections
-  'Forms',
-  'Reports',
-  'Modules',
-  'References',
-  'CommandBars',
-  // Error-handling intrinsic
-  'Err',
-  // Late-binding factories (return IDispatch — not user code)
-  'CreateObject',
-  'GetObject',
-  // DAO/ADO recordset field collection access (e.g. rcdDatos.Fields("ID"))
-  'Fields',
-]);
+export { RUNTIME_RECEIVER_BLACKLIST } from './runtime-objects';

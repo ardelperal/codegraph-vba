@@ -296,16 +296,39 @@ export function splitSingleLineIfClauses(line: string): string[] {
 }
 
 /**
- * H1: detect a statement-form Sub call (`MySub`, `MySub arg1, x`,
- * `Call MySub arg1`). Returns the called proc name, or null for
- * declarations, assignments, comments, keyword lines, and the paren form
- * (handled by CALL_RE).
+ * Issue #265: the outcome of `detectStatementCall`.
+ *
+ * `unambiguous` records whether the *syntax* of the statement can only be a
+ * procedure call:
+ *
+ *  - `Call MySub`   — the `Call` keyword is only valid on a procedure.
+ *  - `MySub 1, 2`   — a constant cannot take an argument list.
+ *  - `MySub`        — AMBIGUOUS: a bare identifier is equally a `Const` read.
+ *
+ * The call sweep uses this to pick the unresolved-reference kind: `calls` for
+ * the two unambiguous shapes, `unqualified-ident` for the bare read (the
+ * bucket the const-first disambiguation rule of issue #108 / FR-3.1 needs).
  */
-export function detectStatementCall(line: string): string | null {
+export interface StatementCall {
+  /** The called procedure name (the leading identifier). */
+  name: string;
+  /** True when the `Call` keyword or an argument list rules out a Const read. */
+  unambiguous: boolean;
+}
+
+/**
+ * H1: detect a statement-form Sub call (`MySub`, `MySub arg1, x`,
+ * `Call MySub arg1`). Returns the called proc name plus its syntactic
+ * unambiguity (issue #265), or null for declarations, assignments,
+ * comments, keyword lines, and the paren form (handled by CALL_RE).
+ */
+export function detectStatementCall(line: string): StatementCall | null {
   let trimmed = line.trimStart();
   if (!trimmed) return null;
-  // Strip `Call ` keyword if present — same call shape after.
-  if (/^Call\s/i.test(trimmed)) {
+  // Strip `Call ` keyword if present — same call shape after. Issue #265:
+  // remember that it was there; `Call X` cannot be a Const read.
+  const hasCallKeyword = /^Call\s/i.test(trimmed);
+  if (hasCallKeyword) {
     trimmed = trimmed.replace(/^Call\s+/i, '');
   }
   // Skip comment lines.
@@ -320,7 +343,7 @@ export function detectStatementCall(line: string): string | null {
   // `MySub(...)` is parens-form and already handled by CALL_RE.
   if (rest.startsWith('(')) return null;
   // Bare `MySub` is a valid no-argument statement-form Sub call.
-  if (rest.length === 0) return procName;
+  if (rest.length === 0) return { name: procName, unambiguous: hasCallKeyword };
   const nextCh = trimmed.charAt(procName.length);
   if (nextCh !== ' ' && nextCh !== '\t') return null;
   const args = rest.trimStart();
@@ -328,7 +351,9 @@ export function detectStatementCall(line: string): string | null {
   // argument expressions because named arguments use `:=` and comparisons can
   // appear in expressions.
   if (args.startsWith('=')) return null;
-  return procName;
+  // Issue #265: `args` is measured AFTER trimming, so `MySub   ` (trailing
+  // whitespace only) stays the ambiguous bare-identifier shape.
+  return { name: procName, unambiguous: hasCallKeyword || args.length > 0 };
 }
 
 /**

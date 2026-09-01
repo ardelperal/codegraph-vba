@@ -184,6 +184,29 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
 ];
 
 /**
+ * A colon-separated single-line procedure (`Sub Foo(): Bar 1: End Sub`)
+ * carries its body on the declaration line. Split everything after the first
+ * `:` into statement clauses so the per-line scanners see the body instead of
+ * the `Sub Foo()` signature. `scanLine` must already be string-masked.
+ *
+ * Issue #265: extracted from the classifier body so it can be applied to both
+ * masks (spaces for the column-sensitive scanners, `_` for the statement-call
+ * detectors) without duplicating the split.
+ */
+function splitProcStartBodyClauses(scanLine: string): string[] {
+  const colon = scanLine.indexOf(':');
+  if (colon < 0) return [];
+  return scanLine
+    .slice(colon + 1)
+    .split(':')
+    .map((clause) => clause.trim())
+    .filter(
+      (clause) =>
+        clause.length > 0 && !/^End\s+(?:Sub|Function|Property)\b/i.test(clause),
+    );
+}
+
+/**
  * Issue #83: factory for the calls/SQL classifier. The factory takes the
  * pre-split `lines` array (so `trackSqlVariableAssignment` can do its
  * multi-line look-ahead for `&`-accumulate semantics) and closes over the
@@ -254,15 +277,21 @@ export function createCallsAndSqlClassifier(
       // mistakenly treated as call sites.  SQL scanning still uses the original
       // line because SQL lives INSIDE string literals.
       const callScanLine = maskStringContent(line);
-      const procStartColon = procStart ? callScanLine.indexOf(':') : -1;
+      // Issue #265: the statement-form detectors run on a SECOND mask that
+      // fills string literals with `_` instead of spaces. The two lines are
+      // character-for-character the same length and differ only inside
+      // literals, but the space mask reduces `MsgBox "x"` to `MsgBox` plus
+      // trailing blanks — indistinguishable from a bare identifier read, and
+      // therefore from a possible `Const` read. The `_` mask keeps the
+      // argument list visible so the detector can tell a syntactically
+      // unambiguous call from an ambiguous bare identifier, while still
+      // hiding every literal's contents from the parser.
+      const stmtScanLine = maskStringContent(line, '_');
       const procStartBodyClauses = procStart
-        ? procStartColon < 0
-          ? []
-          : callScanLine
-            .slice(procStartColon + 1)
-            .split(':')
-            .map((clause) => clause.trim())
-            .filter((clause) => clause.length > 0 && !/^End\s+(?:Sub|Function|Property)\b/i.test(clause))
+        ? splitProcStartBodyClauses(callScanLine)
+        : null;
+      const stmtProcStartBodyClauses = procStart
+        ? splitProcStartBodyClauses(stmtScanLine)
         : null;
 
       // Issue #153: dispatch the declarative RULES table on the
@@ -319,7 +348,10 @@ export function createCallsAndSqlClassifier(
         // dispatched by the RULES table above. The factory body below
         // focuses on the procedural call-site scans that don't
         // reduce to a single regex.
-        const clauseLines = procStartBodyClauses ?? splitSingleLineIfClauses(callScanLine);
+        // Issue #265: the statement/qualified/`With` detectors read the `_`
+        // mask so an argument list made only of string literals stays visible.
+        const clauseLines =
+          stmtProcStartBodyClauses ?? splitSingleLineIfClauses(stmtScanLine);
         for (const clauseLine of clauseLines) {
           const stmtCall = detectStatementCall(clauseLine);
           if (stmtCall) {
@@ -327,19 +359,26 @@ export function createCallsAndSqlClassifier(
             // Returns true when a same-file calls edge was emitted; false
             // when the call was silenced (blacklist / runtime receiver /
             // unresolvable same-file target).
-            const emitted = emitStatementCallEdge(ctx, caller, stmtCall, lineNum);
+            const emitted = emitStatementCallEdge(ctx, caller, stmtCall.name, lineNum);
             // Round-3 (issue #108): if the statement-form Sub call did
-            // NOT resolve, surface it as an `unqualified-ident` unresolved
-            // reference. The const-first disambiguation rule (FR-3.1)
-            // ensures Const reads do not pollute the call bucket — when
-            // `stmtCall` resolves to a known Const, we still surface it as
-            // `unqualified-ident` (NOT `call`) because that's the
-            // unambiguous shape of a bare-ident read.
-            if (!emitted && stmtCall !== caller.name && !isVbaKeyword(stmtCall)) {
+            // NOT resolve, surface it as an unresolved reference. The
+            // const-first disambiguation rule (FR-3.1) keeps ambiguous
+            // bare-identifier reads out of the call bucket — a lone
+            // `HayErrorEnRiesgo` is equally a `Const` read, so it stays
+            // `unqualified-ident`.
+            //
+            // Issue #265: the two shapes that CANNOT be a Const read —
+            // `Call Escribir` (the keyword is only valid on a procedure)
+            // and `Escribir 1, 2` (a constant takes no argument list) —
+            // are syntactically unambiguous calls and carry the canonical
+            // `calls` kind instead, the same literal a resolved call edge
+            // uses. The row itself is unchanged in every other respect, so
+            // the two kinds only trade rows between them.
+            if (!emitted && stmtCall.name !== caller.name && !isVbaKeyword(stmtCall.name)) {
               ctx.unresolvedReferences.push({
                 fromNodeId: ctx.findOrCreateFunctionNodeId(caller),
-                referenceName: stmtCall,
-                referenceKind: 'unqualified-ident',
+                referenceName: stmtCall.name,
+                referenceKind: stmtCall.unambiguous ? 'calls' : 'unqualified-ident',
                 line: lineNum,
                 column: 0,
                 filePath: ctx.filePath,

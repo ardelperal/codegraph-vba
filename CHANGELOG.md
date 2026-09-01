@@ -26,6 +26,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- VBA: a call written with the `Call` keyword, or with an argument list, is now reported as a call rather than as an ambiguous bare-identifier read, so a genuinely missing procedure is no longer filtered out by the constant-lookup rules meant for plain identifier reads. A bare name with no `Call` keyword and no arguments still counts as an identifier read, because it really can be a constant. (#265)
 - Calls into Access and VBA built-ins no longer create thousands of phantom symbols that show up in search results and node counts. (#245)
 - Class setup and teardown routines in Access class modules are now recognised; the previous check looked for a constructor spelling that only exists in VB.NET, so it never matched real VBA code. (#248)
 - VBA references mentioned only inside messages, logs, and other string literals no longer create false form, query, or temporary-variable relationships. (#209)

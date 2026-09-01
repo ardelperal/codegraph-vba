@@ -374,10 +374,16 @@ describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
           ? (JSON.parse(row.metadata) as { synthesizedBy?: string }).synthesizedBy
           : undefined,
       }));
+    // Issue #265: `MsgBox "hi"` and `Shell "calc.exe"` carry an argument
+    // list, so their syntax rules out a `Const` read and they now carry the
+    // canonical `calls` kind. Bare `DoEvents` stays `unqualified-ident`.
+    // The point of this test is unchanged and still holds: all three are
+    // `declined-runtime`, because the stdlib gate accepts both the
+    // statement-call stamp and the `calls` kind.
     expect(runtimeRows).toEqual([
       {
         name: 'MsgBox',
-        kind: 'unqualified-ident',
+        kind: 'calls',
         status: 'declined-runtime',
         synthesizedBy: 'vba-statement-call-unresolved',
       },
@@ -389,7 +395,7 @@ describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
       },
       {
         name: 'Shell',
-        kind: 'unqualified-ident',
+        kind: 'calls',
         status: 'declined-runtime',
         synthesizedBy: 'vba-statement-call-unresolved',
       },

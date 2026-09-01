@@ -1,0 +1,24 @@
+Version =21
+VersionRequired =20
+Checksum =-123456789
+Begin Form
+    Caption ="Lifecycle"
+    Width =7000
+    Height =4000
+    Begin CommandButton
+        Name ="cmdSave"
+        Caption ="Guardar"
+        Left =500
+        Top =500
+        Width =1500
+        Height =400
+    End
+    Begin Label
+        Name ="lblTitulo"
+        Caption ="Ciclo de vida"
+        Left =500
+        Top =100
+        Width =3000
+        Height =300
+    End
+End

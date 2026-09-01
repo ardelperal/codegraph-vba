@@ -29,9 +29,14 @@ const extractors = { VbaExtractor, VbaFormExtractor, SqlQueryExtractor };
 
 /**
  * `modProbe.bas` — 3 declared procedures. `SaveRecord` reaches a same-file
- * call (`CalcTotal`), a synthesized stub (`VBA.DoEvents`), an `opens-form`
- * edge (`DoCmd.OpenForm`), a `vba-sql-table` edge (`tblExpediente`) and a
- * second stub (`CurrentDb.Execute`). `Idle` deliberately reaches nothing.
+ * call (`CalcTotal`), a synthesized stub (`modShared.Ping`), an `opens-form`
+ * edge (`DoCmd.OpenForm`) and a `vba-sql-table` edge (`tblExpediente`).
+ * `Idle` deliberately reaches nothing.
+ *
+ * The `VBA.DoEvents` and `CurrentDb.Execute` lines are runtime-object calls:
+ * since #245 they synthesize NO node, which is why the only stub here names a
+ * user module. Keeping them in the fixture pins that gate — if either ever
+ * starts minting a node again, `stubProcedures` moves and this suite fails.
  */
 const BAS_SOURCE = [
   'Attribute VB_Name = "modProbe"',
@@ -41,6 +46,7 @@ const BAS_SOURCE = [
   '    Dim total As Long',
   '    total = CalcTotal()',
   '    VBA.DoEvents',
+  '    modShared.Ping',
   '    DoCmd.OpenForm "FormMain"',
   '    CurrentDb.Execute "UPDATE tblExpediente SET Estado = 1"',
   'End Sub',
@@ -56,9 +62,10 @@ const BAS_SOURCE = [
 
 /**
  * `Riesgo.cls` — 1 Sub + 1 Property Get (both land as `function` nodes),
- * plus two more stubs (`Collection.Add`, a second `VBA.DoEvents`). The
- * second `VBA.DoEvents` is what proves stub counting is per-file: node ids
- * are file-scoped, so the same stub name in two files is two nodes.
+ * plus a second `modShared.Ping` stub. That repeat is what proves stub
+ * counting is per-file: node ids are file-scoped, so the same stub name in
+ * two files is two nodes. `items.Add` and `VBA.DoEvents` are runtime-object
+ * calls and synthesize nothing (#245).
  */
 const CLS_SOURCE = [
   'Attribute VB_Name = "Riesgo"',
@@ -68,6 +75,7 @@ const CLS_SOURCE = [
   '    Dim items As New Collection',
   '    items.Add 1',
   '    VBA.DoEvents',
+  '    modShared.Ping',
   'End Sub',
   '',
   'Public Property Get Nombre() As String',
@@ -129,21 +137,32 @@ describe('vba-coverage-probe', () => {
 
     // 5 declared: SaveRecord, CalcTotal, Idle (.bas) + Registrar, Nombre (.cls).
     expect(report.declaredProcedures).toBe(5);
-    // 4 stubs: VBA.DoEvents x2 (one node per file), CurrentDb.Execute,
-    // Collection.Add.
-    expect(report.stubProcedures).toBe(4);
+    // 2 stubs: modShared.Ping x2, one node per file. The runtime-object
+    // calls in the same fixtures (`VBA.DoEvents` x2, `CurrentDb.Execute`,
+    // `items.Add` on a `New Collection`) contribute none since #245.
+    expect(report.stubProcedures).toBe(2);
     // The whole point: the two buckets are disjoint and both are
-    // `kind: 'function'`. Counting kind alone would report 9.
-    expect(report.declaredProcedures + report.stubProcedures).toBe(9);
-    expect(report.nodesByKind.function).toBe(9);
+    // `kind: 'function'`. Counting kind alone would report 7.
+    expect(report.declaredProcedures + report.stubProcedures).toBe(7);
+    expect(report.nodesByKind.function).toBe(7);
     expect(report.declaredProcedures).not.toBe(report.nodesByKind.function);
+  });
+
+  it('runtime-object receivers contribute no stub nodes (#245)', async () => {
+    const report = await runProbe([tmpDir], { extractors });
+
+    // Every stub in the fixture set names a user module. Nothing named after
+    // a VBA/Access runtime object reaches `nodes` at all.
+    expect(report.stubTargetsTop.map((t: { name: string }) => t.name)).toEqual([
+      'modShared.Ping',
+    ]);
   });
 
   it('reports exact node counts by kind', async () => {
     const report = await runProbe([tmpDir], { extractors });
 
     expect(report.nodesByKind).toEqual({
-      function: 9,
+      function: 7,
       class: 4,
       file: 3,
       'form-instance-control': 2,
@@ -158,13 +177,15 @@ describe('vba-coverage-probe', () => {
 
     expect(report.edgesByKind).toEqual({
       contains: 7,
-      calls: 5,
+      calls: 3,
       references: 3,
       'opens-form': 1,
     });
     expect(report.edgesBySynthesizer).toEqual({
       '(none)': 8,
-      'vba-name-resolution': 5,
+      // 2 stub `calls` edges + the `Dim items As New Collection` class
+      // `references` edge, which carries the same synthesizer tag.
+      'vba-name-resolution': 3,
       'vba-opens-form': 1,
       'vba-record-source': 1,
       'vba-sql-table': 1,
@@ -182,11 +203,7 @@ describe('vba-coverage-probe', () => {
   it('ranks stub targets by count, ties broken by name', async () => {
     const report = await runProbe([tmpDir], { extractors });
 
-    expect(report.stubTargetsTop).toEqual([
-      { name: 'VBA.DoEvents', count: 2 },
-      { name: 'Collection.Add', count: 1 },
-      { name: 'CurrentDb.Execute', count: 1 },
-    ]);
+    expect(report.stubTargetsTop).toEqual([{ name: 'modShared.Ping', count: 2 }]);
   });
 
   it('reports distinct SQL tables and forms reached', async () => {
@@ -224,7 +241,7 @@ describe('vba-coverage-probe', () => {
     expect(report.files.skippedByExtension).toEqual({ '.md': 1 });
     // The skipped file must not perturb any measurement.
     expect(report.declaredProcedures).toBe(5);
-    expect(report.stubProcedures).toBe(4);
+    expect(report.stubProcedures).toBe(2);
   });
 
   it('dispatches a .sql file to SqlQueryExtractor', async () => {
@@ -253,9 +270,9 @@ describe('vba-coverage-probe', () => {
 
     expect(md).toContain('# VBA coverage probe');
     expect(md).toContain('| declared procedures (no `metadata.stub`) | 5 |');
-    expect(md).toContain('| stub function nodes (`metadata.stub === true`) | 4 |');
-    expect(md).toContain('| `function` nodes total | 9 |');
-    expect(md).toContain('| `VBA.DoEvents` | 2 |');
+    expect(md).toContain('| stub function nodes (`metadata.stub === true`) | 2 |');
+    expect(md).toContain('| `function` nodes total | 7 |');
+    expect(md).toContain('| `modShared.Ping` | 2 |');
   });
 });
 

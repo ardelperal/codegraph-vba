@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- A form's own lifecycle handlers — what runs when it opens, loads or closes — now connect to the form in the graph, the same way a button's click handler already did. (#247)
+
 ### Changed
 
 - Project-scoped CodeGraph resources can now be released non-interactively through the CLI or the opt-in MCP tool before deleting a worktree, without stopping unrelated projects. (#234)
@@ -23,6 +27,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixes
 
 - VBA: a call written with the `Call` keyword, or with an argument list, is now reported as a call rather than as an ambiguous bare-identifier read, so a genuinely missing procedure is no longer filtered out by the constant-lookup rules meant for plain identifier reads. A bare name with no `Call` keyword and no arguments still counts as an identifier read, because it really can be a constant. (#265)
+- Calls into Access and VBA built-ins no longer create thousands of phantom symbols that show up in search results and node counts. (#245)
 - Class setup and teardown routines in Access class modules are now recognised; the previous check looked for a constructor spelling that only exists in VB.NET, so it never matched real VBA code. (#248)
 - VBA references mentioned only inside messages, logs, and other string literals no longer create false form, query, or temporary-variable relationships. (#209)
 - VBA SQL extraction now ignores reserved words exposed by dynamic table-name concatenation instead of emitting misleading table references. (#203)

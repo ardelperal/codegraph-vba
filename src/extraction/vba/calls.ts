@@ -11,6 +11,7 @@ import {
   CALL_KEYWORD_BLACKLIST,
   RUNTIME_RECEIVER_BLACKLIST,
 } from './constants';
+import { isRuntimeObject } from './runtime-objects';
 import { VbaExtractorContext, ProcInfo } from './context';
 
 /**
@@ -190,6 +191,16 @@ export function scanCallSites(
         continue;
       }
       const receiverType = ctx.resolveReceiverType(receiver);
+      // Issue #245: a call whose RESOLVED receiver type is a VBA/Access
+      // runtime object (`Dim c As New Collection` → `Collection.Add`,
+      // `VBA.DoEvents`, `fso.FileExists`) can never name user code. The
+      // resolver already declines to repoint these edges
+      // (`repointDecision: 'declined-runtime'`), but the stub NODE was
+      // created anyway and leaked into symbol search and node counts.
+      // Gate BEFORE `generateNodeId` so no node and no `calls` edge is
+      // born. Nothing else changes: this branch never pushed an
+      // `UnresolvedReference`, so `unresolvedByKind` is untouched.
+      if (isRuntimeObject(receiverType)) continue;
       const qualified = `${receiverType}.${member}`;
       // Avoid emitting duplicate edges for the same call (within a line).
       const dedupeKey = `${from.name}->${qualified}@${lineNum}`;
@@ -440,6 +451,11 @@ export function emitQualifiedStatementCallEdge(
   // resolve to their class name; undeclared receivers stay as raw module-name
   // candidates.
   const receiverType = ctx.resolveReceiverType(receiver);
+  // Issue #245 — same runtime-object node gate as the paren-form path in
+  // `scanCallSites`. Statement-form `Call VBA.DoEvents` / `col.Add x` must
+  // not synthesize a stub node either. No `UnresolvedReference` was emitted
+  // on this path before, and none is emitted now.
+  if (isRuntimeObject(receiverType)) return;
   const qualified = `${receiverType}.${member}`;
   const dedupeKey = `${caller.name}->${qualified}@${lineNum}`;
   if (ctx.callDedupe.has(dedupeKey)) return;

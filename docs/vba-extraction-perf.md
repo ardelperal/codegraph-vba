@@ -230,6 +230,80 @@ node scripts/parse-vba-timing-stderr.mjs run1-init-stderr.log run2-index-stderr.
 
 The original `00_VBA_TOOLKIT_BENCH\.codegraph-vba\` index is **not** modified by any of these steps — every indexer run targets the temp copy.
 
+## Coverage probe
+
+This report measures **how long** extraction takes. `scripts/vba-coverage-probe.mjs` measures **what extraction finds** — the node/edge/stub census that every acceptance criterion in [`docs/vba-node-discovery-plan.md`](vba-node-discovery-plan.md) is written against ("stub nodes drop by >= 3,800", "table references rise"). The roadmap audit used a throwaway script; without a committed one, none of those criteria is verifiable and no PR can prove it landed a win rather than a regression.
+
+```bash
+npm run probe:vba -- <root> [<root> ...]          # markdown report on stdout
+npm run probe:vba -- --json <root> [<root> ...]   # machine-readable
+npx tsx scripts/vba-coverage-probe.mjs <root>     # same thing, no npm wrapper
+```
+
+The probe imports `VbaExtractor`, `VbaFormExtractor` and `SqlQueryExtractor` **directly** — no index, no SQLite, no CLI, no `codegraph.json`. It walks the given roots, dispatches by extension the way `extractFromSource` does (`.bas`/`.cls`/`.frm`/`.dsr` → `VbaExtractor`, `.form.txt`/`.report.txt` → `VbaFormExtractor`, `.sql` → `SqlQueryExtractor`), aggregates, and prints. `src/` is the source of truth; `dist/` is used only when `src/` is absent, so a stale build can never silently change a measurement.
+
+### The stub discriminator
+
+A synthesized call target and a declared procedure are **both** `kind: 'function'` and **both** carry `visibility: 'public'`. The only discriminator is `metadata.stub === true`, set in `src/extraction/vba/calls.ts`.
+
+Counting `kind === 'function'` alone reads the reference corpus as **9,972 procedures instead of 3,840** — a 2.6x inflation that silently corrupts every later measurement. `__tests__/vba-coverage-probe.test.ts` pins this with `counts the stub discriminator, not just kind === function`.
+
+### Reported fields
+
+Adding a field later is fine. **Removing one breaks comparability with earlier runs.**
+
+| Field | Meaning |
+| --- | --- |
+| `files` | total files dispatched, by extension (plus `total` walked and `skipped`) |
+| `nodesByKind` | `{ [kind]: count }` |
+| `declaredProcedures` | `function` nodes **without** `metadata.stub` |
+| `stubProcedures` | `function` nodes **with** `metadata.stub` |
+| `stubTargetsTop` | top 30 stub node names by count |
+| `edgesByKind` | `{ [kind]: count }` |
+| `edgesBySynthesizer` | `{ [metadata.synthesizedBy]: count }` |
+| `unresolvedByKind` | `{ [referenceKind]: count }` |
+| `sqlTablesReferenced` | distinct table names reached via `vba-sql-table` |
+| `formsReferenced` | distinct form names reached via `opens-form` edges and `vba-form-binding` references |
+| `proceduresWithNoOutgoing` | declared procedures with zero outgoing edges and zero unresolved references |
+| `errors` | extraction errors by `code` |
+
+Stub node ids are file-scoped, so the same stub name in two files counts twice — that is deliberate and matches how the indexer stores them.
+
+### Baseline — 2026-09-01
+
+Measured over `00_EXPEDIENTES\src` + `00_GESTION_RIESGOS\src` (355 files walked, 354 dispatched; the one skipped file is `queries/queries.json`, which no extractor claims):
+
+```bash
+npx tsx scripts/vba-coverage-probe.mjs \
+  "C:/00repos/codigo/00_EXPEDIENTES/src" \
+  "C:/00repos/codigo/00_GESTION_RIESGOS/src"
+```
+
+| | |
+|---|--:|
+| declared procedures | 3 840 |
+| stub function nodes | 6 132 |
+| `function` nodes total | 9 972 |
+| `property` | 2 668 |
+| `form-instance-control` | 2 485 |
+| `class` (210 real + 1 368 synthetic) | 1 578 |
+| `form-layout` (107 real + 101 `opens-form` stubs) | 208 |
+| edges `calls` / `contains` / `references` | 8 322 / 6 248 / 4 969 |
+| `event-handler` / `opens-form` | 695 / 126 |
+| unresolved `calls` / `references` / `member-with` | 7 679 / 2 057 / 1 488 |
+| distinct SQL tables (`vba-sql-table`) | 69 |
+| distinct forms (`opens-form` / form refs) | 132 |
+| declared procedures with no outgoing | 710 |
+| extraction errors | 0 |
+
+> **Two deltas vs. the table in issue #242.** That table reads `class` 1 577 and `references` 4 968. Both are exactly one lower because the roadmap audit's throwaway script never dispatched the corpus' single `.sql` file. `00_EXPEDIENTES\src\queries` alone yields `class: 1`, `query: 1`, `references: 1`, `sql-query-table: 1` — the whole difference. The committed probe keeps the `.sql` dispatch (issue #242's own "Proposed fix" requires `SqlQueryExtractor`, and the roadmap's saved-query tasks need that layer visible), so **1 578 / 4 969 is the number to compare future runs against**, not 1 577 / 4 968. Every other row reproduces the audit exactly.
+
+### Reproducing
+
+The corpora are private Access exports and are **not** in this repo, so the baseline above is not reproducible from a clean clone. What *is* committed and reproducible is the instrument: `__tests__/vba-coverage-probe.test.ts` writes one `.bas`, one `.cls` and one `.form.txt` into a temp dir and pins the probe's exact output over them, so a change in extraction behaviour fails a test rather than quietly moving a roadmap number.
+
 ## See also
 
 - [`docs/vba-reference-kinds.md`](vba-reference-kinds.md) — the 7 `reference_kind` literals each per-stage classifier above emits (and the noise-ratio benchmarks that bound acceptable v1.13.0 residuals).
+- [`docs/vba-node-discovery-plan.md`](vba-node-discovery-plan.md) — the roadmap whose acceptance criteria the coverage probe above measures.
+- [`docs/vba-error-handling-plan.md`](vba-error-handling-plan.md) — the error-handling companion plan to the node-discovery roadmap.

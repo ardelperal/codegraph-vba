@@ -1,3 +1,8 @@
+import {
+  RUNTIME_OBJECTS as CANONICAL_RUNTIME_OBJECTS,
+  isRuntimeObject as canonicalIsRuntimeObject,
+} from '../extraction/vba/runtime-objects';
+
 /**
  * Canonical list of VBA/Access runtime objects and singletons whose
  * `Receiver.Member` calls are NEVER user-defined code — DAO, FileSystemObject
@@ -18,49 +23,27 @@
  * only falls back to this list when no real target exists, so a shadow
  * declaration is repointed exactly like any other real symbol (FR-2.1).
  *
- * NOTE — this is complementary to, NOT a duplicate of, the VBA extractor's
- * own `RUNTIME_RECEIVER_BLACKLIST` (`src/extraction/vba/constants.ts`). That
- * set is case-sensitive PascalCase and suppresses stub SYNTHESIS for the
- * common receivers at extraction time; this set is lowercased and catches the
- * runtime-object stubs that still reached the graph (lowercase receivers,
- * `Dim x As DAO.*` typed locals whose receiver survives as raw text, etc.).
- * The extractor blacklist deliberately stays untouched (AC-4: `src/extraction`
- * has 0 diff); the two layers are independent by design.
+ * Issue #245 — this used to be a SECOND literal, complementary to the VBA
+ * extractor's `RUNTIME_RECEIVER_BLACKLIST`. The two drifted: the extractor
+ * list omitted `VBA`, `fso`, `Collection` and `ListBox`, so those receivers
+ * kept synthesizing stub function NODES even though the resolver already
+ * declined their edges. Both sets now derive from one literal in
+ * `src/extraction/vba/runtime-objects.ts` (a leaf module — `src/extraction`
+ * must not import from `src/resolution`, so the canonical set lives on the
+ * extraction side and is re-exported here). Every existing
+ * `from '../src/resolution/vba-runtime-objects'` import keeps working.
  *
  * Entries are lowercased so matching is case-insensitive against a stub's
  * receiver.
  */
-export const RUNTIME_OBJECTS: ReadonlySet<string> = new Set<string>([
-  'dao',
-  'fso',
-  'err',
-  'listbox',
-  'combobox',
-  'textbox',
-  'forms',
-  'reports',
-  'debug',
-  'collection',
-  'vba',
-  'application',
-  'screen',
-  'docmd',
-  'currentdb',
-  'currentproject',
-  'codedata',
-  'codeproject',
-]);
+export const RUNTIME_OBJECTS: ReadonlySet<string> = CANONICAL_RUNTIME_OBJECTS;
 
 /**
  * True iff `receiver` (any case) names a known VBA/Access runtime object.
  * Leading/trailing brackets and surrounding whitespace are stripped
  * defensively so a bracketed receiver (`[DAO]`) still matches.
  */
-export function isRuntimeObject(receiver: string | null | undefined): boolean {
-  if (!receiver) return false;
-  const key = receiver.replace(/^\[/, '').replace(/\]$/, '').trim().toLowerCase();
-  return RUNTIME_OBJECTS.has(key);
-}
+export const isRuntimeObject = canonicalIsRuntimeObject;
 
 /** Canonical VBA and Access built-in functions that never resolve to project code. */
 const VBA_STDLIB_FUNCTIONS: ReadonlySet<string> = new Set([

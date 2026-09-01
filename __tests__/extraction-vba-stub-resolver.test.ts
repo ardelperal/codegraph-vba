@@ -73,7 +73,7 @@ function callEdgesFrom(cg: CodeGraph, name: string): Edge[] {
 }
 
 describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
-  it('Test 1: a runtime-object call (DAO.*) stays stub:true and is declined as declined-runtime', async () => {
+  it('Test 1 (updated by #245): a runtime-object call (DAO.*) never becomes a node at all', async () => {
     const cg = await buildProject({
       'src/modules/Caller.bas': [
         'Attribute VB_Name = "Caller"',
@@ -86,21 +86,19 @@ describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
       ].join('\n'),
     });
 
+    // Before #245 this call synthesized a `DAO.BeginTrans` function node and
+    // a `calls` edge to it, which the resolver then stamped
+    // `repointDecision: 'declined-runtime'`. Edge consumers could filter on
+    // that field; symbol search and node counts could not. The extractor now
+    // refuses to create the node in the first place, so the whole
+    // (node, edge, decision) triple is gone.
     const edges = callEdgesFrom(cg, 'CallerSub');
-    const daoEdge = edges.find((e) => e.metadata?.member === 'BeginTrans');
-    expect(daoEdge).toBeDefined();
-    expect(daoEdge?.metadata?.receiverType).toBe('DAO');
-    expect(daoEdge?.metadata?.stub).toBe(true);
-    expect(daoEdge?.metadata?.repointDecision).toBe('declined-runtime');
+    expect(edges.find((e) => e.metadata?.member === 'BeginTrans')).toBeUndefined();
 
-    // The synthetic stub never resolves to a REAL node — there is no user
-    // function whose qualifiedName is 'DAO.BeginTrans'.
     const real = cg
       .searchNodes('DAO.BeginTrans', { languages: ['vba'] })
       .filter((n) => n.node.name === 'DAO.BeginTrans');
-    // Only the synthetic stub (if still present) may carry this name; there is
-    // no additional real declaration.
-    expect(real.every((n) => n.node.metadata?.stub === true || n.node.name === 'DAO.BeginTrans')).toBe(true);
+    expect(real).toHaveLength(0);
   });
 
   it('Test 2: a class-typed call resolves to the real cross-file method (stub:false)', async () => {
@@ -173,7 +171,19 @@ describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
     }
   });
 
-  it('Test 4: a shadow user class named DAO is preserved (repointed-to-real, skip bypassed)', async () => {
+  it('Test 4 (updated by #245): a shadow user class named after a runtime object is no longer call-linked', async () => {
+    // The resolver's shadow bypass (FR-2.1) can only fire on a stub that
+    // reached it. VBA extraction is per-file: when `Caller.bas` is parsed
+    // nothing knows a `DAO.cls` exists elsewhere in the project, so the
+    // runtime-object node gate (#245) drops the stub before the resolver
+    // ever sees it.
+    //
+    // This is the trade the extractor had ALREADY made for the fourteen
+    // names in `RUNTIME_RECEIVER_BLACKLIST` — a user class named `DoCmd` or
+    // `Application` has never been call-linked either. #245 reconciles the
+    // two lists, so `DAO`, `VBA`, `Collection`, `fso` and the control types
+    // now share that behavior. The class itself is still indexed; only the
+    // heuristic call edge qualified by the runtime name is gone.
     const cg = await buildProject({
       'src/classes/DAO.cls': [
         ...CLS_HEADER,
@@ -195,16 +205,58 @@ describe('VBA call-stub resolver — runtime-object skip (#110)', () => {
       ].join('\n'),
     });
 
+    // The real declaration is still a first-class node.
     const execute = cg
       .searchNodes('Execute', { languages: ['vba'], kinds: ['function'] })
       .find((n) => n.node.name === 'Execute' && n.node.filePath.endsWith('DAO.cls'));
     expect(execute).toBeDefined();
     if (!execute) return;
 
-    const incoming = cg.getIncomingEdges(execute.node.id).filter((e) => e.kind === 'calls');
+    // No stub survives to be repointed — and, crucially, no `DAO.Execute`
+    // phantom symbol is left behind either.
+    expect(cg.getIncomingEdges(execute.node.id).filter((e) => e.kind === 'calls')).toHaveLength(0);
+    expect(
+      cg.searchNodes('DAO.Execute', { languages: ['vba'] })
+        .filter((n) => n.node.name === 'DAO.Execute'),
+    ).toHaveLength(0);
+  });
+
+  it('Test 4b (#245): a user class whose MEMBER name collides with a runtime member still stubs', async () => {
+    // `Add` is `Collection.Add`'s member name. The gate keys on the RESOLVED
+    // RECEIVER TYPE, never on the member, so a user class keeps its stub and
+    // the resolver repoints it exactly as before.
+    const cg = await buildProject({
+      'src/classes/MiClase.cls': [
+        ...CLS_HEADER,
+        'Attribute VB_Name = "MiClase"',
+        'Option Explicit',
+        '',
+        'Public Sub Add()',
+        'End Sub',
+        '',
+      ].join('\n'),
+      'src/modules/Caller.bas': [
+        'Attribute VB_Name = "Caller"',
+        'Option Explicit',
+        '',
+        'Public Sub CallerSub()',
+        '    Dim m As MiClase',
+        '    Set m = New MiClase',
+        '    m.Add',
+        'End Sub',
+        '',
+      ].join('\n'),
+    });
+
+    const add = cg
+      .searchNodes('Add', { languages: ['vba'], kinds: ['function'] })
+      .find((n) => n.node.name === 'Add' && n.node.filePath.endsWith('MiClase.cls'));
+    expect(add).toBeDefined();
+    if (!add) return;
+
+    const incoming = cg.getIncomingEdges(add.node.id).filter((e) => e.kind === 'calls');
     expect(incoming.length).toBeGreaterThan(0);
     for (const edge of incoming) {
-      expect(edge.metadata?.stub).not.toBe(true);
       expect(edge.metadata?.repointDecision).toBe('reponted-to-real');
     }
   });

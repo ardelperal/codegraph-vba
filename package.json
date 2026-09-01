@@ -25,6 +25,7 @@
     "eval": "npm run build && npx tsx __tests__/evaluation/runner.ts",
     "schema:dump": "tsx scripts/dump-index-schema.ts",
     "spike:vbnet": "node scripts/spike-vbnet-as-vba.mjs",
+    "probe:vba": "tsx scripts/vba-coverage-probe.mjs",
     "clean": "node -e \"const fs=require('fs');fs.rmSync('dist',{recursive:true,force:true})\""
   },
   "keywords": [

@@ -22,26 +22,35 @@ export function foldVisibility(raw: string): 'public' | 'private' {
  * call-site patterns inside `"..."` spans are invisible to CALL_RE and
  * the statement-form detectors.  Column positions are preserved (each
  * character is replaced 1-for-1) so any col-based metadata stays correct.
+ *
+ * Issue #265: `filler` selects the replacement character. The default `' '`
+ * is what every column-sensitive scanner wants — a masked literal reads as
+ * blank space. The statement-call detectors need the opposite: they must
+ * still be able to tell `MsgBox "x"` (an argument list, therefore
+ * unambiguously a call) from a bare `MsgBox` read, and a space-masked line
+ * collapses the two. Passing `'_'` keeps the literal *visible* as an opaque
+ * token while preserving both the 1-for-1 column mapping and the property
+ * that nothing inside the literal can be parsed as VBA syntax.
  */
-export function maskStringContent(line: string): string {
+export function maskStringContent(line: string, filler: string = ' '): string {
   let result = '';
   let i = 0;
   while (i < line.length) {
     const ch = line[i]!;
     if (ch === '"') {
-      result += ' '; // opening quote masked
+      result += filler; // opening quote masked
       i++;
       while (i < line.length) {
         const c = line[i]!;
         if (c === '"' && line[i + 1] === '"') {
-          result += '  '; // doubled-quote escape masked (2 chars)
+          result += filler + filler; // doubled-quote escape masked (2 chars)
           i += 2;
         } else if (c === '"') {
-          result += ' '; // closing quote masked
+          result += filler; // closing quote masked
           i++;
           break;
         } else {
-          result += ' '; // string content → space
+          result += filler; // string content → filler
           i++;
         }
       }

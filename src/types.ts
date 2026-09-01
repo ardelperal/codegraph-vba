@@ -370,7 +370,11 @@ export interface ExtractionError {
  * layer. The legacy `EdgeKind` literal `'references'` is preserved as
  * `references` here via `EdgeKind` — back-compat for any push site this
  * round does not reclassify (e.g. the Implements emitter). New literals:
- *   - `calls`            paren-form `Name(...)` or statement-form Sub call
+ *   - `calls`            paren-form `Name(...)`, or a statement-form Sub call
+ *                        whose syntax rules out a `Const` read (issue #265):
+ *                        `Call Escribir` (the `Call` keyword is only valid on
+ *                        a procedure) and `Escribir 1, 2` (a constant takes no
+ *                        argument list)
  *   - `qualified-call`   `Receiver.Member(...)` (qualified-paren) or
  *                        `Receiver.Member args` (qualified-statement)
  *   - `property-get`     `Me.Name` (dot access, read)
@@ -378,9 +382,13 @@ export interface ExtractionError {
  *   - `bang-get`         `Me!SubCtl` (bang read) or
  *                        `Forms!FormX!Ctl` / `Forms("FormX")!Ctl` (cross-form)
  *   - `bang-set`         `Me!SubCtl = value` (bang assignment)
- *   - `unqualified-ident` bare identifier without `(` after; default for
+ *   - `unqualified-ident` bare identifier with no `(` after it, no `Call`
+ *                        keyword and no argument list; default for
  *                        `HayErrorEnRiesgo`-style hits — Const-read takes
- *                        priority via FR-3.1 disambiguation
+ *                        priority via FR-3.1 disambiguation. That shape is
+ *                        genuinely ambiguous between a no-argument Sub call
+ *                        and a `Const` read, which is why it stays here while
+ *                        the two unambiguous statement forms are `calls`
  *   - `member-with`      `.Member` inside a `With <receiver>` block
  *   - `dao-query`        `DoCmd.OpenQuery "X"` argument
  * `dao-field-get` / `dao-field-set` are deliberately deferred to round-4.

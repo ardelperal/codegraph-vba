@@ -22,6 +22,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- VBA: a call written with the `Call` keyword, or with an argument list, is now reported as a call rather than as an ambiguous bare-identifier read, so a genuinely missing procedure is no longer filtered out by the constant-lookup rules meant for plain identifier reads. A bare name with no `Call` keyword and no arguments still counts as an identifier read, because it really can be a constant. (#265)
 - VBA references mentioned only inside messages, logs, and other string literals no longer create false form, query, or temporary-variable relationships. (#209)
 - VBA SQL extraction now ignores reserved words exposed by dynamic table-name concatenation instead of emitting misleading table references. (#203)
 - VBA continued statements are now parsed as one logical line while retaining their original source locations, restoring class references, qualified calls, procedure headers, and API declarations split with line continuations. (#202)

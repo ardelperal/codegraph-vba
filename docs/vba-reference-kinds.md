@@ -124,9 +124,24 @@ rows; it never adds or removes one, so the **combined** total and the
 **combined** `failed` count of the two kinds are invariant — which is exactly
 what the measurement below is for. The `00_VBA_TOOLKIT_BENCH` corpus that
 produced the v1.13.0 table above is no longer available, so the two affected
-rows were re-measured on a full index of two production Access projects
-(246 `.bas` / `.cls` modules, indexed as two separate projects). Every other
-kind came out identical before and after and is omitted.
+rows were re-measured on two production Access projects (246 `.bas` / `.cls`
+modules). Every other kind came out identical before and after and is omitted.
+
+**Extractor output**, via the committed probe
+(`npm run probe:vba -- <root> ...`, see `scripts/vba-coverage-probe.mjs`):
+
+| `reference_kind`     | Emitted (before → after) |
+|----------------------|-------------------------:|
+| `calls`              |    7,679 → **8,976**      |
+| `unqualified-ident`  |    1,459 → **162**        |
+| **combined**         | **9,138 → 9,138**         |
+
+Every other line of the probe report — files, all node kinds, declared
+procedures, stub nodes, every edge kind and synthesizer, the top-30 stub
+targets, SQL tables, forms — is identical between the two runs.
+
+**After the resolver**, from a full index of the same two projects (indexed
+separately), which is what the `failed` column above measures:
 
 | `reference_kind`     | Total (before → after) | `failed` (before → after) | `failed` / total (after) |
 |----------------------|-----------------------:|--------------------------:|-------------------------:|

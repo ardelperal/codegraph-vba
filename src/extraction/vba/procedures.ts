@@ -11,8 +11,10 @@ import { Node, NodeKind, Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { PROC_RE, PRIMITIVE_TYPES } from './constants';
 import {
+  codeBehindExtFromVbName,
   parseEventHandlerName,
   parseFormLevelEventHandlerName,
+  type CodeBehindExt,
 } from './text-utils';
 import { ProcInfo, VbaClassifier } from './context';
 import { defineRule, runRules, VbaExtractionRule } from './rules';
@@ -83,7 +85,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
   defineRule({
     id: 'procedure',
     description:
-      'Match a `Sub` / `Function` / `Property Get|Let|Set <Name>(...) [As <Type>]` declaration; emit a function node, register the proc in `localProcs` / `functionNodeByName` / `functionNodeByStartLine` / `functionReturnTypes`, and (for `Form_*.cls` / `Report_*.cls`) synthesize an `event-handler` edge — to a `form-instance-control` stub for a control handler, or to the sibling `form-layout` / `report-layout` stub for a form-level lifecycle handler.',
+      'Match a `Sub` / `Function` / `Property Get|Let|Set <Name>(...) [As <Type>]` declaration; emit a function node, register the proc in `localProcs` / `functionNodeByName` / `functionNodeByStartLine` / `functionReturnTypes`, and (for code-behind whose filename or `VB_Name` carries the `Form_` / `Report_` prefix) synthesize an `event-handler` edge — to a `form-instance-control` stub for a control handler, or to the sibling `form-layout` / `report-layout` stub for a form-level lifecycle handler.',
     pattern: PROC_RE,
     emit: (m, ctx, line, lineNum) => {
       const visibilityRaw = (m[1] ?? '').trim();
@@ -233,21 +235,37 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       // Prefix-driven sibling binding (issue #41). Both `Form_*.cls` and
       // `Report_*.cls` Dysflow code-behind files share the same code path;
       // only the sibling extension differs (`.form.txt` vs `.report.txt`).
-      // The check is on the BASENAME prefix so a class called
-      // `FormularioVentas.cls` or `ReportingHelper.cls` (no trailing
-      // underscore) does not match — the trailing `_` is the discriminator.
-      // Any other `.cls` (e.g. `InformeRiesgoPDFServicio.cls` with methods
-      // like `GenerarHTML_Principal`) gets `codeBehindExt === null` and is
-      // skipped, preserving the original Form_-only guard's behaviour for
-      // non-form classes.
+      // The prefix test rejects a class called `FormularioVentas.cls` or
+      // `ReportingHelper.cls` (no trailing underscore) — the trailing `_` is
+      // the discriminator. A class that matches on NEITHER its filename nor
+      // its VB_Name (e.g. `InformeRiesgoPDFServicio.cls` with methods like
+      // `GenerarHTML_Principal`) gets `codeBehindExt === null` and is skipped,
+      // preserving the original Form_-only guard's behaviour for non-form
+      // classes.
       const basename = path.basename(ctx.filePath).toLowerCase();
-      const codeBehindExt = basename.startsWith('report_')
+      const basenameExt: CodeBehindExt | null = basename.startsWith('report_')
         ? '.report.txt'
         : basename.startsWith('form_')
           ? '.form.txt'
           : null;
+      // Issue #249: the basename above stays the fast path, but it is not the
+      // module's identity — `Attribute VB_Name` is. When a code-behind class
+      // is exported (or hand-renamed) to a filename that drops the prefix, the
+      // file still parses and still emits its procedures, so the form used to
+      // come out with no event wiring at all and nothing to show for it. Fall
+      // back to the resolved VB_Name (`ctx.classNamePrefix`) so the decision to
+      // bind follows the module, not the filename.
+      const codeBehindExt: CodeBehindExt | null =
+        basenameExt ?? codeBehindExtFromVbName(ctx.classNamePrefix);
+      // Non-null only when the two disagree, so the fast path's edge metadata
+      // is unchanged and a mismatch is diagnosable instead of invisible.
+      const bindingSource: 'vb-name' | null =
+        basenameExt === null && codeBehindExt !== null ? 'vb-name' : null;
       const isFormCodeBehind = codeBehindExt !== null;
       if (isFormCodeBehind) {
+        // The sibling path is still derived from the FILE path — that is where
+        // the `.form.txt` / `.report.txt` actually lives on disk, whatever the
+        // module calls itself. Only the decision to bind falls back to VB_Name.
         const siblingPath = ctx.filePath.replace(/\.cls$/i, codeBehindExt!);
         if (formLevelHandler) {
           // ---- Form-LEVEL event (issue #247). --------------------------
@@ -302,7 +320,13 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
             provenance: 'heuristic',
             // `scope: 'form'` lets consumers separate form-level from
             // control-level handlers without re-parsing the Sub name.
-            metadata: { eventName: formLevelHandler.eventName, scope: 'form' },
+            // `bindingSource` appears only when the filename and the module's
+            // VB_Name disagree (issue #249).
+            metadata: {
+              eventName: formLevelHandler.eventName,
+              scope: 'form',
+              ...(bindingSource ? { bindingSource } : {}),
+            },
             line: lineNum,
             column: 0,
           });
@@ -336,7 +360,10 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
             target: controlNodeId,
             kind: 'event-handler',
             provenance: 'heuristic',
-            metadata: { eventName: handler.eventName },
+            metadata: {
+              eventName: handler.eventName,
+              ...(bindingSource ? { bindingSource } : {}),
+            },
             line: lineNum,
             column: 0,
           });

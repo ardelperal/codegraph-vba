@@ -1121,6 +1121,12 @@ export class ReferenceResolver {
                 synthesizedBy: 'vba-me-control',
                 siblingPath: ref.original.metadata.siblingPath,
                 access: ref.original.metadata.access,
+                // Issue #249: only set when the code-behind's filename and
+                // its `Attribute VB_Name` disagree, so the resulting edge
+                // says why it bound instead of hiding the mismatch.
+                ...(ref.original.metadata.bindingSource
+                  ? { bindingSource: ref.original.metadata.bindingSource }
+                  : {}),
               }
             : {}),
         },

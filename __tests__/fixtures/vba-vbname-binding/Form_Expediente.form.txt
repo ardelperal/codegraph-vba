@@ -1,0 +1,30 @@
+Version =21
+VersionRequired =20
+Checksum =-987654321
+Begin Form
+    Caption ="Expediente"
+    Width =7000
+    Height =4000
+    Begin CommandButton
+        Name ="cmdGuardar"
+        Caption ="Guardar"
+        Left =500
+        Top =1200
+        Width =1500
+        Height =400
+    End
+    Begin ComboBox
+        Name ="cboUsuario"
+        Left =500
+        Top =600
+        Width =2000
+        Height =300
+    End
+    Begin TextBox
+        Name ="txtNombre"
+        Left =500
+        Top =100
+        Width =2000
+        Height =300
+    End
+End

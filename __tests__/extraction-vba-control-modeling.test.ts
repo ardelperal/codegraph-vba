@@ -308,9 +308,16 @@ describe('huecos 3 & 5: VBA event-handler and Form_Load integration', () => {
     if (!cg) return;
     const hits = cg.searchNodes('Form_Load', { languages: ['vba'] });
 
-    // Filter to function-kind hits (skip the file node and any incidental
-    // text matches in identifier bodies).
-    const fnHits = hits.filter((h) => h.node.kind === 'function');
+    // Filter to procedure-kind hits (skip the file node and any incidental
+    // text matches in identifier bodies). `searchNodes` reports a function
+    // that has an outgoing `event-handler` edge as kind `event-handler`
+    // rather than `function`; since issue #247 wired form-level lifecycle
+    // handlers to the sibling layout node, `Form_Load` is one of those, so
+    // both kinds have to be accepted here. The assertion below — the
+    // qualifiedName carries the owning form's prefix — is unchanged.
+    const fnHits = hits.filter(
+      (h) => h.node.kind === 'function' || h.node.kind === 'event-handler',
+    );
     expect(fnHits.length).toBeGreaterThan(0);
 
     // Every Form_Load hit must be qualified with its owning form:

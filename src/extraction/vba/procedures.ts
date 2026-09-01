@@ -2,13 +2,18 @@
  * Procedure sweep: emit one `function` node per `Sub` / `Function` /
  * `Property Get|Let|Set` declaration, record each proc in `localProcs` for
  * same-file call resolution, and synthesize the Access `<Control>_<Event>`
- * event-handler edge for form/report code-behind classes (hueco 3 / issue #41).
+ * event-handler edge for form/report code-behind classes (hueco 3 / issue #41),
+ * plus the form-level `Form_<Event>` / `Report_<Event>` lifecycle edge to the
+ * sibling layout node (issue #247).
  */
 import * as path from 'path';
-import { Node, Edge } from '../../types';
+import { Node, NodeKind, Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { PROC_RE, PRIMITIVE_TYPES } from './constants';
-import { parseEventHandlerName } from './text-utils';
+import {
+  parseEventHandlerName,
+  parseFormLevelEventHandlerName,
+} from './text-utils';
 import { ProcInfo, VbaClassifier } from './context';
 import { defineRule, runRules, VbaExtractionRule } from './rules';
 
@@ -78,7 +83,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
   defineRule({
     id: 'procedure',
     description:
-      'Match a `Sub` / `Function` / `Property Get|Let|Set <Name>(...) [As <Type>]` declaration; emit a function node, register the proc in `localProcs` / `functionNodeByName` / `functionNodeByStartLine` / `functionReturnTypes`, and (for `Form_*.cls` / `Report_*.cls`) synthesize a `form-instance-control` stub + `event-handler` edge.',
+      'Match a `Sub` / `Function` / `Property Get|Let|Set <Name>(...) [As <Type>]` declaration; emit a function node, register the proc in `localProcs` / `functionNodeByName` / `functionNodeByStartLine` / `functionReturnTypes`, and (for `Form_*.cls` / `Report_*.cls`) synthesize an `event-handler` edge — to a `form-instance-control` stub for a control handler, or to the sibling `form-layout` / `report-layout` stub for a form-level lifecycle handler.',
     pattern: PROC_RE,
     emit: (m, ctx, line, lineNum) => {
       const visibilityRaw = (m[1] ?? '').trim();
@@ -184,8 +189,11 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       // LAST underscore so multi-word events like `BeforeDelConfirm` parse
       // correctly. Form-level events (`Form_Load`, `Form_Open`,
       // `Form_Unload`, …) are NOT control handlers — they fire on the
-      // form object itself, not on a control — so they are skipped here
-      // (the form module node is the conceptual source for those).
+      // form object itself, not on a control — so they do NOT take this
+      // path. Issue #247 gives them their own branch below, targeting
+      // the sibling form-layout / report-layout node; routing them
+      // through the control path would synthesize a bogus
+      // `form-instance-control` node literally named `Form`.
       //
       // Scope guard: only emit when this .cls looks like a form code-
       // behind (`Form_*.cls`). Without this guard, regular service classes
@@ -216,6 +224,12 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       // See vba-form-extractor.ts:findControlName for the matching real
       // form-instance-control node emission.
       const handler = parseEventHandlerName(name);
+      // Issue #247: the form's or report's OWN lifecycle events
+      // (`Form_Load`, `Form_Open`, `Form_Current`, `Report_Open`, …).
+      // `parseEventHandlerName` refuses these by design — see its doc
+      // comment and the block above. They are not control handlers, so
+      // they get their own target: the sibling layout node.
+      const formLevelHandler = parseFormLevelEventHandlerName(name);
       // Prefix-driven sibling binding (issue #41). Both `Form_*.cls` and
       // `Report_*.cls` Dysflow code-behind files share the same code path;
       // only the sibling extension differs (`.form.txt` vs `.report.txt`).
@@ -233,41 +247,100 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
           ? '.form.txt'
           : null;
       const isFormCodeBehind = codeBehindExt !== null;
-      if (handler && isFormCodeBehind) {
+      if (isFormCodeBehind) {
         const siblingPath = ctx.filePath.replace(/\.cls$/i, codeBehindExt!);
-        const controlNodeId = generateNodeId(
-          siblingPath,
-          'form-instance-control',
-          handler.controlName,
-          0,
-        );
-        // Stub form-instance-control: local so the per-file edge filter
-        // passes the event-handler edge. Overwritten by the real node
-        // emitted from the sibling .form.txt (or .report.txt) at index time
-        // (same id, same schema, INSERT OR REPLACE). No metadata.controlType
-        // here — the sibling side carries the real control type.
-        ctx.nodes.push({
-          id: controlNodeId,
-          kind: 'form-instance-control',
-          name: handler.controlName,
-          qualifiedName: `${siblingPath}::${handler.controlName}`,
-          filePath: siblingPath,
-          language: 'vba',
-          startLine: 0,
-          endLine: 0,
-          startColumn: 0,
-          endColumn: 0,
-          updatedAt: Date.now(),
-        });
-        ctx.edges.push({
-          source: nodeId,
-          target: controlNodeId,
-          kind: 'event-handler',
-          provenance: 'heuristic',
-          metadata: { eventName: handler.eventName },
-          line: lineNum,
-          column: 0,
-        });
+        if (formLevelHandler) {
+          // ---- Form-LEVEL event (issue #247). --------------------------
+          // The target is the sibling's layout node, not a control. Same
+          // cross-file stub mechanic as the control branch below: emit a
+          // local stub carrying the deterministic id VbaFormExtractor
+          // will produce for the same file, so the per-file edge filter
+          // (`insertedIds.has(source) && insertedIds.has(target)`) accepts
+          // the edge, and `INSERT OR REPLACE` converges on the real node
+          // whichever file is indexed first.
+          //
+          // The id formula must stay byte-identical to
+          // `VbaFormExtractor.createFormLayoutNode`:
+          // `generateNodeId(siblingPath, layoutKind, name, 1)` where
+          // `name` is the sibling's `Attribute VB_Name` when present and
+          // its extension-stripped basename otherwise. A SaveAsText
+          // `.form.txt` / `.report.txt` has no top-level `VB_Name` (the
+          // only one it carries lives inside the embedded
+          // `CodeBehindForm` block, past the point `detectVbName` stops
+          // scanning), so the basename branch is the one that fires — and
+          // the sibling shares this `.cls`'s basename by construction.
+          const layoutKind: NodeKind =
+            codeBehindExt === '.report.txt' ? 'report-layout' : 'form-layout';
+          const layoutName = path.basename(ctx.filePath).replace(/\.cls$/i, '');
+          const layoutNodeId = generateNodeId(
+            siblingPath,
+            layoutKind,
+            layoutName,
+            1,
+          );
+          ctx.nodes.push({
+            id: layoutNodeId,
+            kind: layoutKind,
+            name: layoutName,
+            qualifiedName: layoutName,
+            filePath: siblingPath,
+            language: 'vba',
+            startLine: 1,
+            endLine: 1,
+            startColumn: 0,
+            endColumn: 0,
+            // Mirrors the real node's back-compat marker so a stub that
+            // survives (sibling never indexed) still looks like a layout
+            // node to consumers keyed on `containerKind`.
+            metadata: { containerKind: 'module' },
+            updatedAt: Date.now(),
+          });
+          ctx.edges.push({
+            source: nodeId,
+            target: layoutNodeId,
+            kind: 'event-handler',
+            provenance: 'heuristic',
+            // `scope: 'form'` lets consumers separate form-level from
+            // control-level handlers without re-parsing the Sub name.
+            metadata: { eventName: formLevelHandler.eventName, scope: 'form' },
+            line: lineNum,
+            column: 0,
+          });
+        } else if (handler) {
+          const controlNodeId = generateNodeId(
+            siblingPath,
+            'form-instance-control',
+            handler.controlName,
+            0,
+          );
+          // Stub form-instance-control: local so the per-file edge filter
+          // passes the event-handler edge. Overwritten by the real node
+          // emitted from the sibling .form.txt (or .report.txt) at index time
+          // (same id, same schema, INSERT OR REPLACE). No metadata.controlType
+          // here — the sibling side carries the real control type.
+          ctx.nodes.push({
+            id: controlNodeId,
+            kind: 'form-instance-control',
+            name: handler.controlName,
+            qualifiedName: `${siblingPath}::${handler.controlName}`,
+            filePath: siblingPath,
+            language: 'vba',
+            startLine: 0,
+            endLine: 0,
+            startColumn: 0,
+            endColumn: 0,
+            updatedAt: Date.now(),
+          });
+          ctx.edges.push({
+            source: nodeId,
+            target: controlNodeId,
+            kind: 'event-handler',
+            provenance: 'heuristic',
+            metadata: { eventName: handler.eventName },
+            line: lineNum,
+            column: 0,
+          });
+        }
       }
 
       if (ctx.moduleOrClassNode) {

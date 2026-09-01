@@ -25,7 +25,11 @@ import { VbaExtractor, DEFAULT_MAX_RAISE_FANOUT } from '../src/extraction/vba-ex
 import { loadVbaConfig, clearProjectConfigCache } from '../src/project-config';
 
 function extract(filePath: string, source: string, maxRaiseFanout?: number) {
-  return new VbaExtractor(filePath, source, undefined, maxRaiseFanout).extract();
+  // Issue #243: the options-object form. An absent `maxRaiseFanout` still
+  // means "use DEFAULT_MAX_RAISE_FANOUT", exactly as the old positional form
+  // did — the legacy positional form is pinned in
+  // `extraction-vba-options.test.ts`.
+  return new VbaExtractor(filePath, source, { maxRaiseFanout }).extract();
 }
 
 /** Build a `.cls` with one event raised `n` times across N small Sub procs. */

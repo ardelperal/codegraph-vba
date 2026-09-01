@@ -21,6 +21,7 @@ import {
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { extractFromSource } from './tree-sitter';
+import type { VbaExtractionOptions } from './vba/options';
 import { readVbaSource, isVbaFamilyFile } from './vba-source';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
 import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes } from './grammars';
@@ -1603,9 +1604,15 @@ export class ExtractionOrchestrator {
     // Issue #152: pull the optional `vba.maxRaiseFanout` knob from the
     // same `codegraph.json` → `vba` block the targets live in. The VBA
     // extractor applies the per-file fanout gate at this threshold.
+    // Issue #243: the knobs travel as ONE structured-cloneable options object
+    // from here to the extractor, on the pool path and the in-process path
+    // alike, so a new knob is a field here instead of a new positional in
+    // five signatures.
     const vbaConfig = loadVbaConfig(this.rootDir);
-    const vbaTargets = vbaConfig.targets;
-    const maxRaiseFanout = vbaConfig.maxRaiseFanout;
+    const vbaOptions: VbaExtractionOptions = {
+      targets: vbaConfig.targets,
+      maxRaiseFanout: vbaConfig.maxRaiseFanout,
+    };
     // Issue #154 — gate the 3 Dysflow-specific VBA sub-extractors. `true`
     // (the default) keeps the pre-refactor behavior; `false` opts out so
     // form/report/manifest/sequence files are tracked as just a `file`
@@ -1724,8 +1731,9 @@ export class ExtractionOrchestrator {
       // the worker boundary (or the in-process fallback) so every VBA
       // file sees the same gate.
       // Issue #154: also thread the optional `vba.dysflowExport` flag.
-      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout, dysflowExport));
-      return pool.requestParse({ filePath, content, language, frameworkNames, vbaTargets, maxRaiseFanout, dysflowExport });
+      // Issue #243: both knobs now ride in the `vbaOptions` object.
+      if (!pool) return Promise.resolve(extractFromSource(filePath, content, language, frameworkNames, undefined, undefined, dysflowExport, vbaOptions));
+      return pool.requestParse({ filePath, content, language, frameworkNames, vbaOptions, dysflowExport });
     };
 
     // --- Bounded rolling-window dispatch, ordered commit ---
@@ -2256,9 +2264,13 @@ export class ExtractionOrchestrator {
       content,
       language,
       frameworkNames,
-      vbaReindexConfig.targets,
-      vbaReindexConfig.maxRaiseFanout,
+      undefined,
+      undefined,
       dysflowExport,
+      {
+        targets: vbaReindexConfig.targets,
+        maxRaiseFanout: vbaReindexConfig.maxRaiseFanout,
+      },
     );
 
     // Store in database
@@ -2675,4 +2687,5 @@ export class ExtractionOrchestrator {
 
 // Re-export useful types and functions
 export { extractFromSource } from './tree-sitter';
+export type { VbaExtractionOptions } from './vba/options';
 export { detectLanguage, isSourceFile, isLanguageSupported, isGrammarLoaded, getSupportedLanguages, initGrammars, loadGrammarsForLanguages, loadAllGrammars } from './grammars';

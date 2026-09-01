@@ -45,6 +45,7 @@ import {
   stripVbaComments,
 } from './vba-preprocess';
 import { VbaExtractorContext, VbaClassifier } from './vba/context';
+import type { VbaExtractionOptions } from './vba/options';
 import type { VbaExtractionRule } from './vba/rules';
 import { RULES as PROCEDURES_RULES, createProceduresClassifier } from './vba/procedures';
 import {
@@ -181,11 +182,51 @@ export function validateVbaRuleTables(
   }
 })();
 
+/**
+ * Issue #243 — normalize the `VbaExtractor` constructor's 3rd/4th arguments
+ * into a single {@link VbaExtractionOptions}.
+ *
+ * Two call shapes reach the implementation signature:
+ *
+ *   - the current form:  `new VbaExtractor(p, s, { targets, maxRaiseFanout })`
+ *   - the `@deprecated` legacy form: `new VbaExtractor(p, s, targets, 50)`
+ *
+ * The runtime discriminator is the VALUE TYPES, not the key names. A legacy
+ * conditional-compilation targets map is a `Record<string, boolean>`, so every
+ * one of its values is a boolean. A `VbaExtractionOptions` never has a boolean
+ * value: `targets` is an object, `maxRaiseFanout` a number, `sqlWrappers` an
+ * array. So "every own value is a boolean" identifies the legacy form even
+ * when a project happens to name a `#Const` `targets` or `sqlWrappers`.
+ *
+ * The empty object `{}` satisfies "every value is a boolean" vacuously and is
+ * therefore read as a legacy empty targets map — which is exactly equivalent
+ * to empty options: an empty targets map and `undefined` both mean "no project
+ * conditional-compilation overrides" to `preprocessConditionalCompilation`,
+ * and an absent `maxRaiseFanout` falls back to `DEFAULT_MAX_RAISE_FANOUT`
+ * either way. The two readings cannot diverge.
+ *
+ * `legacyMaxRaiseFanout` only applies to the legacy form; the object form
+ * cannot be combined with a 4th positional argument (no overload allows it).
+ */
+function normalizeVbaExtractorArgs(
+  optionsOrTargets: VbaExtractionOptions | Record<string, boolean>,
+  legacyMaxRaiseFanout?: number,
+): VbaExtractionOptions {
+  const isLegacyTargets = Object.values(optionsOrTargets).every(
+    (v) => typeof v === 'boolean',
+  );
+  if (!isLegacyTargets) return optionsOrTargets as VbaExtractionOptions;
+  const targets = optionsOrTargets as Record<string, boolean>;
+  return {
+    targets: Object.keys(targets).length > 0 ? targets : undefined,
+    maxRaiseFanout: legacyMaxRaiseFanout,
+  };
+}
+
 export class VbaExtractor {
   private filePath: string;
   private source: string;
   private ctx: VbaExtractorContext;
-  private vbaTargets?: Record<string, boolean>;
   /**
    * Issue #152: per-file fanout cap for `RaiseEvent <EventName>` edges.
    * When a single event is raised more than this many times in one file,
@@ -195,17 +236,41 @@ export class VbaExtractor {
    * the orchestrator: callers that don't pass a value get the default.
    */
   private maxRaiseFanout: number | undefined;
+  /**
+   * Issue #243: the full options object, retained so classifiers that grow
+   * a new knob read it from one place instead of a new private field per
+   * knob. `targets`/`maxRaiseFanout` keep their dedicated fields because
+   * they are read on hot paths.
+   */
+  private options: VbaExtractionOptions;
 
+  /**
+   * Issue #243 — the options-object form. Every in-repo call site uses this.
+   */
+  constructor(filePath: string, source: string, options?: VbaExtractionOptions);
+  /**
+   * @deprecated Pass a {@link VbaExtractionOptions} object instead:
+   * `new VbaExtractor(filePath, source, { targets, maxRaiseFanout })`.
+   * The positional 3rd/4th parameters are kept working for one release so
+   * out-of-repo callers are not broken by #243; they will be removed after.
+   */
   constructor(
     filePath: string,
     source: string,
     vbaTargets?: Record<string, boolean>,
-    maxRaiseFanout: number = DEFAULT_MAX_RAISE_FANOUT,
+    maxRaiseFanout?: number,
+  );
+  constructor(
+    filePath: string,
+    source: string,
+    optionsOrTargets: VbaExtractionOptions | Record<string, boolean> = {},
+    legacyMaxRaiseFanout?: number,
   ) {
+    const options = normalizeVbaExtractorArgs(optionsOrTargets, legacyMaxRaiseFanout);
     this.filePath = filePath;
     this.source = source;
-    this.vbaTargets = vbaTargets;
-    this.maxRaiseFanout = maxRaiseFanout;
+    this.options = options;
+    this.maxRaiseFanout = options.maxRaiseFanout ?? DEFAULT_MAX_RAISE_FANOUT;
     this.ctx = new VbaExtractorContext(filePath);
   }
 
@@ -257,7 +322,7 @@ export class VbaExtractor {
         () =>
           preprocessConditionalCompilation(
             joined,
-            this.vbaTargets,
+            this.options.targets,
             this.ctx.timings,
             this.ctx.errors,
             this.filePath,

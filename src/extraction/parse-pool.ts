@@ -29,6 +29,7 @@
 
 import { Worker } from 'worker_threads';
 import type { Language, ExtractionResult } from '../types';
+import type { VbaExtractionOptions } from './vba/options';
 
 /**
  * Minimal worker surface the pool drives — satisfied by a real `worker_threads`
@@ -51,9 +52,13 @@ export interface ParseTask {
   content: string;
   language: Language;
   frameworkNames?: string[];
-  vbaTargets?: Record<string, boolean>;
-  /** Issue #152: per-file fanout cap for `RaiseEvent` edges (VBA only). */
-  maxRaiseFanout?: number;
+  /**
+   * Issue #243: every VBA-specific extraction knob in ONE structured-cloneable
+   * object (previously the separate `vbaTargets` / `maxRaiseFanout` fields).
+   * It crosses the worker boundary via `postMessage`, so it must stay plain
+   * data — see the contract in `./vba/options`.
+   */
+  vbaOptions?: VbaExtractionOptions;
   /**
    * Issue #154 — gate the 3 Dysflow-specific VBA sub-extractors. `true`
    * (the default) keeps the pre-refactor behavior; `false` opts out so
@@ -351,8 +356,7 @@ export class ParseWorkerPool {
       content: job.task.content,
       frameworkNames: job.task.frameworkNames,
       language: job.task.language,
-      vbaTargets: job.task.vbaTargets,
-      maxRaiseFanout: job.task.maxRaiseFanout,
+      vbaOptions: job.task.vbaOptions,
       dysflowExport: job.task.dysflowExport,
     });
   }

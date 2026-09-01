@@ -30,6 +30,7 @@ import { DfmExtractor } from './dfm-extractor';
 import { VueExtractor } from './vue-extractor';
 import { MyBatisExtractor } from './mybatis-extractor';
 import { VbaExtractor } from './vba-extractor';
+import type { VbaExtractionOptions } from './vba/options';
 import { VbaFormExtractor } from './vba-form-extractor';
 import { VbaTestManifestExtractor } from './vba-test-manifest-extractor';
 import { VbaTestSequenceExtractor } from './vba-test-sequence-extractor';
@@ -6529,6 +6530,14 @@ export class TreeSitterExtractor {
  * just a `file` node. Read from `codegraph.json` via
  * `loadDysflowExportConfig(rootDir)` at the call site and threaded in here
  * so this function stays project-config-agnostic.
+ *
+ * `vbaOptions` (issue #243) is the object form of every VBA-specific knob and
+ * is what in-repo callers pass. The `vbaTargets` / `maxRaiseFanout`
+ * positionals are `@deprecated` and kept for one release; when both are
+ * supplied the OBJECT WINS per field.
+ *
+ * @param vbaTargets @deprecated Pass `vbaOptions.targets` instead.
+ * @param maxRaiseFanout @deprecated Pass `vbaOptions.maxRaiseFanout` instead.
  */
 export function extractFromSource(
   filePath: string,
@@ -6537,8 +6546,17 @@ export function extractFromSource(
   frameworkNames?: string[],
   vbaTargets?: Record<string, boolean>,
   maxRaiseFanout?: number,
-  dysflowExport: boolean = true
+  dysflowExport: boolean = true,
+  vbaOptions?: VbaExtractionOptions
 ): ExtractionResult {
+  // Issue #243: merge the legacy positionals into the object. Per-field, the
+  // object wins on conflict; a field absent from BOTH stays undefined so the
+  // extractor applies its own default (e.g. DEFAULT_MAX_RAISE_FANOUT).
+  const mergedVbaOptions: VbaExtractionOptions = {
+    targets: vbaOptions?.targets ?? vbaTargets,
+    maxRaiseFanout: vbaOptions?.maxRaiseFanout ?? maxRaiseFanout,
+    sqlWrappers: vbaOptions?.sqlWrappers,
+  };
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();
 
@@ -6675,8 +6693,9 @@ export function extractFromSource(
     // See `vba-code-extraction` spec (REQ-CODE-1..11).
     // Issue #152: `maxRaiseFanout` is threaded from the project's
     // `codegraph.json` → `vba.maxRaiseFanout` and gates `raises-event`
-    // edges for events with high per-file fanout.
-    const extractor = new VbaExtractor(filePath, source, vbaTargets, maxRaiseFanout);
+    // edges for events with high per-file fanout. Issue #243: it now rides
+    // in the merged options object alongside `targets` and `sqlWrappers`.
+    const extractor = new VbaExtractor(filePath, source, mergedVbaOptions);
     result = extractor.extract();
   } else if (detectedLanguage === 'sql') {
     // Dysflow-exported saved Access queries — `queries/<Name>.sql`. Only

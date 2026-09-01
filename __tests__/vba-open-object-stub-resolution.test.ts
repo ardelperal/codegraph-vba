@@ -52,8 +52,16 @@ async function indexFixture(layoutFirst: boolean, includeTargets = true): Promis
   };
   write(layoutFirst ? 9 : 0, 'Nav.bas', navSource);
   if (includeTargets) {
+    // The numbered directories exist only to control INDEX ORDER (the walk
+    // is alphabetical). `Form_FormNC.cls` shares its directory with
+    // `Form_FormNC.form.txt` because an Access code-behind and its layout
+    // are siblings by construction in a Dysflow export — the extractor
+    // derives the layout path by swapping `.cls` for `.form.txt` on the
+    // same path, so splitting them across directories describes a project
+    // that cannot exist. Ordering within the pair is still deterministic:
+    // `.cls` sorts before `.form.txt`.
     write(layoutFirst ? 0 : 9, 'Form_FormNC.form.txt', formSource);
-    write(layoutFirst ? 1 : 8, 'Form_FormNC.cls', formClassSource);
+    write(layoutFirst ? 0 : 9, 'Form_FormNC.cls', formClassSource);
     write(layoutFirst ? 2 : 7, 'Report_Monthly.report.txt', reportSource);
   }
   const cg = await CodeGraph.init(dir, { index: false });

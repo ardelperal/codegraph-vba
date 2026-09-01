@@ -1,0 +1,17 @@
+Version =21
+VersionRequired =20
+PublishOption =1
+Checksum =-987654321
+Begin Report
+    Caption ="Report_Lifecycle"
+    Width =10000
+    Height =6000
+    Begin TextBox
+        Name ="txtTotal"
+        ControlSource ="Total"
+        Left =1000
+        Top =200
+        Width =3000
+        Height =400
+    End
+End

@@ -68,8 +68,15 @@ End Sub`;
       source,
     ).extract();
 
-    expect(result.edges.filter((edge) => edge.kind === 'event-handler'))
-      .toHaveLength(2);
+    // THREE handler edges: the two control handlers, plus `Form_Load`.
+    // Since issue #247 a form-level lifecycle handler is wired to the
+    // sibling form-layout node instead of being dropped. It is still not a
+    // control handler, which is what the control-node count below pins:
+    // only MotivoBorrado and ComandoGrabar get a `form-instance-control`.
+    const eventEdges = result.edges.filter((edge) => edge.kind === 'event-handler');
+    expect(eventEdges).toHaveLength(3);
+    expect(eventEdges.filter((edge) => edge.metadata?.scope === 'form'))
+      .toHaveLength(1);
     expect(result.nodes.filter((node) => node.kind === 'form-instance-control'))
       .toHaveLength(2);
   });

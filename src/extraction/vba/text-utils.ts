@@ -189,3 +189,35 @@ export function parseEventHandlerName(
   if (!isAccessEventName(eventName)) return null;
   return { controlName, eventName };
 }
+
+/**
+ * Issue #247 helper: parse a FORM-LEVEL Access event-handler Sub name.
+ *
+ * `parseEventHandlerName` above deliberately refuses `Form_*` because a
+ * form-level event fires on the form object, not on a control — routing it
+ * through the control path would synthesize a bogus `form-instance-control`
+ * node literally named `Form`. This helper is the other half of that
+ * decision: it recognises exactly the names the control parser rejects and
+ * hands them to the caller so they can be wired to the sibling
+ * `form-layout` / `report-layout` node instead.
+ *
+ * The owner segment must be exactly `Form` or `Report` (case-insensitive,
+ * matching VBA's case-insensitive identifiers), and the suffix must be a
+ * known Access event name. That second gate is what separates the real
+ * lifecycle handler `Form_Load` from an ordinary class method that merely
+ * happens to be called `Form_Helper`.
+ */
+export function parseFormLevelEventHandlerName(
+  name: string,
+): { ownerName: string; eventName: string } | null {
+  if (!name) return null;
+  const lastUnderscore = name.lastIndexOf('_');
+  if (lastUnderscore <= 0) return null; // no underscore OR starts with underscore
+  const ownerName = name.slice(0, lastUnderscore);
+  const eventName = name.slice(lastUnderscore + 1);
+  if (!eventName) return null;
+  const owner = ownerName.toLowerCase();
+  if (owner !== 'form' && owner !== 'report') return null;
+  if (!isAccessEventName(eventName)) return null;
+  return { ownerName, eventName };
+}

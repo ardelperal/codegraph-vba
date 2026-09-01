@@ -22,6 +22,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Class setup and teardown routines in Access class modules are now recognised; the previous check looked for a constructor spelling that only exists in VB.NET, so it never matched real VBA code. (#248)
 - VBA references mentioned only inside messages, logs, and other string literals no longer create false form, query, or temporary-variable relationships. (#209)
 - VBA SQL extraction now ignores reserved words exposed by dynamic table-name concatenation instead of emitting misleading table references. (#203)
 - VBA continued statements are now parsed as one logical line while retaining their original source locations, restoring class references, qualified calls, procedure headers, and API declarations split with line continuations. (#202)

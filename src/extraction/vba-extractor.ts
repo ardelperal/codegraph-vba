@@ -361,15 +361,40 @@ export class VbaExtractor {
         }
         this.ctx.pendingModuleOrClassSource.length = 0;
 
-        // Sub New marker on the class node (REQ-CODE-3).
+        // Class lifecycle markers on the class node (REQ-CODE-3).
+        //
+        // Issue #248: the original check looked for a procedure named `New`.
+        // VBA class modules have no `Sub New` — that constructor spelling is
+        // VB.NET. An Access/VBA class runs `Private Sub Class_Initialize()` on
+        // instantiation and `Private Sub Class_Terminate()` on teardown, so the
+        // `New` check could never fire on real VBA source (0 occurrences across
+        // the 00_EXPEDIENTES / 00_GESTION_RIESGOS corpora, against 2 real
+        // `Class_Initialize` / `Class_Terminate` declarations).
+        //
+        // `New` is still accepted as a fallback so the historical behaviour is
+        // corrected rather than removed; it stays dead on genuine VBA input.
+        // Terminators get their own pair of fields — destructor presence is the
+        // other half of the same lifecycle question.
         if (isCls) {
-          const hasNew = procs.some((p) => p.name === 'New');
-          if (hasNew) {
-            const md = (this.ctx.moduleOrClassNode.metadata ?? {}) as Record<string, unknown>;
+          const md = (this.ctx.moduleOrClassNode.metadata ?? {}) as Record<string, unknown>;
+
+          const initializer = procs.find(
+            (p) => p.name.toLowerCase() === 'class_initialize',
+          ) ?? procs.find((p) => p.name.toLowerCase() === 'new');
+          if (initializer) {
             md.hasClassInitializer = true;
-            md.initializerName = 'New';
-            this.ctx.moduleOrClassNode.metadata = md;
+            md.initializerName = initializer.name;
           }
+
+          const terminator = procs.find(
+            (p) => p.name.toLowerCase() === 'class_terminate',
+          );
+          if (terminator) {
+            md.hasClassTerminator = true;
+            md.terminatorName = terminator.name;
+          }
+
+          this.ctx.moduleOrClassNode.metadata = md;
         }
       }
     } catch (error) {

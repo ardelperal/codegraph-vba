@@ -89,28 +89,71 @@ End Function`;
   });
 });
 
-describe('VbaExtractor — Sub New class initializer marker (REQ-CODE-3)', () => {
-  it('Public Sub New sets class initializer marker', () => {
-    const src = `Public Sub New()
+describe('VbaExtractor — class lifecycle markers (REQ-CODE-3, issue #248)', () => {
+  it('Private Sub Class_Initialize sets the initializer marker', () => {
+    const src = `Private Sub Class_Initialize()
 End Sub`;
     const r = extract('src/classes/Customer.cls', src);
     const cls = r.nodes.find((n) => n.kind === 'class');
     expect(cls).toBeDefined();
     const md = cls?.metadata as Record<string, unknown> | undefined;
     expect(md?.hasClassInitializer).toBe(true);
-    expect(md?.initializerName).toBe('New');
+    expect(md?.initializerName).toBe('Class_Initialize');
   });
 
-  it('Private Sub New sets class initializer marker', () => {
-    const src = `Private Sub New()
+  it('Private Sub Class_Terminate sets the terminator marker', () => {
+    const src = `Private Sub Class_Terminate()
 End Sub`;
     const r = extract('src/classes/Internal.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const md = cls?.metadata as Record<string, unknown> | undefined;
+    expect(md?.hasClassTerminator).toBe(true);
+    expect(md?.terminatorName).toBe('Class_Terminate');
+  });
+
+  it('a class with both lifecycle hooks carries both markers', () => {
+    const src = `Private Sub Class_Initialize()
+End Sub
+Private Sub Class_Terminate()
+End Sub`;
+    const r = extract('src/classes/Both.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const md = cls?.metadata as Record<string, unknown> | undefined;
+    expect(md?.hasClassInitializer).toBe(true);
+    expect(md?.hasClassTerminator).toBe(true);
+  });
+
+  it('matches the lifecycle hook case-insensitively, as VBA does', () => {
+    const src = `private sub class_initialize()
+End Sub`;
+    const r = extract('src/classes/Lower.cls', src);
     const cls = r.nodes.find((n) => n.kind === 'class');
     const md = cls?.metadata as Record<string, unknown> | undefined;
     expect(md?.hasClassInitializer).toBe(true);
   });
 
-  it('missing Sub New leaves hasClassInitializer unset', () => {
+  it('still accepts the legacy Sub New spelling as a fallback', () => {
+    const src = `Public Sub New()
+End Sub`;
+    const r = extract('src/classes/Legacy.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const md = cls?.metadata as Record<string, unknown> | undefined;
+    expect(md?.hasClassInitializer).toBe(true);
+    expect(md?.initializerName).toBe('New');
+  });
+
+  it('prefers Class_Initialize over a same-file Sub New', () => {
+    const src = `Public Sub New()
+End Sub
+Private Sub Class_Initialize()
+End Sub`;
+    const r = extract('src/classes/BothSpellings.cls', src);
+    const cls = r.nodes.find((n) => n.kind === 'class');
+    const md = cls?.metadata as Record<string, unknown> | undefined;
+    expect(md?.initializerName).toBe('Class_Initialize');
+  });
+
+  it('a class with no lifecycle hook leaves both markers unset', () => {
     const src = `Public Function DoWork() As Long
   DoWork = 1
 End Function`;
@@ -119,6 +162,19 @@ End Function`;
     const md = cls?.metadata as Record<string, unknown> | undefined;
     expect(md?.hasClassInitializer).toBeFalsy();
     expect(md?.initializerName).toBeFalsy();
+    expect(md?.hasClassTerminator).toBeFalsy();
+    expect(md?.terminatorName).toBeFalsy();
+  });
+
+  it('a standard module declaring Class_Initialize gets no marker', () => {
+    const src = `Private Sub Class_Initialize()
+End Sub`;
+    const r = extract('src/modules/modHelpers.bas', src);
+    const mod = r.nodes.find((n) => n.kind === 'module');
+    expect(mod).toBeDefined();
+    const md = mod?.metadata as Record<string, unknown> | undefined;
+    expect(md?.hasClassInitializer).toBeFalsy();
+    expect(md?.hasClassTerminator).toBeFalsy();
   });
 });
 

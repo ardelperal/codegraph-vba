@@ -69,6 +69,35 @@ export function matchVbaModuleVariable(
   };
 }
 
+/**
+ * Issue #253: resolve a saved-query name to the `query` node that
+ * `SqlQueryExtractor` builds from `queries/<Name>.sql`.
+ *
+ * Query-kind only, and a miss DECLINES rather than falling through to global
+ * name matching. That is the whole point of the gate: a name matching neither
+ * a query nor a table must stay a `failed` reference, because a fallback that
+ * invented a table placeholder would turn "this query does not exist" into a
+ * confident, wrong answer — and a fallback to generic name matching could bind
+ * the name to an unrelated same-named class or procedure.
+ */
+export function matchVbaQueryName(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-query-name') return null;
+  const wanted = ref.referenceName.toLocaleLowerCase('en-US');
+  const matches = context
+    .getNodesByKind('query')
+    .filter((node) => node.name.toLocaleLowerCase('en-US') === wanted);
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 1,
+    resolvedBy: 'exact-match',
+  };
+}
+
 /** Resolve Access SourceObject embeddings only to a unique real layout node. */
 export function matchVbaSourceObject(
   ref: UnresolvedRef,

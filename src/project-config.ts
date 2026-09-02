@@ -77,6 +77,23 @@ export interface ProjectConfig {
      * `true`.
      */
     dysflowExport?: boolean;
+    /**
+     * Extra receiver names that execute SQL, so table references inside the
+     * SQL they run are still found (#244). Two entry forms are accepted:
+     *
+     *   - a bare identifier fragment — `"getdb"` reaches `getdb()`,
+     *     `getdbHPS()` and `getdbExpedientes()`;
+     *   - an explicit `receiver.method` pair — `"cnn.Execute"`.
+     *
+     * Raw regular expressions are deliberately NOT accepted: these patterns
+     * run against every line of every VBA file, where a user-supplied regex
+     * is a catastrophic-backtracking hazard. Entries EXTEND the built-in
+     * list (`db`, `getdb`, `CurrentDb`, `DBEngine`, the DAO `QueryDef`
+     * receivers, `DoCmd.RunSQL` and the ADO pair) — they never replace it.
+     * A non-array value, or an entry that is not one of the two forms,
+     * warns and is ignored.
+     */
+    sqlWrappers?: string[];
   };
   /**
    * Gitignore-style patterns for first-party source to force INTO the index even
@@ -94,16 +111,24 @@ export interface ProjectConfig {
   include?: string[];
 }
 
+/**
+ * Parsed, validated view of the `vba` block. Named (rather than repeated
+ * inline at each of its five use sites) so adding a knob — `sqlWrappers` in
+ * #244 — is one edit instead of five that can silently drift apart.
+ */
+export interface VbaConfig {
+  targets?: Record<string, boolean>;
+  maxRaiseFanout?: number;
+  dysflowExport?: boolean;
+  sqlWrappers?: string[];
+}
+
 /** Parsed, validated view of a project's `codegraph.json`. */
 interface ParsedConfig {
   extensions: Record<string, Language>;
   includeIgnored: string[];
   exclude: string[];
-  vba?: {
-    targets?: Record<string, boolean>;
-    maxRaiseFanout?: number;
-    dysflowExport?: boolean;
-  };
+  vba?: VbaConfig;
   include: string[];
 }
 
@@ -276,7 +301,15 @@ function extractExclude(parsed: object, file: string): string[] {
   return out;
 }
 
-function extractVbaTargets(parsed: object, file: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } | undefined {
+/**
+ * The ONLY two shapes a `vba.sqlWrappers` entry may take (#244): a bare
+ * identifier fragment (`getdb`) or a `receiver.method` pair (`cnn.Execute`).
+ * Anything else — a raw regex above all — is rejected at load time, so the
+ * per-line scanner never sees a pattern it did not build itself.
+ */
+const SQL_WRAPPER_ENTRY_RE = /^\p{L}[\p{L}\p{N}_]*(?:\.\p{L}[\p{L}\p{N}_]*)?$/u;
+
+function extractVbaTargets(parsed: object, file: string): VbaConfig | undefined {
   const vba = (parsed as any).vba;
   if (vba === undefined) return undefined;
   if (!vba || typeof vba !== 'object' || Array.isArray(vba)) {
@@ -284,7 +317,7 @@ function extractVbaTargets(parsed: object, file: string): { targets?: Record<str
     return undefined;
   }
 
-  const out: { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } = {};
+  const out: VbaConfig = {};
 
   const targets = vba.targets;
   if (targets !== undefined) {
@@ -324,7 +357,33 @@ function extractVbaTargets(parsed: object, file: string): { targets?: Record<str
     }
   }
 
-  return out.targets !== undefined || out.maxRaiseFanout !== undefined || out.dysflowExport !== undefined ? out : undefined;
+  // Issue #244 — extra SQL execution-site receivers. Same warn-and-ignore
+  // shape as `maxRaiseFanout`: a wrong type never throws, it just leaves the
+  // built-in wrapper list in force.
+  const sqlWrappers = vba.sqlWrappers;
+  if (sqlWrappers !== undefined) {
+    if (!Array.isArray(sqlWrappers)) {
+      logWarn(`Ignoring "vba.sqlWrappers" in ${PROJECT_CONFIG_FILENAME}: value must be an array of strings`, { file });
+    } else {
+      const wrappersOut: string[] = [];
+      for (const raw of sqlWrappers) {
+        const entry = typeof raw === 'string' ? raw.trim() : '';
+        if (!entry || !SQL_WRAPPER_ENTRY_RE.test(entry)) {
+          logWarn(`Ignoring an invalid "vba.sqlWrappers" entry in ${PROJECT_CONFIG_FILENAME}: every entry must be an identifier prefix ("getdb") or a "receiver.method" pair ("cnn.Execute")`, { file });
+          continue;
+        }
+        wrappersOut.push(entry);
+      }
+      if (wrappersOut.length > 0) out.sqlWrappers = wrappersOut;
+    }
+  }
+
+  return out.targets !== undefined
+    || out.maxRaiseFanout !== undefined
+    || out.dysflowExport !== undefined
+    || out.sqlWrappers !== undefined
+    ? out
+    : undefined;
 }
 
 /**
@@ -396,7 +455,7 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   const exclude = [...new Set([...localConfig.exclude, ...fileConfig.exclude])];
   const include = [...new Set([...localConfig.include, ...fileConfig.include])];
 
-  let vba: { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } | undefined;
+  let vba: VbaConfig | undefined;
   const mergedTargets = localConfig.vba?.targets || fileConfig.vba?.targets
     ? {
         ...localConfig.vba?.targets,
@@ -413,11 +472,26 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   const mergedDysflowExport = fileConfig.vba?.dysflowExport !== undefined
     ? fileConfig.vba?.dysflowExport
     : localConfig.vba?.dysflowExport;
-  if (mergedTargets || mergedMaxRaiseFanout !== undefined || mergedDysflowExport !== undefined) {
+  // `sqlWrappers` is a list, so both sides UNION (the pattern `includeIgnored`
+  // / `exclude` already use) rather than one overriding the other — a local
+  // config naming one project accessor must not erase the committed list.
+  const mergedSqlWrappers = localConfig.vba?.sqlWrappers || fileConfig.vba?.sqlWrappers
+    ? [...new Set([
+        ...(localConfig.vba?.sqlWrappers ?? []),
+        ...(fileConfig.vba?.sqlWrappers ?? []),
+      ])]
+    : undefined;
+  if (
+    mergedTargets
+    || mergedMaxRaiseFanout !== undefined
+    || mergedDysflowExport !== undefined
+    || mergedSqlWrappers !== undefined
+  ) {
     vba = {};
     if (mergedTargets) vba.targets = mergedTargets;
     if (mergedMaxRaiseFanout !== undefined) vba.maxRaiseFanout = mergedMaxRaiseFanout;
     if (mergedDysflowExport !== undefined) vba.dysflowExport = mergedDysflowExport;
+    if (mergedSqlWrappers !== undefined) vba.sqlWrappers = mergedSqlWrappers;
   }
 
   const config: ParsedConfig = {
@@ -432,7 +506,7 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
   return config;
 }
 
-export function loadVbaConfig(rootDir: string): { targets?: Record<string, boolean>; maxRaiseFanout?: number; dysflowExport?: boolean } {
+export function loadVbaConfig(rootDir: string): VbaConfig {
   return loadParsedConfig(rootDir).vba || {};
 }
 

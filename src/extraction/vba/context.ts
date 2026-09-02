@@ -19,6 +19,7 @@ import {
 } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { PRIMITIVE_TYPES } from './constants';
+import type { CompiledSqlWrappers } from './sql-wrapper';
 
 export interface ProcInfo {
   name: string;
@@ -295,6 +296,22 @@ export class VbaExtractorContext {
    * pays no cost.
    */
   public classifierInvokeCounts: Map<string, number> | null = null;
+
+  /**
+   * Issue #244: the SQL execution-site matcher, compiled ONCE per extractor
+   * instance from `codegraph.json` → `vba.sqlWrappers` and parked here.
+   * `scanSqlInLine` runs on every line of every VBA file, so the two
+   * stateful `/g` RegExps it holds must outlive the line loop — building
+   * them per line (the pre-#244 shape) burned a RegExp compile per line for
+   * no behavioural gain.
+   *
+   * `null` means "nobody supplied options" (tests, out-of-repo callers);
+   * `sql-wrapper.ts` then falls back to its module-level default set, which
+   * is compiled once as well. The type is imported TYPE-ONLY on purpose:
+   * `sql-wrapper.ts` imports this module, so a value import here would close
+   * a runtime require cycle.
+   */
+  public sqlWrappers: CompiledSqlWrappers | null = null;
 
   constructor(filePath: string) {
     this.filePath = filePath;

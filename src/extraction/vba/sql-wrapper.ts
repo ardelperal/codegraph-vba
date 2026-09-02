@@ -14,49 +14,242 @@
  * sentinel that the regex can never match. The shared module also
  * emits the read/write access direction so this file no longer
  * re-implements `classifySqlAccess`.
+ *
+ * Issue #244: which receivers count as a database handle is no longer baked
+ * into the scanning regexes. `DEFAULT_SQL_WRAPPERS` lists the built-in ones
+ * and `codegraph.json` → `vba.sqlWrappers` extends that list with a project's
+ * own accessors. Config entries are identifier fragments or `receiver.method`
+ * pairs — never raw regex, which in this per-line hot path would be a
+ * catastrophic-backtracking foot-gun.
  */
 import { escapeRegExpLiteral } from './text-utils';
 import { VbaExtractorContext } from './context';
 import { scanSqlTables } from '../sql-table-scan';
 
-/** SQL wrapper helpers — order matters because `db.Execute` is a suffix of others. */
-const SQL_WRAPPERS: ReadonlyArray<{ name: string; re: RegExp }> = [
-  { name: 'DoCmd.RunSQL', re: /\bDoCmd\.RunSQL\s+"((?:[^"]|"")*)"/giu },
-  { name: '*db.OpenRecordset', re: /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.OpenRecordset\s+"((?:[^"]|"")*)"/giu },
-  { name: '*db.Execute', re: /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.Execute\s+"((?:[^"]|"")*)"/giu },
-];
-
 /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
 const SQL_VAR_ASSIGN_RE =
   /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*(.*)$/iu;
 
-/** SQL wrapper called with a variable, e.g. `getdb().Execute m_SQL`. */
-const SQL_VAR_EXEC_RE =
-  /\b(?:\p{L}[\p{L}\p{N}_]*)?db\b(?:\(\))?\.(?:OpenRecordset|Execute)\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
+/**
+ * Issue #244 — the two execution-site regexes.
+ *
+ * Both capture the RECEIVER (group 1) and the METHOD (group 2) generically
+ * and leave the "is this a database handle?" decision to
+ * {@link receiverMatches}, driven by the wrapper list. The pre-#244 shape
+ * hard-coded the receiver as "any identifier ENDING in `db`", which silently
+ * dropped every per-backend accessor a real multi-database Access project
+ * uses (`getdbHPS()`, `getdbExpedientes()`, `dbToUse`, `m_dbLanzadera`, and
+ * every DAO `QueryDef` receiver).
+ *
+ * Shape notes, in the order they appear:
+ *
+ *   - `(?:\(\))?` — the accessor-call form `getdb().Execute`.
+ *   - `(?=[\s("])` / `(?=[\s(])` — the method name must END at whitespace, an
+ *     opening paren, or (literal form) the opening quote. Without it the
+ *     greedy method group can give characters back and read `db.Executed` as
+ *     method `Execute` + argument `d`.
+ *   - `\s*\(?\s*` — the parenthesised call form. Its absence in the literal
+ *     regex was the second defect the issue reports:
+ *     `getdb().OpenRecordset("SELECT * FROM TbX")` fell through BOTH the
+ *     literal path (which demanded whitespace before the quote) and the
+ *     variable path (a literal is not an identifier), so the statement
+ *     produced no table reference at all.
+ *
+ * Every quantifier is bounded and the alternatives inside the literal body
+ * (`[^"]` vs `""`) are disjoint, so neither regex can backtrack
+ * catastrophically — which is also why config entries are identifier
+ * fragments and never raw regex.
+ */
+const SQL_WRAPPER_LITERAL_RE =
+  /\b(\p{L}[\p{L}\p{N}_]*)(?:\(\))?\.(\p{L}[\p{L}\p{N}_]*)(?=[\s("])\s*\(?\s*"((?:[^"]|"")*)"/giu;
 
 /**
- * Issue #42: `DoCmd.RunSQL <identifier>` (variable form) — the dominant
- * Access idiom for executing a dynamically-built SQL string. Today only
- * the literal form `DoCmd.RunSQL "DELETE FROM X"` is tracked via the
- * `SQL_WRAPPERS` regex; the variable form silently dropped table impact for
- * every procedure that builds SQL in a string and runs it through
- * `DoCmd.RunSQL`.
- *
- * This regex is the DoCmd.RunSQL analogue of `SQL_VAR_EXEC_RE` above and
- * is iterated by `scanSqlInLine`. When a match is found, the captured
- * identifier is resolved against `sqlVariables` (populated by
- * `trackSqlVariableAssignment` with `&`-accumulate semantics — Issue #13)
- * and the resulting SQL string drives `scanSqlTables`.
- *
- * The optional `(?:\(\))?` + `\s*\(?` shape lets the regex match both
- * the parenthesised form `DoCmd.RunSQL(strSQL)` and the no-paren form
- * `DoCmd.RunSQL strSQL` that the existing SQL_WRAPPERS literal regex
- * does not cover. The captured identifier is the only thing we need —
- * we DO NOT try to parse what the variable points at; that's the
- * existing `sqlVariables` map's job.
+ * Variable form — `getdb().Execute strSQL`, `DoCmd.RunSQL(strSQL)`,
+ * `qdf.Execute sql`. Group 3 is the identifier, resolved against the
+ * `sqlVariables` map that `trackSqlVariableAssignment` fills with
+ * `&`-accumulate semantics (Issue #13). We deliberately do NOT try to parse
+ * what the variable points at here; unresolved identifiers are skipped.
  */
-const SQL_VAR_DOCMD_RUNSQL_RE =
-  /\bDoCmd\.RunSQL\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
+const SQL_WRAPPER_VAR_RE =
+  /\b(\p{L}[\p{L}\p{N}_]*)(?:\(\))?\.(\p{L}[\p{L}\p{N}_]*)(?=[\s(])\s*\(?\s*(\p{L}[\p{L}\p{N}_]*)\s*\)?/giu;
+
+/**
+ * The methods a BARE identifier entry (`"getdb"`) implies. An explicit
+ * `receiver.method` entry (`"cnn.Execute"`) names its own method and ignores
+ * this set.
+ */
+const DEFAULT_WRAPPER_METHODS: ReadonlySet<string> = new Set([
+  'openrecordset',
+  'execute',
+]);
+
+/**
+ * Issue #244 — the wrapper list used when `codegraph.json` →
+ * `vba.sqlWrappers` is absent. A STRICT SUPERSET of the pre-#244 behaviour:
+ *
+ *   - `db` covers every receiver the old `…db\b` regex reached (see
+ *     {@link receiverMatches} for the suffix arm that preserves it) plus the
+ *     `db`-prefixed locals it missed (`dbUse`, `dbToUse`, `m_dbLanzadera`).
+ *   - `getdb` covers the per-backend accessor family (`getdbHPS()`,
+ *     `getdbExpedientes()`, `getdbLanzadera()`) the issue measured at 26-36%
+ *     of all execution sites.
+ *   - `CurrentDb` / `DBEngine` are the Access built-ins.
+ *   - `qd` / `qdf` are the conventional DAO `QueryDef` receivers.
+ *   - `DoCmd.RunSQL` is the Access statement form (both the literal and the
+ *     variable spelling, previously two dedicated regexes).
+ *   - `Connection.Execute` / `Recordset.Open` are the ADO pair.
+ *
+ * Project-specific accessors that do not fit these names are added through
+ * `vba.sqlWrappers`, which EXTENDS this list rather than replacing it.
+ */
+export const DEFAULT_SQL_WRAPPERS: readonly string[] = [
+  'db',
+  'getdb',
+  'CurrentDb',
+  'DBEngine',
+  'qd',
+  'qdf',
+  'DoCmd.RunSQL',
+  'Connection.Execute',
+  'Recordset.Open',
+];
+
+/** One parsed wrapper entry. Both fields are lowercase — VBA is case-insensitive. */
+interface SqlWrapperMatcher {
+  /** Receiver name fragment, e.g. `getdb` from `"getdb"` or `cnn` from `"cnn.Execute"`. */
+  receiver: string;
+  /** Method name, or `null` for a bare entry (which implies {@link DEFAULT_WRAPPER_METHODS}). */
+  method: string | null;
+}
+
+/**
+ * The per-extractor compiled wrapper state. Built ONCE per `VbaExtractor`
+ * (see `vba-extractor.ts`) and cached on `VbaExtractorContext` — the two
+ * RegExps are stateful (`/g`) and `scanSqlInLine` runs on every line of every
+ * file, so re-compiling them per line (which is what the pre-#244 code did)
+ * is pure waste on the hottest path in VBA extraction.
+ */
+export interface CompiledSqlWrappers {
+  /** Literal form — `<receiver>[()].<method> "…"`. Stateful; reset before use. */
+  readonly literalRe: RegExp;
+  /** Variable form — `<receiver>[()].<method> <identifier>`. Stateful; reset before use. */
+  readonly varRe: RegExp;
+  /** Parsed entries, defaults first, project entries appended. */
+  readonly matchers: readonly SqlWrapperMatcher[];
+}
+
+/**
+ * Parse the plain-string wrapper entries into matchers and pair them with a
+ * fresh pair of scanning RegExps.
+ *
+ * `configured` entries are APPENDED to {@link DEFAULT_SQL_WRAPPERS}, never
+ * substituted for them: a project that names its own accessor must not lose
+ * `CurrentDb` in the trade. Entries are accepted in exactly two forms — a
+ * bare identifier fragment (`"getdb"`) or a `receiver.method` pair
+ * (`"cnn.Execute"`). Anything else is dropped here; `project-config.ts`
+ * already warned about it at load time.
+ */
+export function compileSqlWrappers(
+  configured?: readonly string[],
+): CompiledSqlWrappers {
+  const matchers: SqlWrapperMatcher[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...DEFAULT_SQL_WRAPPERS, ...(configured ?? [])]) {
+    const entry = (raw ?? '').trim().toLowerCase();
+    if (!entry || seen.has(entry)) continue;
+    const dot = entry.indexOf('.');
+    if (dot < 0) {
+      if (!/^\p{L}[\p{L}\p{N}_]*$/u.test(entry)) continue;
+      seen.add(entry);
+      matchers.push({ receiver: entry, method: null });
+      continue;
+    }
+    const receiver = entry.slice(0, dot);
+    const method = entry.slice(dot + 1);
+    if (
+      !/^\p{L}[\p{L}\p{N}_]*$/u.test(receiver) ||
+      !/^\p{L}[\p{L}\p{N}_]*$/u.test(method)
+    ) {
+      continue;
+    }
+    seen.add(entry);
+    matchers.push({ receiver, method });
+  }
+  return {
+    literalRe: new RegExp(SQL_WRAPPER_LITERAL_RE.source, SQL_WRAPPER_LITERAL_RE.flags),
+    varRe: new RegExp(SQL_WRAPPER_VAR_RE.source, SQL_WRAPPER_VAR_RE.flags),
+    matchers,
+  };
+}
+
+/**
+ * The default wrappers, compiled once for the whole module. Used by any
+ * `VbaExtractorContext` built without options (tests, out-of-repo callers) so
+ * "no config" behaves exactly like "config absent" and still never compiles a
+ * RegExp per line. Safe to share: `scanSqlInLine` resets `lastIndex` before
+ * every scan and never re-enters itself.
+ */
+let defaultCompiled: CompiledSqlWrappers | null = null;
+function defaultSqlWrappers(): CompiledSqlWrappers {
+  if (defaultCompiled === null) defaultCompiled = compileSqlWrappers();
+  return defaultCompiled;
+}
+
+/**
+ * Does `receiver` name a database handle under `pattern`?
+ *
+ * A leading `m_` / `p_` scope prefix is stripped first — `m_dbLanzadera` is
+ * the same handle as `dbLanzadera`, and VBA codebases use both spellings for
+ * the same variable.
+ *
+ * Then TWO arms, both comparing case-insensitively:
+ *
+ *   - PREFIX — the arm this issue adds, and the one every per-backend
+ *     accessor needs: `getdbHPS`, `getdbExpedientes`, `dbUse`, `dbToUse`.
+ *     The pattern must END AT A SEGMENT BOUNDARY: what follows it is either
+ *     nothing, or a character that is neither a lowercase letter nor `_`
+ *     (a capital or a digit).
+ *     Without that, `db` would also claim `dbg`, `dbase` and `db_test` —
+ *     names that merely START with the same two letters. Every execution
+ *     receiver in the three measured corpora (`getdbNC`, `getdbAGEDO`,
+ *     `dbUse`, `p_db`, `qdf`, …) clears the boundary.
+ *   - SUFFIX — `MiBaseDatosdb` for pattern `db`. This is what the pre-#244
+ *     regex `\b(?:\p{L}[\p{L}\p{N}_]*)?db\b` matched, kept so the defaults
+ *     stay a strict superset of the old behaviour instead of trading one
+ *     blind spot for another.
+ *
+ * The method check in {@link matchesWrapper} is the second gate: `dbg.Print`
+ * fails both the boundary rule AND the method rule.
+ */
+function receiverMatches(receiver: string, pattern: string): boolean {
+  const lower = receiver.toLowerCase();
+  const bare = lower.startsWith('m_') || lower.startsWith('p_') ? lower.slice(2) : lower;
+  if (bare.endsWith(pattern)) return true;
+  if (!bare.startsWith(pattern)) return false;
+  if (bare.length === pattern.length) return true;
+  // Segment boundary: read the ORIGINAL (un-lowercased) character so
+  // `dbUse` splits at the capital and `dbase` does not split at all.
+  const next = receiver.slice(receiver.length - bare.length).charAt(pattern.length);
+  return next !== '_' && next === next.toUpperCase();
+}
+
+/** Is `<receiver>.<method>` an execution site under any configured wrapper? */
+function matchesWrapper(
+  wrappers: CompiledSqlWrappers,
+  receiver: string,
+  method: string,
+): boolean {
+  const methodLower = method.toLowerCase();
+  for (const matcher of wrappers.matchers) {
+    const methodOk =
+      matcher.method === null
+        ? DEFAULT_WRAPPER_METHODS.has(methodLower)
+        : matcher.method === methodLower;
+    if (!methodOk) continue;
+    if (receiverMatches(receiver, matcher.receiver)) return true;
+  }
+  return false;
+}
 
 /**
  * Regex matching the chained `& "..."` literals that may follow a
@@ -236,48 +429,41 @@ export function scanSqlInLine(
   dedupe: Set<string>,
   sqlVariables: Map<string, string>,
 ): void {
-  for (const { re } of SQL_WRAPPERS) {
-    // Each wrapper regex is stateful (has /g); reset before use.
-    const localRe = new RegExp(re.source, re.flags);
-    let m: RegExpExecArray | null;
-    while ((m = localRe.exec(line)) !== null) {
-      const firstLiteral = m[1] ?? '';
-      // After the wrapper regex consumes up to and including the closing
-      // `"` of the first literal, walk the rest of the line for any
-      // `& "..."` chains and concatenate every literal's content. Joining
-      // with a space (mirrors `collectStringLiteralText`) keeps adjacent
-      // `FROM tblA` & `FROM tblB` separated so `scanSqlTables` finds both.
-      const rest = line.slice(m.index + m[0].length);
-      const chain = collectSqlWrapperChain(rest);
-      const joined = [firstLiteral, ...chain].join(' ');
-      emitSqlTableReferences(ctx, joined, lineNum, dedupe);
-    }
+  // Issue #244: one compiled wrapper set per extractor, cached on the
+  // context. A context built without options (tests, out-of-repo callers)
+  // falls back to the module-level defaults — never to a per-line compile.
+  const wrappers = ctx.sqlWrappers ?? defaultSqlWrappers();
+
+  // Literal form — `getdb().Execute "DELETE FROM T"`,
+  // `CurrentDb.OpenRecordset("SELECT * FROM T")`, `DoCmd.RunSQL "…"`.
+  const literalRe = wrappers.literalRe;
+  literalRe.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = literalRe.exec(line)) !== null) {
+    if (!matchesWrapper(wrappers, m[1] ?? '', m[2] ?? '')) continue;
+    const firstLiteral = m[3] ?? '';
+    // After the wrapper regex consumes up to and including the closing
+    // `"` of the first literal, walk the rest of the line for any
+    // `& "..."` chains and concatenate every literal's content. Joining
+    // with a space (mirrors `collectStringLiteralText`) keeps adjacent
+    // `FROM tblA` & `FROM tblB` separated so `scanSqlTables` finds both.
+    const rest = line.slice(m.index + m[0].length);
+    const chain = collectSqlWrapperChain(rest);
+    const joined = [firstLiteral, ...chain].join(' ');
+    emitSqlTableReferences(ctx, joined, lineNum, dedupe);
   }
 
-  const localRe = new RegExp(SQL_VAR_EXEC_RE.source, SQL_VAR_EXEC_RE.flags);
+  // Variable form — `getdb().Execute strSQL`, `qdf.Execute sql`,
+  // `DoCmd.RunSQL(strSQL)` (Issue #42). The captured identifier is resolved
+  // against `sqlVariables` (populated by `trackSqlVariableAssignment` with
+  // `&`-accumulate semantics, Issue #13); an identifier with no row in the
+  // map is silently skipped — we never guess what a variable holds.
+  const varRe = wrappers.varRe;
+  varRe.lastIndex = 0;
   let vm: RegExpExecArray | null;
-  while ((vm = localRe.exec(line)) !== null) {
-    const varName = (vm[1] ?? '').toLowerCase();
-    const sqlString = sqlVariables.get(varName);
-    if (!sqlString) continue;
-    emitSqlTableReferences(ctx, sqlString, lineNum, dedupe);
-  }
-
-  // Issue #42: `DoCmd.RunSQL <identifier>` (variable form). Mirrors the
-  // SQL_VAR_EXEC_RE path above but for the Access-style `DoCmd.RunSQL`
-  // idiom — the dominant pattern in real-world VBA modules. Resolve the
-  // captured identifier against `sqlVariables` (populated by
-  // `trackSqlVariableAssignment` with `&`-accumulate semantics, Issue
-  // #13) and feed the resolved SQL string into `scanSqlTables`.
-  // Unresolved identifiers (no row in the map) are silently skipped —
-  // same graceful-no-op contract as SQL_VAR_EXEC_RE.
-  const docmdLocalRe = new RegExp(
-    SQL_VAR_DOCMD_RUNSQL_RE.source,
-    SQL_VAR_DOCMD_RUNSQL_RE.flags,
-  );
-  let dm: RegExpExecArray | null;
-  while ((dm = docmdLocalRe.exec(line)) !== null) {
-    const varName = (dm[1] ?? '').toLowerCase();
+  while ((vm = varRe.exec(line)) !== null) {
+    if (!matchesWrapper(wrappers, vm[1] ?? '', vm[2] ?? '')) continue;
+    const varName = (vm[3] ?? '').toLowerCase();
     const sqlString = sqlVariables.get(varName);
     if (!sqlString) continue;
     emitSqlTableReferences(ctx, sqlString, lineNum, dedupe);

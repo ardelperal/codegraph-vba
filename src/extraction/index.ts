@@ -1612,6 +1612,10 @@ export class ExtractionOrchestrator {
     const vbaOptions: VbaExtractionOptions = {
       targets: vbaConfig.targets,
       maxRaiseFanout: vbaConfig.maxRaiseFanout,
+      // Issue #244: extra SQL execution-site receivers. Plain strings — the
+      // compiled matcher is built inside the extractor because a RegExp
+      // cannot cross the `structuredClone` worker boundary.
+      sqlWrappers: vbaConfig.sqlWrappers,
     };
     // Issue #154 — gate the 3 Dysflow-specific VBA sub-extractors. `true`
     // (the default) keeps the pre-refactor behavior; `false` opts out so
@@ -2270,6 +2274,7 @@ export class ExtractionOrchestrator {
       {
         targets: vbaReindexConfig.targets,
         maxRaiseFanout: vbaReindexConfig.maxRaiseFanout,
+        sqlWrappers: vbaReindexConfig.sqlWrappers,
       },
     );
 

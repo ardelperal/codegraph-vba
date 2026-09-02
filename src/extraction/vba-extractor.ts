@@ -45,6 +45,7 @@ import {
   stripVbaComments,
 } from './vba-preprocess';
 import { VbaExtractorContext, VbaClassifier } from './vba/context';
+import { compileSqlWrappers } from './vba/sql-wrapper';
 import type { VbaExtractionOptions } from './vba/options';
 import type { VbaExtractionRule } from './vba/rules';
 import { RULES as PROCEDURES_RULES, createProceduresClassifier } from './vba/procedures';
@@ -272,6 +273,10 @@ export class VbaExtractor {
     this.options = options;
     this.maxRaiseFanout = options.maxRaiseFanout ?? DEFAULT_MAX_RAISE_FANOUT;
     this.ctx = new VbaExtractorContext(filePath);
+    // Issue #244: compile the SQL execution-site matcher ONCE per extractor
+    // and park it on the context. `scanSqlInLine` reads it on every line, so
+    // this is the only place it may be built.
+    this.ctx.sqlWrappers = compileSqlWrappers(options.sqlWrappers);
   }
 
   extract(): ExtractionResult {

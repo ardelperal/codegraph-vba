@@ -449,10 +449,14 @@ probe's docblock so a later reader can tell which question a number answers.
 - a `Property Get` with a handler gets the same treatment as a `Sub`.
 
 **Acceptance.**
-- `errorPolicy.protection` distribution matches E1's census: ≈3,777 / 227 / 813.
+- `errorPolicy.protection` distribution matches E1's census, measured: 3,774 / 227 / 816.
 - Node count is **unchanged**. Edge count is **unchanged**. This task adds zero nodes and zero edges.
-- `danglingTarget` is non-null for exactly **1** procedure in the corpus. Name it in the PR body —
-  it is a real finding and the maintainer will want to see it.
+- `danglingTarget` is non-null for **0** procedures in the corpus. This line previously predicted
+  exactly 1, from the pre-probe hand census; E1's reconciliation table above already records that
+  the committed probe measures 0. The corpus does contain a handler literally named `noExiste`,
+  but it is defined in its own procedure and is therefore correctly not dangling — almost
+  certainly what the hand census mistook for an unresolved target. A future project that DOES
+  have one should still surface it, so keep the field and name any hit in the PR body.
 
 **Changelog (New Features).** "Procedures now record how they handle errors — whether they have
 a handler, suppress errors silently, or have no protection at all — so unguarded code paths can

@@ -21,6 +21,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Every parameter a VBA procedure declares is now its own symbol in the graph, linked to the procedure that owns it and to the class it is typed as, so you can ask which procedures take a given class and follow it from there. (#257)
 - SQL that a form or control is bound to at runtime — assigned to `RowSource`, `RecordSource`, `ControlSource`, `Filter` or `OrderBy` — now shows the tables it reads, whether the statement is written inline or built up in a variable first. (#252)
 - Access domain functions such as `DLookup` and `DCount` now record the table or saved query they read, so a procedure that touches data only through them no longer looks like it touches no data at all. (#255)
+- Procedures now record how they handle errors — whether they have a handler, silently suppress errors, or have no protection at all — so unguarded code paths can be found without reading every module. (#259)
 
 ### Changed
 

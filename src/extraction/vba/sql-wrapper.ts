@@ -21,6 +21,12 @@
  * own accessors. Config entries are identifier fragments or `receiver.method`
  * pairs — never raw regex, which in this per-line hot path would be a
  * catastrophic-backtracking foot-gun.
+ *
+ * Issue #255: the Access domain aggregate functions (`DLookup`, `DCount`, …)
+ * name a table or a saved query in their SECOND argument. They live here
+ * rather than in a file of their own because the only thing they add is a call
+ * shape — the "is this a saved query?" gate and the emit path are the ones
+ * issue #253 already built, reused verbatim.
  */
 import { escapeRegExpLiteral } from './text-utils';
 import { VbaExtractorContext, ProcInfo } from './context';
@@ -556,6 +562,150 @@ function emitSavedQueryReference(
   });
 }
 
+/**
+ * Issue #255 (task T13): the Access domain aggregate functions. Every one of
+ * them takes the DOMAIN — the name of a table or of a saved query — as its
+ * SECOND argument.
+ *
+ * The regex recognises the call shape only. The name gate and the emit path
+ * are T11's (`looksLikeSavedQueryName` / `emitSavedQueryReference`), so a
+ * domain name is answered by exactly the same "is this a saved query?" rule
+ * that already answers `OpenRecordset("qryX")` and `QueryDefs("qryX")` — one
+ * resolver, not two.
+ *
+ * The trailing `\s*\(` is load-bearing twice over: it anchors the name so a
+ * project helper called `DLookupSeguro(` can never be read as `DLookup`, and
+ * it hands {@link secondArgumentText} the paren to start walking from.
+ */
+const DOMAIN_FUNCTION_RE =
+  /\b(DLookup|DCount|DSum|DMax|DMin|DAvg|DFirst|DLast)\s*\(/giu;
+
+/**
+ * A domain argument we are willing to read: EXACTLY one string literal and
+ * nothing else. A variable (`DLookup("N", tabla)`) or an expression
+ * (`DLookup("N", "Tb" & sufijo)`) names something only the runtime knows, and
+ * is skipped in silence rather than guessed at.
+ */
+const LONE_STRING_LITERAL_RE = /^"((?:[^"]|"")*)"$/u;
+
+/**
+ * Return the raw source text of the SECOND argument of the call whose opening
+ * paren sits at `openParen`, or `null` when the call has fewer than two
+ * arguments.
+ *
+ * Walks characters instead of splitting on `,` because two ordinary spellings
+ * break a naive split: a comma inside the criteria literal
+ * (`DLookup("N", "T", "Id In (1,2)")`) and a comma inside a nested call
+ * (`DLookup("N", "T", "Id=" & Nz(x, 0))`). Only a comma at depth 1 and outside
+ * a string literal separates arguments.
+ */
+function secondArgumentText(src: string, openParen: number): string | null {
+  const args: string[] = [];
+  let current = '';
+  let depth = 1;
+  let i = openParen + 1;
+  while (i < src.length && args.length < 2) {
+    const ch = src[i] ?? '';
+    if (ch === '"') {
+      // Copy the literal through verbatim, honouring `""` escapes, so a comma
+      // or a paren inside it can never be read as structure.
+      current += ch;
+      i++;
+      while (i < src.length) {
+        const c = src[i] ?? '';
+        if (c === '"' && src[i + 1] === '"') {
+          current += '""';
+          i += 2;
+          continue;
+        }
+        current += c;
+        i++;
+        if (c === '"') break;
+      }
+      continue;
+    }
+    if (ch === '(') {
+      depth++;
+      current += ch;
+      i++;
+      continue;
+    }
+    if (ch === ')') {
+      depth--;
+      if (depth === 0) {
+        args.push(current);
+        break;
+      }
+      current += ch;
+      i++;
+      continue;
+    }
+    if (ch === ',' && depth === 1) {
+      args.push(current);
+      current = '';
+      i++;
+      continue;
+    }
+    current += ch;
+    i++;
+  }
+  return args.length >= 2 ? args[1] ?? null : null;
+}
+
+/**
+ * Does the file being scanned declare its own procedure by this name?
+ *
+ * A project that ships its own `DLookup` wrapper means the call site is user
+ * code, not the Access built-in, and its second argument carries no promise of
+ * naming a domain. The call itself still resolves to that user code through
+ * the ordinary call-site scan — this gate only stops the extra domain
+ * reference from being invented on top of it.
+ *
+ * `localProcs` is keyed by the DECLARED spelling and VBA identifiers are
+ * case-insensitive, so the keys are compared folded. The procedures sweep is a
+ * PRE-walk (see `vba-extractor.ts`), so a helper declared further down the
+ * file is already visible by the time this line is scanned.
+ */
+function declaresOwnProcedure(ctx: VbaExtractorContext, name: string): boolean {
+  const wanted = name.toLocaleLowerCase('en-US');
+  for (const declared of ctx.localProcs.keys()) {
+    if (declared.toLocaleLowerCase('en-US') === wanted) return true;
+  }
+  return false;
+}
+
+/**
+ * Issue #255: scan one line for domain-aggregate calls and emit the saved-query
+ * reference their second argument names.
+ *
+ * Deliberately NOT handled: a domain spelled as a full SQL statement
+ * (`DLookup("N", "SELECT Id FROM T")`), which Access also accepts. It is
+ * rejected by `looksLikeSavedQueryName`'s verb gate and produces nothing —
+ * the same silence T11 chose for every literal it cannot classify.
+ */
+export function scanDomainFunctionsInLine(
+  ctx: VbaExtractorContext,
+  line: string,
+  lineNum: number,
+  dedupe: Set<string>,
+  caller: ProcInfo,
+): void {
+  DOMAIN_FUNCTION_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DOMAIN_FUNCTION_RE.exec(line)) !== null) {
+    if (declaresOwnProcedure(ctx, m[1] ?? '')) continue;
+    // `m[0]` ends with the opening paren, so its last index is where the
+    // argument list starts.
+    const raw = secondArgumentText(line, m.index + m[0].length - 1);
+    if (raw === null) continue;
+    const literal = LONE_STRING_LITERAL_RE.exec(raw.trim());
+    if (!literal) continue;
+    const domain = (literal[1] ?? '').replace(/""/g, '"');
+    if (!looksLikeSavedQueryName(domain)) continue;
+    emitSavedQueryReference(ctx, domain, lineNum, m.index, caller, dedupe);
+  }
+}
+
 export function scanSqlInLine(
   ctx: VbaExtractorContext,
   line: string,
@@ -628,6 +778,11 @@ export function scanSqlInLine(
       if (!looksLikeSavedQueryName(name)) continue;
       emitSavedQueryReference(ctx, name, lineNum, qm.index, caller, dedupe);
     }
+
+    // Issue #255: `DLookup("Nombre", "TbUsuarios", "Id=1")` and its seven
+    // siblings name their domain — a table or a saved query — in argument 2.
+    // Same gate, same emit path, same resolver as the saved-query names above.
+    scanDomainFunctionsInLine(ctx, line, lineNum, dedupe, caller);
   }
 
   // Issue #252 — SQL bound to a form/control property at runtime.

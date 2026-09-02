@@ -31,6 +31,59 @@ const SQL_VAR_ASSIGN_RE =
   /^\s*(\p{L}[\p{L}\p{N}_]*)\s*=\s*(.*)$/iu;
 
 /**
+ * `metadata.synthesizedBy` for a table reached through a SQL wrapper call
+ * (`DoCmd.RunSQL`, `db.Execute`, `db.OpenRecordset`, …).
+ */
+const SQL_TABLE_SYNTHESIZER = 'vba-sql-table';
+
+/**
+ * Issue #252 — `metadata.synthesizedBy` for a table reached through SQL
+ * assigned to a binding property at RUNTIME. Deliberately distinct from the
+ * `.form.txt` sweep's static `vba-row-source` so an audit can tell the two
+ * provenances apart: one is what the designer stored, the other is what the
+ * code actually binds.
+ */
+export const RUNTIME_BINDING_SYNTHESIZER = 'vba-row-source-dynamic';
+
+/**
+ * Issue #252 — one receiver-chain segment on the left of a binding
+ * assignment: a plain identifier or a `[bracketed name]`, optionally
+ * followed by a single call/index parenthesis (`Controls("cbo")`,
+ * `Item(0)`). Parentheses are matched non-nested on purpose — a
+ * bounded, backtracking-safe shape for a per-line hot path.
+ */
+const BINDING_SEGMENT =
+  String.raw`(?:\[[^\]\r\n]+\]|[\p{L}_][\p{L}\p{N}_]*)(?:\s*\([^()\r\n]*\))?`;
+
+/**
+ * Issue #252 — `<receiver>.(RowSource|RecordSource|ControlSource|Filter|OrderBy) = <value>`.
+ *
+ * Group 1 is the property, group 2 the raw right-hand side.
+ *
+ * Shape notes, because each piece earns its place:
+ *
+ *   - Anchored at `^\s*`, and the receiver is built out of identifier
+ *     segments joined by `.` or `!` — never a permissive `.*`. That is what
+ *     rejects a COMPARISON (`If Me.Filter = "…" Then`): `If` is an
+ *     identifier segment but no `.` follows it, and the pattern cannot
+ *     restart mid-line. A `'` comment line is rejected by the same anchor.
+ *   - The receiver chain is OPTIONAL so the bare `With` form
+ *     (`With Me.cbo` … `.RowSource = "…"`) resolves; that spelling is
+ *     pervasive in real Access code.
+ *   - `(?![\p{L}\p{N}_])` after the property name keeps `Me.FilterOn = True`
+ *     and `Me.OrderByOn = True` out — they are booleans, not SQL.
+ *   - Every quantifier is bounded by a mandatory separator (`.`/`!`/`(`), so
+ *     the pattern cannot backtrack catastrophically on a long line.
+ */
+const BINDING_ASSIGN_RE = new RegExp(
+  String.raw`^\s*(?:${BINDING_SEGMENT}(?:\s*[.!]\s*${BINDING_SEGMENT})*)?\s*[.!]\s*(RowSource|RecordSource|ControlSource|Filter|OrderBy)(?![\p{L}\p{N}_])\s*=\s*(.+)$`,
+  'iu',
+);
+
+/** Issue #252 — a right-hand side that is exactly one bare identifier. */
+const BINDING_VAR_RE = /^\p{L}[\p{L}\p{N}_]*$/u;
+
+/**
  * Issue #244 — the two execution-site regexes.
  *
  * Both capture the RECEIVER (group 1) and the METHOD (group 2) generically
@@ -576,6 +629,74 @@ export function scanSqlInLine(
       emitSavedQueryReference(ctx, name, lineNum, qm.index, caller, dedupe);
     }
   }
+
+  // Issue #252 — SQL bound to a form/control property at runtime.
+  scanRuntimeBindingAssignment(ctx, line, lineNum, dedupe, sqlVariables);
+}
+
+/**
+ * Issue #252 — SQL assigned to a binding property at runtime.
+ *
+ * This is the half of the data-binding problem the `.form.txt` sweep cannot
+ * see. The measured corpus binds in code, not in the designer: 161
+ * `.RowSource =` assignments across `.cls`/`.bas`, against ZERO
+ * `RecordSource` and ZERO `ControlSource` occurrences in `00_EXPEDIENTES`'s
+ * `.form.txt` files. Everything those statements touch was invisible.
+ *
+ * The right-hand side goes through the SAME pipeline the wrapper path uses —
+ * {@link collectConcatFragments} then `scanSqlTables` — deliberately, and not
+ * a parallel one. That is what makes the `?` sentinel for non-literal
+ * operands and the shared reserved-word reject list apply here for free:
+ * `.RowSource = "SELECT " & campo & " FROM " & tabla` becomes
+ * `SELECT  ?  FROM   ?` and yields no table at all, rather than the confident
+ * wrong `FROM` / `WHERE` captures Issue #203 documents.
+ *
+ * A value that is NOT SQL — a bare saved-query name, a `Value List` payload,
+ * a plain field name on `ControlSource` — produces nothing here on its own,
+ * because `scanSqlTables` finds no clause keyword in it. Connecting a bare
+ * query name to its saved query is T11's job, not this one; guessing would
+ * be exactly the "confident wrong edge" the project forbids.
+ */
+function scanRuntimeBindingAssignment(
+  ctx: VbaExtractorContext,
+  line: string,
+  lineNum: number,
+  dedupe: Set<string>,
+  sqlVariables: Map<string, string>,
+): void {
+  const m = BINDING_ASSIGN_RE.exec(line);
+  if (!m) return;
+  const rhs = (m[2] ?? '').trim();
+  if (!rhs) return;
+
+  // Literal form — one or more `"..."` operands, possibly `&`-chained.
+  const fragments = collectConcatFragments(rhs);
+  if (fragments.length > 0) {
+    emitSqlTableReferences(
+      ctx,
+      fragments.join(' '),
+      lineNum,
+      dedupe,
+      RUNTIME_BINDING_SYNTHESIZER,
+    );
+    return;
+  }
+
+  // Variable form — `.RowSource = strSQL`. Resolved against the SAME
+  // `sqlVariables` map the wrapper path uses, so the `&`-accumulate
+  // semantics of Issue #13 and the procedure scoping of Issue #204 apply
+  // unchanged. An identifier with no row in the map is skipped: we never
+  // guess what a variable holds.
+  if (!BINDING_VAR_RE.test(rhs)) return;
+  const sqlString = sqlVariables.get(rhs.toLowerCase());
+  if (!sqlString) return;
+  emitSqlTableReferences(
+    ctx,
+    sqlString,
+    lineNum,
+    dedupe,
+    RUNTIME_BINDING_SYNTHESIZER,
+  );
 }
 
 function emitSqlTableReferences(
@@ -583,16 +704,23 @@ function emitSqlTableReferences(
   sqlString: string,
   lineNum: number,
   dedupe: Set<string>,
+  synthesizedBy: string = SQL_TABLE_SYNTHESIZER,
 ): void {
   // Issue #203: delegate to the shared scanner. It owns the
   // `FROM/JOIN/INTO/UPDATE <table>` regex, the reserved-word reject
   // list, the `?`-sentinel fallback (see `vba/sql-wrapper.ts:144-178`)
   // and the read/write access direction.
+  //
+  // Issue #252: the de-dup key is namespaced by `synthesizedBy` so the
+  // runtime-binding path and the wrapper path keep disjoint buckets. A
+  // single line can legitimately be both (`Set rs = db.OpenRecordset(sql)`
+  // has no binding, but a `With` body can interleave the two shapes), and
+  // one path must never silence the other's edge.
   for (const row of scanSqlTables(sqlString)) {
-    const key = `${lineNum}:${row.table}`;
+    const key = `${synthesizedBy}:${lineNum}:${row.table}`;
     if (dedupe.has(key)) continue;
     dedupe.add(key);
-    ctx.emitReference(row.table, lineNum, 0, 'vba-sql-table', row.access);
+    ctx.emitReference(row.table, lineNum, 0, synthesizedBy, row.access);
   }
 
   // Issue #256: the Access `IN "<path>"` clause points the statement at

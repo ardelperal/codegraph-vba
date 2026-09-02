@@ -57,6 +57,15 @@ docs/business/
 .codegraph/
 .codegraph-vba/
 
+# Test-local fixture copy (issue #281). `extraction-vba-event-synth.test.ts`
+# clones the vba-control-modeling fixtures into here and removes them in
+# `afterAll`; a run that is killed before that — or that loses the retry to a
+# Windows file lock — leaves the copy behind as untracked files INSIDE a
+# tracked fixture directory, where the next `git add -A` sweeps them into an
+# unrelated commit. Scoped to the fixtures tree so it can never mask a real
+# directory elsewhere.
+__tests__/fixtures/**/.forms-copy/
+
 test_frameworks
 
 # Test language repos for manual testing

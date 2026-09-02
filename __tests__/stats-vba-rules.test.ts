@@ -81,6 +81,7 @@ describe('buildStatsVbaRules() — pure unit shape (issue #168)', () => {
     expect(byName.declarations?.ruleCount).toBe(5);
     expect(byName.dims?.ruleCount).toBe(2);
     expect(byName['enums-consts']?.ruleCount).toBe(6);
+    expect(byName.errors?.ruleCount).toBe(4);
     expect(byName['call-sweep']?.ruleCount).toBe(4);
   });
 
@@ -88,7 +89,7 @@ describe('buildStatsVbaRules() — pure unit shape (issue #168)', () => {
     const out = buildStatsVbaRules();
     const sum = out.concerns.reduce((acc, c) => acc + c.ruleCount, 0);
     expect(out.totalRules).toBe(sum);
-    expect(out.totalRules).toBe(19);
+    expect(out.totalRules).toBe(23);
   });
 
   it('preserves VBA_RULE_TABLES key order in concerns[]', () => {
@@ -102,6 +103,7 @@ describe('buildStatsVbaRules() — pure unit shape (issue #168)', () => {
       'declarations',
       'dims',
       'enums-consts',
+      'errors',
       'call-sweep',
     ]);
   });
@@ -186,8 +188,8 @@ describe('codegraph stats vba-rules --json (CLI integration, issue #168)', () =>
       }>;
       totalRules: number;
     };
-    expect(parsed.totalRules).toBe(19);
-    expect(parsed.concerns).toHaveLength(6);
+    expect(parsed.totalRules).toBe(23);
+    expect(parsed.concerns).toHaveLength(7);
     // Every concern has matching static count.
     const byName = Object.fromEntries(parsed.concerns.map((c) => [c.concern, c]));
     expect(byName.implements!.ruleCount).toBe(1);
@@ -195,6 +197,7 @@ describe('codegraph stats vba-rules --json (CLI integration, issue #168)', () =>
     expect(byName.declarations!.ruleCount).toBe(5);
     expect(byName.dims!.ruleCount).toBe(2);
     expect(byName['enums-consts']!.ruleCount).toBe(6);
+    expect(byName.errors!.ruleCount).toBe(4);
     expect(byName['call-sweep']!.ruleCount).toBe(4);
   });
 
@@ -227,11 +230,11 @@ describe('codegraph stats vba-rules --json (CLI integration, issue #168)', () =>
     const { stdout, status } = runCli(['stats', 'vba-rules']);
     expect(status).toBe(0);
     expect(stdout).toContain('VBA');
-    for (const concern of ['implements', 'procedures', 'declarations', 'dims', 'enums-consts', 'call-sweep']) {
+    for (const concern of ['implements', 'procedures', 'declarations', 'dims', 'enums-consts', 'errors', 'call-sweep']) {
       expect(stdout).toContain(concern);
     }
     // The pretty mode surfaces the total somewhere on stdout.
-    expect(stdout).toMatch(/\b19\b/);
+    expect(stdout).toMatch(/\b23\b/);
   });
 });
 

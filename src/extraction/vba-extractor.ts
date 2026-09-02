@@ -55,6 +55,10 @@ import {
 } from './vba/declarations';
 import { RULES as DIMS_RULES, createDimsClassifier } from './vba/dims';
 import { RULES as ENUMS_CONSTS_RULES, createEnumsConstsClassifier } from './vba/enums-consts';
+import {
+  RULES as ERRORS_RULES,
+  createErrorPolicyClassifier,
+} from './vba/errors';
 import { RULES as IMPLEMENTS_RULES, createImplementsClassifier } from './vba/implements';
 import {
   RULES as CALL_SWEEP_RULES,
@@ -115,6 +119,7 @@ export const VBA_RULE_TABLES: Readonly<Record<string, readonly VbaExtractionRule
     declarations: EVENTS_TYPES_DECLARES_RULES,
     dims: DIMS_RULES,
     'enums-consts': ENUMS_CONSTS_RULES,
+    errors: ERRORS_RULES,
     'call-sweep': CALL_SWEEP_RULES,
   };
 
@@ -122,7 +127,7 @@ export const VBA_RULE_TABLES: Readonly<Record<string, readonly VbaExtractionRule
  * Issue #153: the canonical list of concern keys `VBA_RULE_TABLES`
  * must contain. Order matches the per-line dispatch order in
  * `extract()`: events/types/declares → implements → dims → enums/consts
- * → calls/sql. The procedures sweep runs before the main walk so
+ * → errors → calls/sql. The procedures sweep runs before the main walk so
  * `ctx.localProcs` is populated for the call sweep, but its rule table
  * has the same non-empty invariant as every per-line classifier.
  */
@@ -132,6 +137,7 @@ const REQUIRED_DISPATCH_TABLES: readonly string[] = [
   'implements',
   'dims',
   'enums-consts',
+  'errors',
   'call-sweep',
 ];
 
@@ -381,6 +387,10 @@ export class VbaExtractor {
         createImplementsClassifier(),
         createDimsClassifier(),
         createEnumsConstsClassifier(),
+        // Issue #259: runs BEFORE the call sweep on purpose. It emits nothing
+        // itself, but it resolves each procedure's handler region, and task E3
+        // flags the edges the call sweep emits from inside that region.
+        createErrorPolicyClassifier(),
         createCallsAndSqlClassifier(lines),
       ];
 

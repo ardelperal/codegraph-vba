@@ -48,6 +48,76 @@ export interface ProcInfo {
 }
 
 /**
+ * Issue #259: how one procedure handles errors, recorded as
+ * `metadata.errorPolicy` on its `function` node.
+ *
+ * This is the whole of task E2 in `docs/vba-error-handling-plan.md`: the plan
+ * deliberately adds NO node kind and NO edge kind for error handling (§4),
+ * because 96.5% of the corpus's line labels are the same label (`errores`)
+ * doing the same job — one bit of information, which belongs in a field.
+ * Everything below is therefore metadata on a node that already exists.
+ */
+export interface VbaErrorPolicy {
+  /**
+   * `'handler'`     — the procedure runs at least one `On Error GoTo <label>`.
+   * `'resume-next'` — only `On Error Resume Next`; every error is swallowed.
+   * `'none'`        — no `On Error` statement at all (§3.1's defect class).
+   *
+   * A `GoTo <label>` that is NOT an `On Error GoTo` never reaches this field:
+   * a label nobody targets with `On Error` is control flow, not a handler.
+   */
+  protection: 'handler' | 'resume-next' | 'none';
+  /** The `On Error GoTo` target as written — `'errores'` in ~98% of cases. */
+  handlerLabel: string | null;
+  /** First line of the handler body: the line AFTER the label definition. */
+  handlerStartLine: number | null;
+  /** The procedure's terminating `End Sub` / `End Function` / `End Property`. */
+  handlerEndLine: number | null;
+  /**
+   * What the handler body does. Always `null` here — it is derived in task E3,
+   * where the handler body's calls are already being classified.
+   */
+  behavior: 'channel' | 'display' | 'reraise' | 'mixed' | 'unknown' | null;
+  /** `On Error GoTo <label>` sites; `> 1` means the procedure swaps handlers. */
+  handlerCount: number;
+  /** An `On Error Resume Next` never closed by `On Error GoTo 0` / `-1`. */
+  resumeNextOpen: boolean;
+  /**
+   * An `On Error GoTo <label>` whose `<label>` this procedure never defines —
+   * a handler that can never run. Resolved per PROCEDURE, not per module: a
+   * label defined in a sibling procedure is out of scope and still dangling.
+   * No procedure in the measured corpus has one.
+   */
+  danglingTarget: string | null;
+}
+
+/**
+ * Issue #259: the mutable accumulator the error-policy classifier keeps while
+ * one procedure body is open. Folded into a {@link VbaErrorPolicy} at the
+ * procedure's end boundary; never surfaced to consumers.
+ */
+export interface VbaErrorPolicyState {
+  /** The procedure's declaration line — the `functionNodeByStartLine` key. */
+  startLine: number;
+  protection: VbaErrorPolicy['protection'];
+  /** lowercased `On Error GoTo` target → the label as first written. */
+  targets: Map<string, string>;
+  /** lowercased line-label definition → the line it is defined on. */
+  definedLabels: Map<string, number>;
+  handlerCount: number;
+  /**
+   * The LAST `On Error Resume Next` (`opens: true`) or `On Error GoTo 0|-1`
+   * (`opens: false`) seen, by source position. Position-ordered rather than
+   * counted so two of them on one colon-separated line resolve in source
+   * order regardless of which rule in the table fires first.
+   */
+  lastScopeEvent: { line: number; column: number; opens: boolean } | null;
+  /** lowercased label whose definition opened the handler region. */
+  openedTarget: string | null;
+  handlerStartLine: number | null;
+}
+
+/**
  * Issue #83: the per-concern classifier shape. The single walker in
  * `vba-extractor.ts` calls `classifyLine(line, index, ctx)` once per
  * pre-split line, in a stable order across all six concerns. No internal
@@ -296,6 +366,18 @@ export class VbaExtractorContext {
    * `null` means "outside any enum block right now".
    */
   public vbaEnumBlock: { id: string; name: string } | null = null;
+
+  /**
+   * Issue #259: per-extraction state for the error-policy classifier
+   * (`src/extraction/vba/errors.ts`). Non-null exactly while a procedure
+   * body is open; the classifier folds it into the `errorPolicy` metadata
+   * object on that procedure's `function` node when the body closes.
+   *
+   * Same rationale as `vbaEnumBlock` / `vbaDeclTypeBlock`: the declarative
+   * RULES table's `emit` functions need somewhere to accumulate inter-line
+   * state, and `ctx` is the only thing they are handed.
+   */
+  public vbaErrorPolicy: VbaErrorPolicyState | null = null;
 
   /**
    * Issue #153: per-extraction state for the calls/SQL classifier's

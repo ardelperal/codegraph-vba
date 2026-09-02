@@ -23,7 +23,7 @@
  * catastrophic-backtracking foot-gun.
  */
 import { escapeRegExpLiteral } from './text-utils';
-import { VbaExtractorContext } from './context';
+import { VbaExtractorContext, ProcInfo } from './context';
 import { scanSqlTables, scanSqlExternalBackends } from '../sql-table-scan';
 
 /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
@@ -422,12 +422,94 @@ function collectConcatFragments(src: string): string[] {
   return out;
 }
 
+/**
+ * Issue #253: `QueryDefs("nombreConsulta")` names a saved query directly,
+ * with no wrapper method involved, so it gets its own pattern rather than a
+ * row in the wrapper table. String-literal argument only — a variable holds a
+ * name nothing static can know.
+ */
+const QUERY_DEFS_RE = /\bQueryDefs\s*\(\s*"([^"]*)"\s*\)/giu;
+
+/**
+ * Issue #253: does this literal read as a SQL statement rather than the name
+ * of a saved query?
+ *
+ * The gate is deliberately WIDER than the four DML verbs the issue names. A
+ * literal is rejected as SQL if it contains any of these keywords anywhere,
+ * because the cost of the two mistakes is not symmetric: treating SQL as a
+ * query name emits a reference to a name no `queries/*.sql` will ever carry
+ * (a permanent `failed` reference and a confusing one), while treating an
+ * oddly-named query as SQL emits nothing at all. Silent beats wrong.
+ */
+const SQL_KEYWORD_RE =
+  /\b(SELECT|INSERT|UPDATE|DELETE|FROM|WHERE|JOIN|INTO|VALUES|SET|CREATE|ALTER|DROP|UNION|GROUP|ORDER|HAVING|TRANSFORM|PARAMETERS|EXEC|EXECUTE|DISTINCT|TABLE)\b/iu;
+
+/**
+ * Issue #253: an Access object name — letters, digits, underscores and
+ * interior spaces, nothing else. No punctuation, no operators, no wildcards.
+ *
+ * The length cap is not cosmetic: it is the last line of defence against a
+ * long keyword-free string (a message, a `Value List` payload) being read as
+ * a query name. Access itself caps object names at 64 characters.
+ */
+const ACCESS_OBJECT_NAME_RE = /^[\p{L}_][\p{L}\p{N}_ ]{0,63}$/u;
+
+/** True when a wrapper's literal argument names a saved query, not a statement. */
+function looksLikeSavedQueryName(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  if (SQL_KEYWORD_RE.test(trimmed)) return false;
+  return ACCESS_OBJECT_NAME_RE.test(trimmed);
+}
+
+/**
+ * Issue #253: emit ONE `dao-query` unresolved reference for a saved-query
+ * name, from the CALLING PROCEDURE (not the module).
+ *
+ * The procedure is the source on purpose: `SqlQueryExtractor` already links
+ * `query -> table`, so a `procedure -> query` reference is the hop that makes
+ * `procedure -> query -> table` traversable end to end. An edge hung off the
+ * module would leave that flow broken at its first hop.
+ *
+ * No node is created. The resolver binds this to the REAL `query` node built
+ * from `queries/<Name>.sql`, and declines when there is none — a name that
+ * matches neither a query nor a table stays an actionable `failed` reference
+ * rather than becoming a fabricated table placeholder.
+ */
+function emitSavedQueryReference(
+  ctx: VbaExtractorContext,
+  queryName: string,
+  lineNum: number,
+  column: number,
+  caller: ProcInfo,
+  dedupe: Set<string>,
+): void {
+  const trimmed = queryName.trim();
+  if (!trimmed) return;
+  // The `query-name:` prefix keeps this de-dup bucket disjoint from the table
+  // and external-backend buckets that share the same set.
+  const key = `${lineNum}:query-name:${trimmed.toLocaleLowerCase('en-US')}`;
+  if (dedupe.has(key)) return;
+  dedupe.add(key);
+  ctx.unresolvedReferences.push({
+    fromNodeId: ctx.findOrCreateFunctionNodeId(caller),
+    referenceName: trimmed,
+    referenceKind: 'dao-query',
+    line: lineNum,
+    column,
+    filePath: ctx.filePath,
+    language: 'vba',
+    metadata: { synthesizedBy: 'vba-query-name' },
+  });
+}
+
 export function scanSqlInLine(
   ctx: VbaExtractorContext,
   line: string,
   lineNum: number,
   dedupe: Set<string>,
   sqlVariables: Map<string, string>,
+  caller?: ProcInfo,
 ): void {
   // Issue #244: one compiled wrapper set per extractor, cached on the
   // context. A context built without options (tests, out-of-repo callers)
@@ -450,6 +532,13 @@ export function scanSqlInLine(
     const rest = line.slice(m.index + m[0].length);
     const chain = collectSqlWrapperChain(rest);
     const joined = [firstLiteral, ...chain].join(' ');
+    // Issue #253: a wrapper handed a literal that is NOT a statement but IS a
+    // bare Access object name is naming a saved query. Verb detection wins:
+    // anything that reads as SQL takes the table path below, unchanged.
+    if (caller && chain.length === 0 && looksLikeSavedQueryName(joined)) {
+      emitSavedQueryReference(ctx, joined, lineNum, m.index, caller, dedupe);
+      continue;
+    }
     emitSqlTableReferences(ctx, joined, lineNum, dedupe);
   }
 
@@ -466,7 +555,26 @@ export function scanSqlInLine(
     const varName = (vm[3] ?? '').toLowerCase();
     const sqlString = sqlVariables.get(varName);
     if (!sqlString) continue;
+    // A variable that accumulated a bare name rather than a statement names a
+    // saved query, exactly as the literal form does.
+    if (caller && looksLikeSavedQueryName(sqlString)) {
+      emitSavedQueryReference(ctx, sqlString, lineNum, vm.index, caller, dedupe);
+      continue;
+    }
     emitSqlTableReferences(ctx, sqlString, lineNum, dedupe);
+  }
+
+  // Issue #253: `db.QueryDefs("nombreConsulta")` names a saved query with no
+  // wrapper method in sight, so it is scanned independently of the wrapper
+  // table. Literal argument only.
+  if (caller) {
+    QUERY_DEFS_RE.lastIndex = 0;
+    let qm: RegExpExecArray | null;
+    while ((qm = QUERY_DEFS_RE.exec(line)) !== null) {
+      const name = qm[1] ?? '';
+      if (!looksLikeSavedQueryName(name)) continue;
+      emitSavedQueryReference(ctx, name, lineNum, qm.index, caller, dedupe);
+    }
   }
 }
 

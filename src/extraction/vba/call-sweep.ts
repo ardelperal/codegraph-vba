@@ -345,7 +345,17 @@ export function createCallsAndSqlClassifier(
       // inside string literals, so the masked line would strip the SQL content.
       if (stack.length > 0) {
         trackSqlVariableAssignment(lines as string[], i, sqlVariables);
-        scanSqlInLine(ctx, line, lineNum, sqlTargetsThisFile, sqlVariables);
+        // Issue #253: the calling procedure is passed so a wrapper handed a
+        // bare saved-query name can emit `procedure -> query`, the hop that
+        // makes `procedure -> query -> table` traversable end to end.
+        scanSqlInLine(
+          ctx,
+          line,
+          lineNum,
+          sqlTargetsThisFile,
+          sqlVariables,
+          stack[stack.length - 1]!,
+        );
       } else {
         // Preserve file/module-level assignments for use as the fallback in
         // every procedure without mixing one procedure's locals into another.

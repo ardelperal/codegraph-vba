@@ -16,7 +16,8 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaMeControl, matchVbaModuleVariable, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
+import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaMeControl, matchVbaModuleVariable,
+  matchVbaQueryName, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -814,6 +815,13 @@ export class ReferenceResolver {
     // other module's identically-named private variable.
     if (ref.metadata?.synthesizedBy === 'vba-module-var') {
       return matchVbaModuleVariable(ref, this.context);
+    }
+    // Issue #253: a saved-query name binds to a `query` node or to nothing.
+    // No fallthrough: a miss must stay a `failed` reference rather than
+    // becoming a fabricated table placeholder or binding some same-named
+    // class, which is the confidently-wrong outcome this gate exists to stop.
+    if (ref.metadata?.synthesizedBy === 'vba-query-name') {
+      return matchVbaQueryName(ref, this.context);
     }
 
     // CFML component paths in inheritance (#1152): `extends="coldbox.system.web.

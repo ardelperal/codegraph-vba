@@ -568,6 +568,82 @@ export class VbaExtractorContext {
   }
 
   /**
+   * Create — once per file, per name — the synthetic `class` node that stands
+   * in for a type this file names but does not declare, and return its id.
+   *
+   * The id is keyed on (filePath, 'class', name) WITHOUT a line number so the
+   * same type named on N lines produces ONE node, and
+   * `resolveVbaReferenceStubs` can later repoint every edge pointing at it onto
+   * the real declaration and delete the stub.
+   *
+   * Factored out of `emitReference` (issue #257) so a caller that needs a
+   * different EDGE kind onto the same stub — `emitTypeOf` below — cannot drift
+   * from the id formula the resolver depends on.
+   */
+  private ensureSynthTypeNode(
+    targetName: string,
+    lineNum: number,
+    column: number,
+  ): string {
+    const targetId = generateNodeId(
+      this.filePath,
+      'class', // placeholder kind; cross-file resolution will re-type at lookup
+      targetName,
+      0,        // stable — line-independent
+    );
+    if (!this.synthClassNodeIds.has(targetId)) {
+      this.synthClassNodeIds.add(targetId);
+      this.nodes.push({
+        id: targetId,
+        kind: 'class',
+        name: targetName,
+        qualifiedName: targetName,
+        filePath: this.filePath,
+        language: 'vba',
+        startLine: lineNum,
+        endLine: lineNum,
+        startColumn: column,
+        endColumn: column + targetName.length,
+        updatedAt: Date.now(),
+      });
+    }
+    return targetId;
+  }
+
+  /**
+   * Issue #257: emit a `type_of` edge from an arbitrary node — a `parameter`,
+   * today — to the synthetic node standing in for its declared type.
+   *
+   * Deliberately NOT `emitReference`: that helper always sources the edge from
+   * the file's module/class node, which is the right answer for "this module
+   * mentions type X" but the wrong one for "this parameter IS an X". Both
+   * share the stub, so a parameter typed `As Cliente` and a `Dim c As Cliente`
+   * in the same file converge on ONE node and `resolveVbaReferenceStubs`
+   * repoints their edges together.
+   *
+   * The caller owns the primitive gate — see `emitParameterNodes`.
+   */
+  public emitTypeOf(
+    sourceNodeId: string,
+    targetName: string,
+    lineNum: number,
+    column: number,
+    synthesizedBy: string,
+  ): void {
+    if (!sourceNodeId || !targetName) return;
+    const targetId = this.ensureSynthTypeNode(targetName, lineNum, column);
+    this.edges.push({
+      source: sourceNodeId,
+      target: targetId,
+      kind: 'type_of',
+      provenance: 'heuristic',
+      metadata: { synthesizedBy },
+      line: lineNum,
+      column,
+    });
+  }
+
+  /**
    * Emit a `references` edge from the file's module/class node to a synthetic
    * node named `targetName`. Used by Dim, WithEvents, Set-New, and SQL sweeps.
    * Fix 5: the synthetic node id is keyed on (filePath, kind, name) WITHOUT
@@ -600,30 +676,7 @@ export class VbaExtractorContext {
     extras?: Record<string, unknown>,
   ): void {
     if (!targetName) return;
-    const targetId = generateNodeId(
-      this.filePath,
-      'class', // placeholder kind; cross-file resolution will re-type at lookup
-      targetName,
-      0,        // stable — line-independent
-    );
-    if (this.synthClassNodeIds.has(targetId)) {
-      // Node already emitted for this name — only add the edge below.
-    } else {
-      this.synthClassNodeIds.add(targetId);
-      this.nodes.push({
-        id: targetId,
-        kind: 'class',
-        name: targetName,
-        qualifiedName: targetName,
-        filePath: this.filePath,
-        language: 'vba',
-        startLine: lineNum,
-        endLine: lineNum,
-        startColumn: column,
-        endColumn: column + targetName.length,
-        updatedAt: Date.now(),
-      });
-    }
+    const targetId = this.ensureSynthTypeNode(targetName, lineNum, column);
     const metadata: Record<string, unknown> = access
       ? { synthesizedBy, access, ...(extras ?? {}) }
       : { synthesizedBy, ...(extras ?? {}) };

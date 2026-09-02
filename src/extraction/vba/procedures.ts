@@ -19,6 +19,7 @@ import {
 import { ProcInfo, VbaClassifier } from './context';
 import { defineRule, runRules, VbaExtractionRule } from './rules';
 import { parseSignature, splitParameterList } from './signature';
+import { emitParameterNodes } from './parameters';
 
 /**
  * `Static` is a storage specifier, not visibility, and VBA allows it either on
@@ -207,6 +208,8 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
         updatedAt: Date.now(),
       };
       ctx.nodes.push(fnNode);
+      // Issue #257: the same parsed signature becomes `parameter` nodes.
+      emitParameterNodes(ctx, fnNode, signature.params, lineNum, line);
       // Cache the first node emitted for this name — `findFunctionNodeByName`
       // (audit S2) becomes O(1) instead of O(n) per call site.
       if (!ctx.functionNodeByName.has(name)) {

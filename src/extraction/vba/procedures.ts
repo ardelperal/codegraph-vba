@@ -18,6 +18,16 @@ import {
 } from './text-utils';
 import { ProcInfo, VbaClassifier } from './context';
 import { defineRule, runRules, VbaExtractionRule } from './rules';
+import { parseSignature, splitParameterList } from './signature';
+
+/**
+ * `Static` is a storage specifier, not visibility, and VBA allows it either on
+ * its own (`Static Sub X`) or after the visibility keyword (`Public Static
+ * Function Y`). `PROC_RE` folds both spellings away, so we re-test the
+ * declaration head to keep the fact.
+ */
+const STATIC_PROC_RE =
+  /^\s*(?:(?:Public|Private|Friend)\s+)?Static\s+(?:Sub|Function|Property)\b/i;
 
 /**
  * Parse a `Function`/`Property Get` declaration's return type — the `As
@@ -42,19 +52,7 @@ function parseArrayParameters(line: string): string[] {
   const closeIdx = line.lastIndexOf(')');
   if (closeIdx < openIdx) return [];
   const body = line.slice(openIdx + 1, closeIdx);
-  const params: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < body.length; i++) {
-    const ch = body[i];
-    if (ch === '(') depth++;
-    else if (ch === ')') depth--;
-    else if (ch === ',' && depth === 0) {
-      params.push(body.slice(start, i));
-      start = i + 1;
-    }
-  }
-  params.push(body.slice(start));
+  const params = splitParameterList(body);
   const arrayParamRe =
     /^\s*(?:ByRef|ByVal)\s+(\p{L}[\p{L}\p{N}_]*)\s*\(\s*\)/iu;
   const out: string[] = [];
@@ -118,20 +116,37 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
           ? 'function'
           : 'property';
 
+      // Issue #250: `Property Get` / `Let` / `Set` all fold into
+      // `kind: 'property'`, so the accessor keyword is the only thing that
+      // tells a getter from its setter. `PROC_RE`'s kind capture keeps it.
+      const accessor = (/^property\s+(get|let|set)$/i.exec(kindRaw)?.[1] ??
+        undefined) as 'get' | 'let' | 'set' | undefined;
+
+      // A `Sub` and a `Property Let`/`Set` have no return type; a `Function`
+      // and a `Property Get` do. Parsed once and reused by both the factory
+      // inference below and the node metadata.
+      const returnType =
+        kind === 'function' || accessor === 'get' ? parseReturnType(line) : null;
+
       // Factory-return inference: record a function's project-class return type
       // so the call sweep can type `Set x = <name>(...)`. Restricted to `Sub`'s
       // sibling `Function` (a `Property Let/Set` has no return type and a
       // `Property Get`'s `As <Type>` is rarely a factory target). Primitives are
       // skipped — `x.Method` on a primitive is never a project call.
       if (kind === 'function') {
-        const retType = parseReturnType(line);
-        if (retType && !PRIMITIVE_TYPES.has(retType.toLowerCase())) {
+        if (returnType && !PRIMITIVE_TYPES.has(returnType.toLowerCase())) {
           const key = name.toLowerCase();
           if (!ctx.functionReturnTypes.has(key)) {
-            ctx.functionReturnTypes.set(key, retType);
+            ctx.functionReturnTypes.set(key, returnType);
           }
         }
       }
+
+      // Issue #250: the declared signature. `line` is the preprocessed logical
+      // line, so a header split with `_` continuations is already joined — do
+      // not re-join it here. The parameter list is located from the end of the
+      // NAME so a colon-separated single-line proc cannot leak its body in.
+      const signature = parseSignature(line, (m.index ?? 0) + m[0].length);
 
       const proc: ProcInfo = {
         name,
@@ -173,6 +188,22 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
         startColumn: 0,
         endColumn: line.length,
         visibility,
+        // Issue #250: the procedure's real shape. `visibility` folds `Friend`
+        // and `Static` into `public` (the Node enum has no room for either),
+        // so both facts are kept here rather than lost. `accessor` and
+        // `returnType` are omitted when they do not apply, so their absence
+        // is meaningful. `arity.total` is `null`, never `Infinity`, for a
+        // `ParamArray` — this metadata is JSON-serialised across the
+        // parse-worker boundary.
+        metadata: {
+          procKind: kind,
+          ...(accessor ? { accessor } : {}),
+          isStatic: STATIC_PROC_RE.test(line),
+          isFriend: visibilityRaw.toLowerCase() === 'friend',
+          ...(returnType ? { returnType } : {}),
+          params: signature.params,
+          arity: signature.arity,
+        },
         updatedAt: Date.now(),
       };
       ctx.nodes.push(fnNode);

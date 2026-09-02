@@ -18,6 +18,10 @@ import {
   UnresolvedReference,
 } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
+import {
+  buildExternalBackendNode,
+  EXTERNAL_BACKEND_SYNTHESIZED_BY,
+} from '../sql-table-scan';
 import { PRIMITIVE_TYPES } from './constants';
 import type { CompiledSqlWrappers } from './sql-wrapper';
 
@@ -142,6 +146,14 @@ export class VbaExtractorContext {
    * key referenced from Form_A.cls AND Form_B.cls collapses to ONE node.
    */
   public synthTempVarNodeIds = new Set<string>();
+
+  /**
+   * Issue #256: external-backend (`IN "<path>"`) node de-dup cache. Same
+   * rationale as `synthTempVarNodeIds`: the ids are keyed on the
+   * normalized backend path via a synthetic file path, so the SAME
+   * `.accdb` referenced from N modules collapses to ONE node.
+   */
+  public synthExternalBackendNodeIds = new Set<string>();
 
   /**
    * Issue #205: `variableName.toLowerCase()` → declared type info,
@@ -575,6 +587,43 @@ export class VbaExtractorContext {
       kind: 'references',
       provenance: 'heuristic',
       metadata,
+      line: lineNum,
+      column,
+    };
+    this.edges.push(edge);
+    this.pendingModuleOrClassSource.push(edge);
+  }
+
+  /**
+   * Issue #256: emit a `references` edge from the file's module/class node
+   * to the external database file an Access `IN "<path>"` clause points at.
+   *
+   * The target is a `file`-kind node built by `buildExternalBackendNode`,
+   * keyed on the NORMALIZED path, so the same backend named from several
+   * modules — or from a saved query — converges on ONE node. The edge
+   * carries only `synthesizedBy`; the `external` / `backendPath` facts
+   * live on the node, which is the thing they describe.
+   *
+   * `backendPath` must already be normalized (the caller gets it from
+   * `scanSqlExternalBackends`). An empty path is a no-op.
+   */
+  public emitExternalBackendReference(
+    backendPath: string,
+    lineNum: number,
+    column: number,
+  ): void {
+    if (!backendPath) return;
+    const node = buildExternalBackendNode(backendPath);
+    if (!this.synthExternalBackendNodeIds.has(node.id)) {
+      this.synthExternalBackendNodeIds.add(node.id);
+      this.nodes.push(node);
+    }
+    const edge: Edge = {
+      source: '', // rewritten after module node exists
+      target: node.id,
+      kind: 'references',
+      provenance: 'heuristic',
+      metadata: { synthesizedBy: EXTERNAL_BACKEND_SYNTHESIZED_BY },
       line: lineNum,
       column,
     };

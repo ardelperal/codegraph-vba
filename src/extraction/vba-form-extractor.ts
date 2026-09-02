@@ -47,7 +47,12 @@ import {
 import { generateNodeId } from './tree-sitter-helpers';
 import { stripVbaComments } from './vba-preprocess';
 import { ACCESS_EVENT_PROPERTIES } from './vba/events';
-import { scanSqlTables } from './sql-table-scan';
+import {
+  scanSqlTables,
+  scanSqlExternalBackends,
+  buildExternalBackendNode,
+  EXTERNAL_BACKEND_SYNTHESIZED_BY,
+} from './sql-table-scan';
 
 interface FormBlockFrame {
   controlType: string;
@@ -77,6 +82,15 @@ export class VbaFormExtractor {
    * stays self-contained per the project's per-extractor state rule).
    */
   private synthClassNodeIds = new Set<string>();
+
+  /**
+   * Issue #256: external-backend (`IN "<path>"`) node ids already emitted
+   * for this form. Same per-extractor de-dup discipline as
+   * `synthClassNodeIds`, keyed on the node id — which is derived from the
+   * NORMALIZED backend path, so two bindings naming the same `.accdb`
+   * share one node while each still emits its own edge.
+   */
+  private externalBackendNodeIds = new Set<string>();
 
   constructor(filePath: string, source: string) {
     this.filePath = filePath;
@@ -678,6 +692,41 @@ export class VbaFormExtractor {
   }
 
   /**
+   * Issue #256 — emit one `references` edge from `sourceNodeId` to the
+   * external database file an Access `IN "<path>"` clause points at.
+   *
+   * The target node is built by the shared `buildExternalBackendNode` so
+   * it is byte-identical to the node the in-code SQL sweep and the saved-
+   * query extractor emit for the same path: the graph ends up with ONE
+   * node per external backend, however many places name it. The edge
+   * carries only `synthesizedBy` — the `external` / `backendPath` facts
+   * describe the node, and live there.
+   *
+   * `backendPath` is already normalized by `scanSqlExternalBackends`.
+   */
+  private emitExternalBackendReference(
+    sourceNodeId: string,
+    backendPath: string,
+    lineNum: number,
+  ): void {
+    if (!backendPath) return;
+    const node = buildExternalBackendNode(backendPath);
+    if (!this.externalBackendNodeIds.has(node.id)) {
+      this.externalBackendNodeIds.add(node.id);
+      this.nodes.push(node);
+    }
+    this.edges.push({
+      source: sourceNodeId,
+      target: node.id,
+      kind: 'references',
+      provenance: 'heuristic',
+      metadata: { synthesizedBy: EXTERNAL_BACKEND_SYNTHESIZED_BY },
+      line: lineNum,
+      column: 0,
+    });
+  }
+
+  /**
    * Link a bound control to its enclosing form/report's single bare table.
    * Expressions and SQL/absent RecordSource values stay metadata-only: column
    * lineage through expressions or SELECT projections cannot be inferred here
@@ -744,6 +793,12 @@ export class VbaFormExtractor {
         if (seen.has(row.table)) continue;
         seen.add(row.table);
         this.emitTableReference(sourceNodeId, row.table, lineNum, synthesizedBy);
+      }
+      // Issue #256: a binding can read from another database file via the
+      // Access `IN "<path>"` clause. That target is a file, not a table,
+      // so it gets its own `file`-kind node and its own edge tag.
+      for (const backendPath of scanSqlExternalBackends(value)) {
+        this.emitExternalBackendReference(sourceNodeId, backendPath, lineNum);
       }
       return;
     }

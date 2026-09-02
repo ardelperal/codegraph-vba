@@ -33,7 +33,12 @@ import {
   ExtractionError,
 } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
-import { scanSqlTables } from './sql-table-scan';
+import {
+  scanSqlTables,
+  scanSqlExternalBackends,
+  buildExternalBackendNode,
+  EXTERNAL_BACKEND_SYNTHESIZED_BY,
+} from './sql-table-scan';
 
 export class SqlQueryExtractor {
   private filePath: string;
@@ -69,6 +74,7 @@ export class SqlQueryExtractor {
       });
 
       this.sweepTables(queryId);
+      this.sweepExternalBackends(queryId);
     } catch (error) {
       this.errors.push({
         message: `SQL query extraction error: ${error instanceof Error ? error.message : String(error)}`,
@@ -145,6 +151,32 @@ export class SqlQueryExtractor {
         kind: 'references',
         provenance: 'heuristic',
         metadata: { synthesizedBy: 'sql-query-table' },
+        line: 1,
+        column: 0,
+      });
+    }
+  }
+
+  /**
+   * Issue #256 — a saved query can read from another database file via the
+   * Access `IN "<path>"` clause. Emit one `file`-kind node per distinct
+   * external backend (keyed on the normalized path, so the same file named
+   * from two different queries converges on ONE node) plus a `references`
+   * edge from this query, tagged `vba-external-backend`.
+   *
+   * `scanSqlExternalBackends` already de-duplicates within one query, so no
+   * local `seen` set is needed here.
+   */
+  private sweepExternalBackends(queryId: string): void {
+    for (const backendPath of scanSqlExternalBackends(this.source)) {
+      const node = buildExternalBackendNode(backendPath);
+      this.nodes.push(node);
+      this.edges.push({
+        source: queryId,
+        target: node.id,
+        kind: 'references',
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: EXTERNAL_BACKEND_SYNTHESIZED_BY },
         line: 1,
         column: 0,
       });

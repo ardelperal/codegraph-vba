@@ -24,7 +24,7 @@
  */
 import { escapeRegExpLiteral } from './text-utils';
 import { VbaExtractorContext } from './context';
-import { scanSqlTables } from '../sql-table-scan';
+import { scanSqlTables, scanSqlExternalBackends } from '../sql-table-scan';
 
 /** SQL assigned to a local variable, e.g. `m_SQL = "SELECT ..." & ...`. */
 const SQL_VAR_ASSIGN_RE =
@@ -485,5 +485,17 @@ function emitSqlTableReferences(
     if (dedupe.has(key)) continue;
     dedupe.add(key);
     ctx.emitReference(row.table, lineNum, 0, 'vba-sql-table', row.access);
+  }
+
+  // Issue #256: the Access `IN "<path>"` clause points the statement at
+  // another database file. It is a cross-backend edge, so it gets its
+  // own `file`-kind target rather than being mistaken for a table.
+  // The `external-db:` prefix keeps this de-dup bucket disjoint from the
+  // table bucket above (a table name can never contain a colon).
+  for (const backendPath of scanSqlExternalBackends(sqlString)) {
+    const key = `${lineNum}:external-db:${backendPath}`;
+    if (dedupe.has(key)) continue;
+    dedupe.add(key);
+    ctx.emitExternalBackendReference(backendPath, lineNum, 0);
   }
 }

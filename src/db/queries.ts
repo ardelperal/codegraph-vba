@@ -1667,11 +1667,62 @@ export class QueryBuilder {
         `SELECT DISTINCT n.* FROM nodes n
          JOIN edges e ON e.target = n.id
          WHERE n.kind = 'class' AND n.language = 'vba'
+           -- COALESCE, not a bare NOT LIKE: most stubs have NULL metadata, and
+           -- NULL NOT LIKE x evaluates to NULL, which would filter them all out.
+           AND COALESCE(n.metadata, '') NOT LIKE '%"synthesizedBy":"access-erd-table"%'
            AND e.kind IN ('references', 'type_of')
            AND EXISTS (
              SELECT 1 FROM nodes src
              WHERE src.id = e.source AND src.language = 'vba'
            )`
+      )
+      .all() as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Table nodes declared by an Access structure export (#257, half B).
+   *
+   * These are `class` nodes stamped `metadata.synthesizedBy =
+   * 'access-erd-table'` by `AccessErdExtractor`. They are the ONLY table nodes
+   * in the graph that carry real column information, which is what makes them
+   * the canonical target `resolveAccessErdTableNodes` promotes the SQL-derived
+   * placeholders onto.
+   *
+   * They are also excluded from `getVbaReferenceStubs` above: an ERD table is
+   * a declaration, not a stub, and letting the stub resolver repoint it onto a
+   * same-named VBA class would delete it along with all of its field nodes.
+   */
+  getAccessErdTableNodes(): Node[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM nodes
+         WHERE kind = 'class'
+           AND metadata LIKE '%"synthesizedBy":"access-erd-table"%'`
+      )
+      .all() as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Synthetic table placeholders recovered from SQL text (#257, half B) — the
+   * `class` nodes that `vba/sql-wrapper.ts` and `sql-query-extractor.ts` emit
+   * as the target of a table `references` edge. They carry a name and nothing
+   * else, and are keyed on the REFERENCING file, so the same table named from
+   * three modules is three unrelated nodes.
+   *
+   * Returned so `resolveAccessErdTableNodes` can repoint their incoming
+   * references onto the one ERD declaration that actually has the columns.
+   */
+  getSqlTablePlaceholders(): Node[] {
+    const rows = this.db
+      .prepare(
+        `SELECT DISTINCT n.* FROM nodes n
+         JOIN edges e ON e.target = n.id
+         WHERE n.kind = 'class'
+           AND e.kind = 'references'
+           AND (e.metadata LIKE '%"synthesizedBy":"vba-sql-table"%'
+                OR e.metadata LIKE '%"synthesizedBy":"sql-query-table"%')`
       )
       .all() as NodeRow[];
     return rows.map(rowToNode);

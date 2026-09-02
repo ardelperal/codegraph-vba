@@ -22,6 +22,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - SQL that a form or control is bound to at runtime — assigned to `RowSource`, `RecordSource`, `ControlSource`, `Filter` or `OrderBy` — now shows the tables it reads, whether the statement is written inline or built up in a variable first. (#252)
 - Access domain functions such as `DLookup` and `DCount` now record the table or saved query they read, so a procedure that touches data only through them no longer looks like it touches no data at all. (#255)
 - Procedures now record how they handle errors — whether they have a handler, silently suppress errors, or have no protection at all — so unguarded code paths can be found without reading every module. (#259)
+- An Access project that ships a generated structure export of its backend now gets real tables in the graph, with their columns, and linked tables point at the external database file they actually live in — so a table found from a query is the same table that carries its fields. (#257)
 
 ### Changed
 

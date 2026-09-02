@@ -199,6 +199,7 @@ export function isSourceFile(filePath: string, overrides?: Record<string, Langua
   if (detectVbaFormFile(filePath)) return true;
   if (isVbaTestSequenceFile(filePath)) return true; // Dysflow VBA test sequences (`<root>/sequences/*.json`) — SUB-6
   if (isVbaTestManifestFile(filePath)) return true; // Dysflow VBA test manifests (`tests.*.json`)
+  if (isAccessErdFile(filePath)) return true; // Access structure export (`ERD/*.md`) — #257
   if (isErlangAppFile(filePath)) return true; // OTP `.app`/`.app.src` resource files
   const dot = filePath.lastIndexOf('.');
   if (dot < 0) return false;
@@ -305,6 +306,30 @@ export function isVbaTestSequenceFile(filePath: string): boolean {
   if (!filePath) return false;
   // Match `.../sequences/<anything>.json` (or `.JSON`), anywhere in the path.
   return /(^|[\\/])sequences[\\/].+\.json$/i.test(filePath);
+}
+
+/**
+ * Access structure export: a markdown file sitting DIRECTLY inside an `ERD/`
+ * directory (`ERD/Estructura_Datos.md`, `src/backend/ERD/Estructura_Datos.md`).
+ * Issue #257.
+ *
+ * `.md` is deliberately NOT in `EXTENSION_MAP` (ordinary markdown is not
+ * indexed); this is the sole gate that makes such a document an indexable
+ * source file, mirroring the `.sql`/`queries.json` gate for
+ * `SqlQueryExtractor`.
+ *
+ * `ERD` is a very ordinary folder name, so this path match is only HALF the
+ * routing decision: `AccessErdExtractor` additionally requires the document's
+ * first non-empty line to be the generated export's `# Estructura de Datos:`
+ * header, and emits nothing at all when it is not. A hand-written diagram in a
+ * non-Access repo therefore contributes no nodes, no edges and no errors.
+ *
+ * Only files directly in the directory match — `ERD/notes/deep.md` does not —
+ * because the generator writes one flat document per backend.
+ */
+export function isAccessErdFile(filePath: string): boolean {
+  if (!filePath) return false;
+  return /(^|[\\/])erd[\\/][^\\/]+\.md$/i.test(filePath);
 }
 
 /**
@@ -515,6 +540,12 @@ export function detectLanguage(filePath: string, source?: string, overrides?: Re
   // EXTENSION_MAP, so classify manifests as `vba` to route them to
   // `VbaTestManifestExtractor`; the dispatch narrows on `isVbaTestManifestFile`.
   if (isVbaTestManifestFile(filePath)) return 'vba';
+  // Access structure exports are `ERD/*.md` (#257). `.md` is not in
+  // EXTENSION_MAP, so classify them as `vba` to route them to
+  // `AccessErdExtractor`; the dispatch narrows on `isAccessErdFile`, and the
+  // extractor's own header gate rejects an ordinary markdown file that merely
+  // happens to live in an `ERD/` folder.
+  if (isAccessErdFile(filePath)) return 'vba';
   const ext = filePath.substring(filePath.lastIndexOf('.')).toLowerCase();
   // Shopify OS 2.0 JSON templates / section groups → the Liquid extractor (it
   // links each section `"type"` to its `sections/<type>.liquid`).

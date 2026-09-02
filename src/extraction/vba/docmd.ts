@@ -1,7 +1,7 @@
 /**
  * `DoCmd.<Verb>` modelling (hueco 6 / issues #48, #52, #254).
  *
- * Three shapes live here:
+ * Four shapes live here:
  *   1. `OpenForm` / `OpenReport` — a synthetic form-layout/report-layout stub
  *      plus an `opens-form` / `opens-report` edge.
  *   2. `OpenQuery` — an `UnresolvedReference` the resolver binds to the real
@@ -10,6 +10,9 @@
  *      positional argument (`RunMacro`, `TransferSpreadsheet`, `OutputTo`, …).
  *      These emit an `UnresolvedReference` and NEVER a node — see
  *      `DOCMD_OBJECT_DISPATCH`.
+ *   4. Issue #246: `DoCmd.Close acForm|acReport, "<Name>"` — a `references`
+ *      edge to the SAME stub shape (1) creates, so the form's open/close
+ *      lifecycle converges on one node. See `scanDoCmdCloseCalls`.
  *
  * `DoCmd` is in `RUNTIME_RECEIVER_BLACKLIST`, so these methods are skipped by
  * the generic call-site scan and handled here with their own emission path.
@@ -41,6 +44,31 @@ const OPEN_REPORT_ARG_RE =
  */
 const OPEN_QUERY_ARG_RE =
   /\bDoCmd\.OpenQuery\s+("(?:(?:[^"]|"")*)"|\p{L}[\p{L}\p{N}_]*)/gu;
+
+/**
+ * Issue #246: `DoCmd.Close acForm|acReport, "<Name>"` modelling regex.
+ *
+ * Group 1 is the object-type constant, group 2 the STRING LITERAL naming the
+ * object. Both the bare (`DoCmd.Close acForm, "X"`) and the parenthesised
+ * (`DoCmd.Close(acForm, "X")`) call forms match; trailing positional
+ * arguments (`acSaveNo`, ...) are not captured.
+ *
+ * A string literal is the ONLY accepted second-argument shape, deliberately:
+ *   - a bare `DoCmd.Close` closes "the active object", which is a runtime
+ *     value and not a name;
+ *   - `Me.Name`, or any other variable, holds a name only known at runtime.
+ * Both are skipped SILENTLY -- a guessed close target is worse than none.
+ * Object types other than `acForm` / `acReport` (`acTable`, `acQuery`, ...)
+ * have no stub shape to converge on, so they are skipped too.
+ *
+ * The trailing lookahead requires the literal to be the WHOLE argument: a
+ * concatenation such as `"Form" & strSufijo` names a form only known at
+ * runtime, and taking its literal prefix would emit a target that does not
+ * exist. The argument therefore has to end at the next comma, the closing
+ * paren, a VBA statement separator, or the end of the line.
+ */
+const CLOSE_ARG_RE =
+  /\bDoCmd\.Close[ \t]*\(?[ \t]*(acForm|acReport)\b[ \t]*,[ \t]*("(?:(?:[^"]|"")*)")(?=[ \t]*(?:$|[,):]))/giu;
 
 type DoCmdOpenDispatch = {
   method: 'OpenForm' | 'OpenReport';
@@ -141,6 +169,36 @@ function emitOpensStubEdge(
   lineNum: number,
   column: number,
 ): void {
+  const stubId = resolveOpensStubId(ctx, dispatch, targetName, lineNum);
+  ctx.edges.push({
+    source: ctx.findOrCreateFunctionNodeId(caller),
+    target: stubId,
+    kind: dispatch.edgeKind,
+    provenance: 'heuristic',
+    metadata: {
+      synthesizedBy: dispatch.synthesizedBy,
+      [dispatch.metadataTargetKey]: targetName,
+    },
+    line: lineNum,
+    column,
+  });
+}
+
+/**
+ * Issue #246: the stub half of `emitOpensStubEdge`, lifted out so
+ * `scanDoCmdCloseCalls` can point at the SAME node instead of minting a
+ * second stub shape for the same form. The cache key is unchanged
+ * (`<OpenForm|OpenReport>:<lowercased name>`), which is precisely what makes
+ * an `OpenForm "X"` and a `DoCmd.Close acForm, "X"` converge on one node.
+ *
+ * Returns the id of the cached (or freshly created) stub node.
+ */
+function resolveOpensStubId(
+  ctx: VbaExtractorContext,
+  dispatch: DoCmdOpenDispatch,
+  targetName: string,
+  lineNum: number,
+): string {
   const key = `${dispatch.cacheKey}:${targetName.toLowerCase()}`;
   let stubId = ctx.opensStubIdsByKey.get(key);
   if (!stubId) {
@@ -177,18 +235,7 @@ function emitOpensStubEdge(
       updatedAt: Date.now(),
     });
   }
-  ctx.edges.push({
-    source: ctx.findOrCreateFunctionNodeId(caller),
-    target: stubId,
-    kind: dispatch.edgeKind,
-    provenance: 'heuristic',
-    metadata: {
-      synthesizedBy: dispatch.synthesizedBy,
-      [dispatch.metadataTargetKey]: targetName,
-    },
-    line: lineNum,
-    column,
-  });
+  return stubId;
 }
 
 /**
@@ -224,6 +271,61 @@ export function scanDoCmdOpenQuery(
       filePath: ctx.filePath,
       language: 'vba',
       metadata: { synthesizedBy: 'vba-opens-query' },
+    });
+  }
+}
+
+/**
+ * Issue #246 (task T4): scan one line of VBA source for
+ * `DoCmd.Close acForm|acReport, "<Name>"`.
+ *
+ * Each match emits ONE `references` edge -- not a new edge kind -- from the
+ * calling procedure to the very same `form-layout` / `report-layout` stub
+ * that `opens-form` / `opens-report` already point at, by reusing
+ * `resolveOpensStubId`'s cache. A form that is both opened and closed
+ * therefore ends up with ONE node carrying two distinct edges.
+ *
+ * The edge carries `synthesizedBy: 'vba-closes-form'` for both object types
+ * (one tag for the whole verb keeps every close edge queryable as a set) and
+ * `targetFormName` as its single name key, for the same reason. If a
+ * first-class `closes-form` edge kind is ever wanted, that tag is the seam.
+ */
+export function scanDoCmdCloseCalls(
+  ctx: VbaExtractorContext,
+  line: string,
+  maskedLine: string,
+  caller: ProcInfo,
+  lineNum: number,
+): void {
+  // The shared regex carries /g, so clone it before use to keep `lastIndex`
+  // from leaking across lines.
+  const localRe = new RegExp(CLOSE_ARG_RE.source, CLOSE_ARG_RE.flags);
+  let m: RegExpExecArray | null;
+  while ((m = localRe.exec(line)) !== null) {
+    // `maskedLine` has string CONTENT blanked out, so this rejects a
+    // `DoCmd.Close ...` that only appears inside a string literal. The target
+    // name itself lives inside a literal, which is why the match runs on the
+    // original `line`.
+    if (maskedLine.slice(m.index, m.index + 5).toLowerCase() !== 'docmd') continue;
+    const cacheKey =
+      (m[1] ?? '').toLowerCase() === 'acreport' ? 'OpenReport' : 'OpenForm';
+    const dispatch = DOCMD_OPEN_DISPATCH.find((d) => d.cacheKey === cacheKey);
+    if (!dispatch) continue;
+    const targetName = unwrapVbaStringLiteral((m[2] ?? '').trim());
+    if (!targetName) continue;
+    ctx.edges.push({
+      source: ctx.findOrCreateFunctionNodeId(caller),
+      // Same cache, same key shape, same node as `opens-form` -- never a
+      // second stub for the same form.
+      target: resolveOpensStubId(ctx, dispatch, targetName, lineNum),
+      kind: 'references',
+      provenance: 'heuristic',
+      metadata: {
+        synthesizedBy: 'vba-closes-form',
+        targetFormName: targetName,
+      },
+      line: lineNum,
+      column: m.index,
     });
   }
 }

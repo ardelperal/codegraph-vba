@@ -26,6 +26,7 @@ import {
   scanDoCmdOpenCalls,
   scanDoCmdOpenQuery,
   scanDoCmdObjectCalls,
+  scanDoCmdCloseCalls,
 } from './docmd';
 import { sweepTempVars } from './tempvars';
 import { scanSqlInLine, trackSqlVariableAssignment } from './sql-wrapper';
@@ -62,7 +63,7 @@ const WITH_END_RE = /^\s*End\s+With\b/iu;
  * fit the declarative shape. The procedural scanners
  * (`scanRaiseEvents`, `scanCallSites`, `scanMeControlReferences`,
  * `scanSqlInLine`, `scanDoCmdOpenCalls`, `scanDoCmdOpenQuery`,
- * `scanDoCmdObjectCalls`,
+ * `scanDoCmdObjectCalls`, `scanDoCmdCloseCalls`,
  * `scanFormsBang`, `sweepTempVars`, statement/qualified call
  * detection) walk the masked line scanning for call shapes that
  * don't reduce to a single regex — they stay inside the factory's
@@ -464,6 +465,9 @@ export function createCallsAndSqlClassifier(
         // in a positional argument (RunMacro, TransferSpreadsheet, OutputTo,
         // ...). One table-driven dispatch; emits references only, never nodes.
         scanDoCmdObjectCalls(ctx, line, callScanLine, caller2, lineNum);
+        // Issue #246: `DoCmd.Close acForm|acReport, "X"` closes the lifecycle
+        // loop `opens-form` opens — a `references` edge to the SAME stub.
+        scanDoCmdCloseCalls(ctx, line, callScanLine, caller2, lineNum);
         // Issue #44: cross-form bang references (`Forms!X` / `Forms("X")!Y`) —
         // scan the unmasked line (form name lives in a string literal in the
         // paren form).

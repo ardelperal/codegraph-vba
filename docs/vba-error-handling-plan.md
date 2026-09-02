@@ -113,26 +113,42 @@ as a side effect of T9 — this plan only has to *label* those reads and writes 
 | `Err.Clear` | 31 | |
 | `Err.Source` | 1 | |
 
+> These are the original hand-rolled figures. Task **E1** re-measured them with the committed
+> probe; where the two disagree the probe wins, and the reconciliation table lives in E1 below.
+
 ### 2.3 What the handlers do
 
-3,774 handler bodies, classified by their dominant statement:
+3,774 handler bodies, classified by their dominant statement. **These are the probe's
+figures** (`npm run probe:vba`), not the original hand-rolled estimate — see the note below.
 
 | Behaviour | Count | Share |
 |---|--:|--:|
-| Write the error channel (`m_Error` / `p_Error` / `Me.Error`) and return | ≈2,788 | 74% |
-| `MsgBox` / `Debug.Print` and return — terminal, mostly form code-behind | 970 | 26% |
-| Re-raise with `Err.Raise` | 16 | 0.4% |
-| Empty | 0 | — |
+| Writes the error channel only (`m_Error` / `p_Error` / `g_Error` / `Me.Error`) and returns | 2,681 | 71.0% |
+| Writes the channel **and** displays (`mixed`) | 921 | 24.4% |
+| `MsgBox` / `Debug.Print` only — terminal, mostly form code-behind | 52 | 1.4% |
+| Re-raises with `Err.Raise` only | 14 | 0.4% |
+| No recognised signal (`unknown`) | 106 | 2.8% |
 
-> **Measurement caveat, stated so nobody re-derives it wrong.** The classifier put 889 bodies
-> in the channel bucket outright and 1,899 in an "other" bucket. A 12-sample audit of "other"
-> found 12 out of 12 were `p_Error = …` writes the classifier's regex missed. The 2,788 figure
-> is the sum of both, and the exact split should be re-measured by task **E1** rather than
-> quoted from here. The 970 and 16 figures are exact.
+Non-exclusive signal totals, which is what the earlier estimate was really counting:
 
-The two dominant behaviours map cleanly onto the architecture: **domain classes record and
-return; forms display and stop.** The boundary between them is where an error becomes visible
-to a user, and it is currently invisible in the graph.
+| Signal | Handlers |
+|---|--:|
+| writes the error channel | 3,602 |
+| displays | 971 |
+| re-raises | 16 |
+
+> **The caveat this section used to carry is now resolved.** The original classifier put 889
+> bodies in the channel bucket outright and 1,899 in an "other" bucket, and a 12-sample audit
+> of "other" found 12 of 12 were `p_Error = ...` writes its regex missed; the reported 2,788
+> (74%) was the sum of two buckets rather than a measurement. The probe's channel matcher takes
+> its names from a configurable list (`--error-channel`, default `m_Error` / `p_Error` /
+> `g_Error` / `Error`), so the real figure is **3,602 handlers touching the channel** — the old
+> estimate under-counted by ~814. The 970/16 display and re-raise figures were, as stated,
+> essentially exact: the probe reads 971 and 16.
+>
+> `mixed` is now its own bucket rather than being resolved by evaluation order, which is where
+> most of the difference between the exclusive and non-exclusive tables comes from: 921 handlers
+> both record the error and show it.
 
 ### 2.4 What the extractor does with all this today
 
@@ -341,6 +357,36 @@ channel-vs-display split that §2.3 could only approximate. Paste the output in 
 it supersedes the numbers in this document, and this document should be updated to match.
 
 **Changelog.** None (internal tooling). Say so in the PR body.
+
+**Status — landed, and the corpus re-measured.** The `errorHandling` block ships in
+`scripts/vba-coverage-probe.mjs`, covered by `__tests__/vba-coverage-probe-errors.test.ts`.
+Reproduce every figure in §2.2 and §2.3 with:
+
+```
+npm run probe:vba -- <expedientes>/src <gestion-riesgos>/src <hps-solicitudes>/src
+```
+
+The probe agrees with §2.2 on the headline counts and diverges on four, which the probe's
+figures now supersede because it is the tested, committed classifier and the census was not:
+
+| Metric | §2.2 census | Probe | Note |
+|---|--:|--:|---|
+| Procedures | 4,817 | 4,817 | exact |
+| with `On Error GoTo` | 3,777 | 3,774 | within 3 |
+| only `On Error Resume Next` | 227 | 227 | exact |
+| no protection | 813 | 816 | within 3 |
+| unprotected and > 5 statements | 310 | 305 | statement-line counting differs slightly |
+| ...of those, touching I/O | 185 | 103 | **diverges** — the probe's I/O marker list is narrower and explicit |
+| line labels defined | 3,912 | 3,911 | within 1 |
+| ...pure control flow | 136 | 137 | within 1 |
+| `Resume Next` scopes never closed | ~546 | 534 | probe tracks open scopes per procedure rather than subtracting totals |
+| procedures with more than one handler | 337 | 47 | **diverges** — the census counted `On Error` *statements* per procedure, the probe counts `On Error GoTo <label>` sites only |
+| dangling `GoTo` targets | 1 | 0 | **diverges** — the probe resolves labels per procedure scope; no procedure in the corpus has an unresolved target |
+| `Err.Raise` | 5,241 | 5,189 | within 1% |
+| `Err.Raise 1000` sentinel | 5,152 | 5,133 | within 1% |
+
+The three divergences are definitional, not defects on either side; each is documented in the
+probe's docblock so a later reader can tell which question a number answers.
 
 ---
 

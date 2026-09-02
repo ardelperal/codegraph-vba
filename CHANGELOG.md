@@ -17,6 +17,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - SQL that creates, alters or drops a table now counts as a write to that table, and a query pointed at another Access database file with `IN "…"` now shows that file in the graph, so cross-backend access is finally visible. (#256)
 - Access code that runs a macro, opens a table, exports a spreadsheet or emails a report now records which object it names, so those relationships show up in the graph instead of disappearing. (#254)
 - Closing a form or report from code is now part of the graph, so a form's full lifecycle — who opens it and who closes it — is visible in one place. (#246)
+- Opening a recordset or a query definition by its saved-query name now links the calling procedure to that query, so you can follow a procedure through the query it runs all the way to the tables it touches. (#253)
 
 ### Changed
 

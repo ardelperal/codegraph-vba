@@ -1655,6 +1655,11 @@ export class QueryBuilder {
    * module. These synthetic nodes are created by the extractor for
    * cross-file type references (`Dim x As MyEnum`) but may not have been
    * resolved to the real type node during the main resolution pass.
+   *
+   * Issue #257: `type_of` counts too. A `parameter` node typed `As Cliente`
+   * points at the very same stub, and a stub reached ONLY that way (the file
+   * declares no `Dim … As Cliente`) must still be discoverable — otherwise it
+   * is never repointed and the parameter's type stays unresolved forever.
    */
   getVbaReferenceStubs(): Node[] {
     const rows = this.db
@@ -1662,7 +1667,7 @@ export class QueryBuilder {
         `SELECT DISTINCT n.* FROM nodes n
          JOIN edges e ON e.target = n.id
          WHERE n.kind = 'class' AND n.language = 'vba'
-           AND e.kind = 'references'
+           AND e.kind IN ('references', 'type_of')
            AND EXISTS (
              SELECT 1 FROM nodes src
              WHERE src.id = e.source AND src.language = 'vba'

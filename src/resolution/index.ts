@@ -2172,8 +2172,17 @@ export class ReferenceResolver {
    * (enum, class, interface, struct, type_alias). Exactly one match →
    * repoint; zero or 2+ → decline (leave the stub as-is).
    *
-   * Duplicate `(source, target, 'references')` rows after repointing are
-   * collapsed the same way `resolveVbaCallStubs` handles F1 duplicates.
+   * Duplicate `(source, target, kind)` rows after repointing are collapsed the
+   * same way `resolveVbaCallStubs` handles F1 duplicates.
+   *
+   * Issue #257: `type_of` edges are repointed alongside `references` ones.
+   * They share the stub by construction (`emitTypeOf` and `emitReference` both
+   * go through `ensureSynthTypeNode`), and the stub is DELETED at the end of
+   * each iteration — with `ON DELETE CASCADE` on both endpoint columns, an
+   * un-repointed `type_of` edge would be silently destroyed rather than
+   * resolved. The de-duplication key carries the edge kind so a module's
+   * `references` edge and its parameter's `type_of` edge onto the same type
+   * cannot collapse into each other.
    */
   resolveVbaReferenceStubs(): number {
     const stubs = this.queries.getVbaReferenceStubs();
@@ -2199,14 +2208,17 @@ export class ReferenceResolver {
       if (candidates.length !== 1) continue; // 0 or 2+ → decline
 
       const real = candidates[0]!;
-      const incoming = this.queries.getIncomingEdges(stub.id, ['references']);
+      const incoming = this.queries.getIncomingEdges(stub.id, [
+        'references',
+        'type_of',
+      ]);
 
       for (const edge of incoming) {
         if (edge.id === undefined) continue;
-        const tupleKey = `${edge.source}\0${real.id}`;
+        const tupleKey = `${edge.source}\0${real.id}\0${edge.kind}`;
         if (
           seenTuples.has(tupleKey) ||
-          this.queries.edgeExists(edge.source, real.id, 'references')
+          this.queries.edgeExists(edge.source, real.id, edge.kind)
         ) {
           this.queries.deleteEdgeById(edge.id);
           continue;

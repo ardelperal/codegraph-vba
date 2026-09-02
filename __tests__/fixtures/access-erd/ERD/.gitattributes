@@ -1,0 +1,3 @@
+# The BOM + CRLF byte shape IS the fixture (issue #257): keep it verbatim on
+# every platform instead of letting core.autocrlf normalize the line endings.
+Estructura_Datos.md -text

@@ -2237,6 +2237,115 @@ export class ReferenceResolver {
   }
 
   /**
+   * Promote Access ERD table declarations to canonical and repoint the
+   * SQL-derived placeholders onto them (#257, half B).
+   *
+   * Two extractors already synthesize a `class` placeholder for every table
+   * name they see in SQL text (`vba-sql-table` from in-code SQL,
+   * `sql-query-table` from a saved query), each keyed on the REFERENCING file.
+   * `AccessErdExtractor` emits its own table node keyed on the ERD document.
+   * Left alone, `TbAnexos` from the ERD and `TbAnexos` from a `SELECT` in a
+   * `.cls` are two unrelated nodes — the fields land on one, the references on
+   * the other, and the whole feature buys nothing.
+   *
+   * This pass is the convergence step, and it reuses the mechanism
+   * `resolveVbaCallStubs` already proved: repoint the incoming edges onto the
+   * canonical node, collapse would-be duplicates, delete the emptied
+   * placeholder, and stamp `metadata.repointDecision` on every edge it touched
+   * so the outcome is auditable (same vocabulary as `docs/vba-stub-repoint-
+   * decision.md`).
+   *
+   * Three deliberate declines:
+   *  - **No ERD declares this name** → leave the placeholder exactly as it is.
+   *    That is the no-ERD project, and its behavior must not change at all.
+   *  - **Two ERD files declare the same name** (two backends, same table) →
+   *    `declined-ambiguous`. Repoint nothing and keep both declarations; which
+   *    backend a bare `SELECT` meant is not something to guess.
+   *  - **The placeholder still has other edges** → keep the node. Only a
+   *    placeholder whose every edge has moved is deleted.
+   *
+   * Runs BEFORE `resolveVbaReferenceStubs` so this explicit, decision-stamping
+   * pass owns the outcome rather than the generic stub resolver silently
+   * arriving at half of it. Idempotent: a repointed placeholder is gone, so a
+   * second pass finds nothing to do.
+   *
+   * @returns the number of edges repointed onto an ERD table node.
+   */
+  resolveAccessErdTableNodes(): number {
+    const erdTables = this.queries.getAccessErdTableNodes();
+    if (erdTables.length === 0) return 0; // no ERD in this project — no-op
+
+    // name (lower-cased) → the single ERD declaration, or `null` when two or
+    // more ERD documents declare that name.
+    const byName = new Map<string, Node | null>();
+    for (const table of erdTables) {
+      const key = table.name.toLowerCase();
+      byName.set(key, byName.has(key) ? null : table);
+    }
+    const erdIds = new Set(erdTables.map((t) => t.id));
+
+    const seenTuples = new Set<string>();
+    let repointedCount = 0;
+
+    for (const placeholder of this.queries.getSqlTablePlaceholders()) {
+      if (erdIds.has(placeholder.id)) continue; // an ERD node is never a placeholder
+      const key = placeholder.name.toLowerCase();
+      if (!byName.has(key)) continue; // no declaration for this table — unchanged
+      const target = byName.get(key) ?? null;
+
+      // Only the SQL-derived table references move. A placeholder may also be
+      // the target of an unrelated `references` edge (a same-named VBA type,
+      // say); repointing that onto a table would be a confident wrong answer.
+      const incoming = this.queries
+        .getIncomingEdges(placeholder.id, ['references'])
+        .filter((e) => {
+          const by = e.metadata?.synthesizedBy;
+          return by === 'vba-sql-table' || by === 'sql-query-table';
+        });
+
+      if (!target) {
+        // Ambiguous: stamp the decision, move nothing, keep every node.
+        for (const edge of incoming) {
+          if (edge.id === undefined) continue;
+          const meta = { ...(edge.metadata ?? {}), repointDecision: 'declined-ambiguous' };
+          this.queries.repointEdgeTarget(edge.id, edge.target, JSON.stringify(meta));
+        }
+        continue;
+      }
+
+      for (const edge of incoming) {
+        if (edge.id === undefined) continue;
+        const tupleKey = `${edge.source}\0${target.id}`;
+        if (
+          seenTuples.has(tupleKey) ||
+          this.queries.edgeExists(edge.source, target.id, 'references')
+        ) {
+          // The same module referencing the table twice would otherwise leave
+          // two identical rows and double-count the caller.
+          this.queries.deleteEdgeById(edge.id);
+          continue;
+        }
+        seenTuples.add(tupleKey);
+        const meta = { ...(edge.metadata ?? {}), repointDecision: 'reponted-to-real' };
+        this.queries.repointEdgeTarget(edge.id, target.id, JSON.stringify(meta));
+        repointedCount++;
+      }
+
+      // Delete the placeholder only once NOTHING points at it and it points at
+      // nothing — it carries only a name, so an emptied one is pure noise, but
+      // a still-connected one is somebody else's node.
+      if (
+        this.queries.getIncomingEdges(placeholder.id).length === 0 &&
+        this.queries.getOutgoingEdges(placeholder.id).length === 0
+      ) {
+        this.queries.deleteNode(placeholder.id);
+      }
+    }
+
+    return repointedCount;
+  }
+
+  /**
    * Resolve a single VBA call-stub node to its real target, or `null` when
    * unresolvable/ambiguous. See `resolveVbaCallStubs` for the two-step
    * strategy (exact qualifiedName match, then `.bas` module-scoped

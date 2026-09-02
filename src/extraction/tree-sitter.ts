@@ -15,7 +15,7 @@ import {
   ExtractionError,
   UnresolvedReference,
 } from '../types';
-import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, detectVbaFormFile, isVbaTestManifestFile, isVbaTestSequenceFile } from './grammars';
+import { getParser, detectLanguage, isLanguageSupported, isFileLevelOnlyLanguage, detectVbaFormFile, isVbaTestManifestFile, isVbaTestSequenceFile, isAccessErdFile } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
 import { FN_REF_SPECS, captureFnRefCandidates, type FnRefSpec, type FnRefCandidate } from './function-ref';
 import { isGeneratedFile } from './generated-detection';
@@ -33,6 +33,7 @@ import { VbaExtractor } from './vba-extractor';
 import type { VbaExtractionOptions } from './vba/options';
 import { VbaFormExtractor } from './vba-form-extractor';
 import { VbaTestManifestExtractor } from './vba-test-manifest-extractor';
+import { AccessErdExtractor } from './access-erd-extractor';
 import { VbaTestSequenceExtractor } from './vba-test-sequence-extractor';
 import { SqlQueryExtractor } from './sql-query-extractor';
 import { CfmlExtractor } from './cfml-extractor';
@@ -6609,6 +6610,17 @@ export function extractFromSource(
   ) {
     // Use custom extractor for DFM/FMX form files
     const extractor = new DfmExtractor(filePath, source);
+    result = extractor.extract();
+  } else if (detectedLanguage === 'vba' && isAccessErdFile(filePath)) {
+    // Access structure export — `ERD/*.md` (#257). Classified `vba` by
+    // `detectLanguage`, narrowed here by the `ERD/`-directory path gate; the
+    // extractor's own `# Estructura de Datos:` header gate (BOM-tolerant)
+    // decides whether the document is a generated export at all, and emits
+    // nothing when it is not. Deliberately NOT gated on `dysflowExport`: the
+    // ERD dump is produced by the Access structure generator, not by Dysflow,
+    // so a project that opts out of the Dysflow extractors still gets its
+    // table structure.
+    const extractor = new AccessErdExtractor(filePath, source);
     result = extractor.extract();
   } else if (
     detectedLanguage === 'vba' &&

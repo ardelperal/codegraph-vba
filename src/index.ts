@@ -535,6 +535,12 @@ export class CodeGraph {
           // (needs every file's nodes/edges to be resolvable candidates).
           this.resolver.resolveVbaCallStubs();
           this.resolver.resolveVbaOpenedObjectStubs();
+          // VBA #257: promote Access ERD table declarations to canonical and
+          // repoint the SQL-derived table placeholders onto them, so a table's
+          // columns and its `SELECT` references live on ONE node. No-op when
+          // the project ships no `ERD/*.md`. Runs before the generic stub
+          // resolver so this explicit pass owns the decision.
+          this.resolver.resolveAccessErdTableNodes();
           // VBA #78: repoint `references` edges from synthetic class stubs
           // (created by the extractor for `Dim x As Type`) to the real type
           // node, so blast-radius can find test-file callers of enums/classes.
@@ -818,6 +824,9 @@ export class CodeGraph {
           // call-stub edges to their real cross-file target (#12).
           this.resolver.resolveVbaCallStubs();
           this.resolver.resolveVbaOpenedObjectStubs();
+          // VBA #257: same lifecycle — converge newly-emitted SQL table
+          // placeholders onto their ERD declaration (no-op without an ERD).
+          this.resolver.resolveAccessErdTableNodes();
           // VBA #78: same lifecycle — repoint `references` edges from
           // synthetic class stubs to real type nodes (#78).
           this.resolver.resolveVbaReferenceStubs();

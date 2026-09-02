@@ -40,7 +40,8 @@
  *   edgesByKind               { [kind]: count }
  *   edgesBySynthesizer        { [metadata.synthesizedBy]: count }
  *   unresolvedByKind          { [referenceKind]: count }
- *   sqlTablesReferenced       distinct table names reached via vba-sql-table
+ *   sqlTablesReferenced       distinct table names reached via VBA-embedded SQL
+ *                             (`vba-sql-table` + `vba-row-source-dynamic`)
  *   formsReferenced           distinct form names reached via opens-form / form refs
  *   proceduresWithNoOutgoing  declared procedures with zero edges and zero unresolved refs
  *   errorHandling             the error-handling census — see below
@@ -115,9 +116,24 @@ const STUB_TARGETS_TOP_N = 30;
 /**
  * The `metadata.synthesizedBy` tag `src/extraction/vba/sql-wrapper.ts` puts
  * on every `references` edge that reaches a table named inside VBA-embedded
- * SQL. `sqlTablesReferenced` counts distinct targets of exactly these edges.
+ * SQL executed through a wrapper call. See `SQL_TABLE_SYNTHESIZERS` below for
+ * the full set `sqlTablesReferenced` counts.
  */
 const SQL_TABLE_SYNTHESIZER = 'vba-sql-table';
+/**
+ * Issue #252 — the tag `src/extraction/vba/sql-wrapper.ts` puts on a table
+ * reached through SQL assigned to a binding property at runtime
+ * (`.RowSource = "SELECT …"`). It is a different PROVENANCE from
+ * `vba-sql-table`, but the same REACH: a table the code touches. Both feed
+ * `sqlTablesReferenced` so the metric keeps meaning "distinct tables this
+ * corpus reaches from VBA-embedded SQL".
+ */
+const RUNTIME_BINDING_SYNTHESIZER = 'vba-row-source-dynamic';
+/** Every synthesizer whose target is a table named inside VBA-embedded SQL. */
+const SQL_TABLE_SYNTHESIZERS = new Set([
+  SQL_TABLE_SYNTHESIZER,
+  RUNTIME_BINDING_SYNTHESIZER,
+]);
 /**
  * The `metadata.synthesizedBy` tag `src/extraction/vba-form-extractor.ts`
  * puts on the `.form.txt` -> sibling `.cls` unresolved reference. Together
@@ -813,7 +829,7 @@ export async function runProbe(roots, options = {}) {
       bump(edgesByKind, edge.kind);
       bump(edgesBySynthesizer, edge.metadata?.synthesizedBy ?? '(none)');
       if (edge.source) outgoing.add(edge.source);
-      if (edge.metadata?.synthesizedBy === SQL_TABLE_SYNTHESIZER) {
+      if (SQL_TABLE_SYNTHESIZERS.has(edge.metadata?.synthesizedBy)) {
         const name = nodeNameById.get(edge.target);
         if (name) sqlTables.add(name);
       }
@@ -954,7 +970,7 @@ export function formatReport(report) {
     '',
     '| | count |',
     '|---|--:|',
-    `| distinct SQL tables (\`${SQL_TABLE_SYNTHESIZER}\`) | ${report.sqlTablesReferenced.count} |`,
+    `| distinct SQL tables (\`${[...SQL_TABLE_SYNTHESIZERS].join('` + `')}\`) | ${report.sqlTablesReferenced.count} |`,
     `| distinct forms (\`opens-form\` / form refs) | ${report.formsReferenced.count} |`,
     '',
   );

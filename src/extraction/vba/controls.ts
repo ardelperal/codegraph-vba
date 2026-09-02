@@ -32,8 +32,13 @@ const ME_PREFIX_LEN = 3;
  * other shape (e.g. `If Me.X = ...`, `MsgBox Me.X`, `x = Me.X`) is a
  * read and must tag `*-get`. The function is intentionally narrow; a
  * cross-line assignment is out of scope (matches the prior comment).
+ *
+ * Issue #251: exported so the module-level variable sweep
+ * (`module-vars.ts`) reads `gblConn = Nothing` as a write and
+ * `x = gblConn` as a read through the SAME predicate. There must only
+ * ever be one direct-assignment rule in the VBA extractor.
  */
-function isDirectAssignment(before: string, after: string): boolean {
+export function isDirectAssignment(before: string, after: string): boolean {
   return /^\s*$/.test(before) && /^\s*=/.test(after);
 }
 

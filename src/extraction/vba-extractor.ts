@@ -357,6 +357,12 @@ export class VbaExtractor {
       const className = isCls ? (vbName ?? fallbackName) : null;
       this.ctx.classNamePrefix = className;
 
+      // Issue #251: module-level `variable` nodes want a `<Module>.<name>`
+      // qualifiedName for BOTH file kinds, so they need the module name
+      // before the walk — `classNamePrefix` above is deliberately null for
+      // `.bas`. This is the same string `createModuleOrClassNode` uses.
+      this.ctx.moduleName = vbName ?? fallbackName;
+
       // Issue #83: split-then-walk. The preprocessed source is split into
       // lines ONCE into a shared `readonly string[]`. The procedures
       // classifier runs FIRST on the full file so `ctx.localProcs`,

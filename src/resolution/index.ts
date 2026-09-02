@@ -16,7 +16,7 @@ import {
   FrameworkResolver,
   ImportMapping,
 } from './types';
-import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaMeControl, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
+import { matchReference, matchFunctionRef, matchDottedCallChain, matchScopedCallChain, matchMethodCall, matchVbaFormBinding, matchVbaMeControl, matchVbaModuleVariable, matchVbaSourceObject, sameLanguageFamily, crossesKnownFamily } from './name-matcher';
 import { resolveViaImport, resolveJvmImport, extractImportMappings, extractReExports, loadCppIncludeDirs, isPhpIncludePathRef, isCobolCopybookRef, isNixPathImportRef } from './import-resolver';
 import { detectFrameworks } from './frameworks';
 import { synthesizeCallbackEdges } from './callback-synthesizer';
@@ -809,6 +809,12 @@ export class ReferenceResolver {
     if (ref.metadata?.synthesizedBy === 'vba-me-control' && ref.metadata?.siblingPath) {
       return matchVbaMeControl(ref, this.context);
     }
+    // Issue #251: module-level variable reads/writes are file-scoped for
+    // the same reason. A miss must stay a miss rather than binding some
+    // other module's identically-named private variable.
+    if (ref.metadata?.synthesizedBy === 'vba-module-var') {
+      return matchVbaModuleVariable(ref, this.context);
+    }
 
     // CFML component paths in inheritance (#1152): `extends="coldbox.system.web.
     // Controller"` names the supertype by its dot-separated path (or `extends=
@@ -1114,6 +1120,15 @@ export class ReferenceResolver {
             ? {
                 synthesizedBy: 'vba-expression-handler',
                 eventName: ref.original.metadata?.eventName,
+              }
+            : {}),
+          // Issue #251: keep the read/write direction on the resolved
+          // edge so "who WRITES this global" stays answerable after
+          // resolution, the same way the control sweep's `access` does.
+          ...(ref.original.metadata?.synthesizedBy === 'vba-module-var'
+            ? {
+                synthesizedBy: 'vba-module-var',
+                access: ref.original.metadata.access,
               }
             : {}),
           ...(ref.original.metadata?.synthesizedBy === 'vba-me-control'

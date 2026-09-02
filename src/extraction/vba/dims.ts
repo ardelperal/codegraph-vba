@@ -7,7 +7,7 @@
 import { Edge } from '../../types';
 import { generateNodeId } from '../tree-sitter-helpers';
 import { PRIMITIVE_TYPES, PROC_RE, PROCEDURE_END_RE } from './constants';
-import { VbaClassifier } from './context';
+import { VbaClassifier, VbaExtractorContext } from './context';
 import { defineRule, runRules, VbaExtractionRule } from './rules';
 
 /**
@@ -111,6 +111,161 @@ function isArrayDeclaration(line: string, variableName: string): boolean {
 }
 
 /**
+ * Issue #251: modifier keywords that may precede a parameter name in a
+ * VBA procedure signature. They are skipped so `ByVal p_Codigo As String`
+ * yields `p_Codigo` rather than `ByVal`.
+ */
+const PARAM_MODIFIERS = new Set(['byval', 'byref', 'optional', 'paramarray']);
+
+/**
+ * Issue #251: the declared parameter names of a procedure signature line.
+ *
+ * Only the names are wanted (types, defaults and array parens are all
+ * irrelevant to a shadow check), so the parser stays deliberately small:
+ * take the signature's own parenthesised span — the one that closes the
+ * first `(`, which on a colon-separated single-line procedure stops before
+ * the inline body — split it on commas, and from each chunk take the first
+ * identifier that is not a modifier keyword. A signature with no parameter
+ * list yields an empty array.
+ *
+ * A default value containing a comma (`Optional n As Long = 1`) cannot
+ * produce a wrong NAME: the comma split can only over-split a chunk, and an
+ * over-split chunk's first identifier belongs to the default expression,
+ * never to a new parameter. Over-registering a shadow name is the safe
+ * direction — at worst one genuine module-variable read goes unreported,
+ * which is the same silence the graph had before this issue.
+ */
+function parseParameterNames(line: string): string[] {
+  const open = line.indexOf('(');
+  if (open < 0) return [];
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close <= open) return [];
+  const names: string[] = [];
+  for (const chunk of line.slice(open + 1, close).split(',')) {
+    const identifiers = chunk.match(/\p{L}[\p{L}\p{N}_]*/gu);
+    if (!identifiers) continue;
+    for (const identifier of identifiers) {
+      if (PARAM_MODIFIERS.has(identifier.toLowerCase())) continue;
+      names.push(identifier);
+      break;
+    }
+  }
+  return names;
+}
+
+/**
+ * Issue #251: the declaration keyword that opens a module-level
+ * declaration line (`Dim` / `Private` / `Public` / `Global` / `Static`),
+ * or the empty string for a bare `WithEvents m_X As Form_Y` line.
+ */
+const DECL_KEYWORD_RE = /^\s*(Dim|Private|Public|Global|Static)\b/i;
+
+/**
+ * Issue #251: fold a module-level declaration keyword to the canonical
+ * visibility enum.
+ *
+ * This is deliberately NOT `foldVisibility` from `text-utils.ts`. That
+ * helper answers "what did the author write" for keywords that only ever
+ * appear as a visibility (`Public` / `Private` / `Friend` / `Global`) and
+ * folds everything it does not recognise to `'public'`. A variable
+ * declaration also accepts `Dim` and `Static`, and in the declarations
+ * section of a VBA module BOTH mean module-private — folding them to
+ * `'public'` would claim every `Dim gblFoo` is exported from its module.
+ * Only `Public` and `Global` export a module-level variable.
+ */
+function moduleVarVisibility(line: string): 'public' | 'private' {
+  const keyword = (DECL_KEYWORD_RE.exec(line)?.[1] ?? '').toLowerCase();
+  return keyword === 'public' || keyword === 'global' ? 'public' : 'private';
+}
+
+/** Issue #251: what `emitModuleVariableNode` needs to know about one declaration. */
+interface ModuleVariableDeclaration {
+  name: string;
+  /** Source-cased declared type; `'Variant'` for an implicitly-typed `Dim x`. */
+  declaredType: string;
+  isArray: boolean;
+  isWithEvents: boolean;
+}
+
+/**
+ * Issue #251: emit ONE `variable` node plus its module -> variable
+ * `contains` edge for a module-level declaration.
+ *
+ * Two gates, both load-bearing:
+ *
+ *  1. `ctx.currentVarTypeProcKey === 'module'` — procedure locals stay
+ *     OUT of the graph. Every local of every procedure would be tens of
+ *     thousands of nodes whose only consumer is the def-use analysis this
+ *     project deliberately does not do; module-level state is the part
+ *     that couples modules to one another, and therefore the part worth a
+ *     node.
+ *  2. `ctx.moduleVariables` membership — a name re-declared on a later
+ *     line, or reached through BOTH the typed loop and the bare-Dim
+ *     fallback of the same emit, keeps its first node instead of gaining
+ *     a duplicate.
+ *
+ * The `contains` edge goes through `pushContainsFromModule`, so it is
+ * parked on `pendingModuleOrClassSource` and re-pointed once `extract()`
+ * creates the module/class node after the walk.
+ *
+ * Returns 1 when a node was emitted, 0 otherwise, so the caller can fold
+ * the result into the rule's `count`: a file whose only symbols are
+ * module-level variables must still get a module node, for the same
+ * reason a Const-only `.bas` gets one.
+ */
+function emitModuleVariableNode(
+  ctx: VbaExtractorContext,
+  decl: ModuleVariableDeclaration,
+  line: string,
+  lineNum: number,
+): number {
+  if (ctx.currentVarTypeProcKey !== 'module') return 0;
+  if (!decl.name) return 0;
+  const key = decl.name.toLowerCase();
+  if (ctx.moduleVariables.has(key)) return 0;
+  const nodeId = generateNodeId(ctx.filePath, 'variable', decl.name, lineNum);
+  ctx.nodes.push({
+    id: nodeId,
+    kind: 'variable',
+    name: decl.name,
+    qualifiedName: ctx.moduleName ? `${ctx.moduleName}.${decl.name}` : decl.name,
+    filePath: ctx.filePath,
+    language: 'vba',
+    startLine: lineNum,
+    endLine: lineNum,
+    startColumn: 0,
+    endColumn: line.length,
+    visibility: moduleVarVisibility(line),
+    metadata: {
+      declaredType: decl.declaredType,
+      isArray: decl.isArray,
+      isWithEvents: decl.isWithEvents,
+      // Module-level `Const` declarations are owned by the enum/const
+      // classifier, which emits a `constant` node for them. The flag is
+      // stamped `false` here so a consumer reading `variable` nodes never
+      // has to know that and can filter on a single field.
+      isConst: false,
+    },
+    updatedAt: Date.now(),
+  });
+  ctx.pushContainsFromModule(nodeId);
+  ctx.moduleVariables.set(key, { name: decl.name, nodeId });
+  return 1;
+}
+
+/**
  * Issue #153: the declarative rule table for the Dim / WithEvents
  * concern. Two rules:
  *
@@ -142,13 +297,20 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
     description:
       'Match a `Dim|Private|Public|Global|Static <var> [As [New] <Type>][, …]` declaration; populate `localVarTypeMap` and emit one `vba-name-resolution` `references` edge per non-primitive type (or per qualified outer type).',
     pattern: DIM_DECL_PREFIX_RE,
-    count: (result) => (result as { edges: number }).edges,
+    count: (result) => {
+      // Issue #251: module-level `variable` nodes count as symbols, so a
+      // `.bas` whose only content is a declarations section still reaches
+      // `hasAnySymbols` and gets its module node.
+      const { edges, variables } = result as { edges: number; variables: number };
+      return edges + variables;
+    },
     emit: (_m, ctx, line, lineNum) => {
       // Re-run the prefix check inside the emit (the pattern is a
       // RegExp without /g so `.test()` is enough and idempotent). This
       // keeps the rule table's contract "pattern matches → emit fires"
       // while the emit body is the same code that used to live inline.
       let edgesEmitted = 0;
+      let variablesEmitted = 0;
       if (!DIM_DECL_PREFIX_RE.test(line)) return null;
       DIM_ALL_VARS_RE.lastIndex = 0;
       let m: RegExpExecArray | null;
@@ -174,6 +336,24 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
             qualified: !!innerType,
             isArray: isArrayDeclaration(line, varName),
           });
+          // Issue #251: a procedure-local declaration shadows a
+          // module-level variable of the same name, so the read/write
+          // scan must know this procedure owns the name.
+          ctx.declareProcLocalName(ctx.currentVarTypeProcKey, varName);
+          // Issue #251: module-level declarations additionally become a
+          // `variable` node. `Dim x As Long` inside a Sub does not — the
+          // gate lives inside `emitModuleVariableNode`.
+          variablesEmitted += emitModuleVariableNode(
+            ctx,
+            {
+              name: varName,
+              declaredType: innerType ? `${outerType}.${innerType}` : outerType,
+              isArray: isArrayDeclaration(line, varName),
+              isWithEvents: false,
+            },
+            line,
+            lineNum,
+          );
         }
 
         if (innerType) {
@@ -216,6 +396,12 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
           // register when a MODULE-LEVEL `Dim x` exists, which is
           // wrong — the proc-local declaration should win inside
           // the proc.
+          // Issue #251: the shadow registration is UNCONDITIONAL — unlike
+          // the type-map write below, which yields to an outer declaration
+          // of the same name. `Dim codigo` inside a Sub declares a local
+          // whether or not the module also declares `codigo`; that is
+          // precisely the case the read/write scan must stay silent on.
+          ctx.declareProcLocalName(ctx.currentVarTypeProcKey, varName);
           if (!ctx.lookupLocalVarType(varName)) {
             // Look for an `As <Type>` continuation on the same line so the
             // outer type matches the existing typed-form behaviour. If
@@ -227,10 +413,25 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
               qualified: false,
               isArray: isArrayDeclaration(line, varName),
             });
+            variablesEmitted += emitModuleVariableNode(
+              ctx,
+              {
+                name: varName,
+                // Source-cased so the node reports what the author wrote;
+                // the type map's lowercase form is a lookup key, not a
+                // display value. An `As`-less declaration is `Variant` per
+                // VBA semantics.
+                declaredType: asMatch ? (asMatch[1] ?? 'Variant') : 'Variant',
+                isArray: isArrayDeclaration(line, varName),
+                isWithEvents: false,
+              },
+              line,
+              lineNum,
+            );
           }
         }
       }
-      return { edges: edgesEmitted };
+      return { edges: edgesEmitted, variables: variablesEmitted };
     },
   }),
   defineRule({
@@ -255,6 +456,22 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
           withEvents: true,
           variableName: weVarName,
         });
+        ctx.declareProcLocalName(ctx.currentVarTypeProcKey, weVarName);
+        // Issue #251: a `WithEvents` field is module-level state like any
+        // other declaration and gets the same `variable` node, flagged so
+        // a consumer can tell an event sink from a plain field. The
+        // `references` + `subscribes-event` edges below are untouched.
+        emitModuleVariableNode(
+          ctx,
+          {
+            name: weVarName,
+            declaredType: formType,
+            isArray: false,
+            isWithEvents: true,
+          },
+          line,
+          lineNum,
+        );
       }
       // Stamp `variableName` onto the `references` edge's metadata so
       // the post-extraction event-handler synthesis pass (#150) can
@@ -330,6 +547,12 @@ export function createDimsClassifier(): VbaClassifier {
       if (procStart) {
         stack.push(lineNum);
         ctx.currentVarTypeProcKey = String(lineNum);
+        // Issue #251: a parameter shadows a module-level variable of the
+        // same name for the whole procedure body, exactly like a `Dim`
+        // does, so the names are registered on the same shadow bucket.
+        for (const paramName of parseParameterNames(line)) {
+          ctx.declareProcLocalName(ctx.currentVarTypeProcKey, paramName);
+        }
       } else if (PROCEDURE_END_RE.test(line) && stack.length > 0) {
         stack.pop();
         ctx.currentVarTypeProcKey =

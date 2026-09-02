@@ -12,6 +12,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### New Features
 
 - A form's own lifecycle handlers — what runs when it opens, loads or closes — now connect to the form in the graph, the same way a button's click handler already did. (#247)
+- VBA procedures now carry their real shape in the graph — whether something is a Sub, a Function or a property getter or setter, what it returns, and which parameters it takes, are optional or are passed by reference. (#250)
 
 ### Changed
 

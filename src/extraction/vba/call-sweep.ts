@@ -21,6 +21,7 @@ import {
   detectWithMemberCall,
 } from './calls';
 import { scanMeControlReferences, scanFormsBang } from './controls';
+import { scanModuleVariableReferences } from './module-vars';
 import {
   scanDoCmdOpenCalls,
   scanDoCmdOpenQuery,
@@ -326,10 +327,17 @@ export function createCallsAndSqlClassifier(
 
       // Hueco 1: capture `Me.<Control>` references. Only inside procedures
       // because `Me` is only meaningful inside a form's class module.
+      //
+      // Issue #251: the module-level variable read/write scan rides the
+      // same masked line and the same "inside a procedure body" gate. It
+      // must not run on the signature line of a procedure — the empty
+      // `procStartBodyClauses` array supplies that, exactly as it does for
+      // the control scan.
       if (stack.length > 0) {
         const scanLines = procStartBodyClauses ?? [callScanLine];
         for (const scanLine of scanLines) {
           scanMeControlReferences(ctx, scanLine, stack[stack.length - 1]!, lineNum);
+          scanModuleVariableReferences(ctx, scanLine, stack[stack.length - 1]!, lineNum);
         }
       }
 

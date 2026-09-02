@@ -80,6 +80,52 @@ export class VbaExtractorContext {
   public moduleOrClassNode: Node | null = null;
 
   /**
+   * Issue #251: the module/class name this file's symbols belong to —
+   * the resolved `Attribute VB_Name`, or the file basename when the
+   * attribute is absent. It is the SAME string the module/class node is
+   * later created with (`createModuleOrClassNode`), but it is resolved
+   * BEFORE the walk so a classifier can compose a `<Module>.<name>`
+   * qualifiedName while the module node itself does not exist yet.
+   *
+   * `classNamePrefix` right below cannot serve that purpose: it is
+   * deliberately `null` for `.bas` modules so procedure qualifiedNames
+   * keep their bare-name shape. Module-level variables want the module
+   * prefix in BOTH file kinds, so they read this field instead.
+   */
+  public moduleName: string | null = null;
+
+  /**
+   * Issue #251: module-level variables declared in THIS file, keyed by
+   * the lowercase variable name. Populated by the dims classifier at the
+   * moment it emits the `variable` node, so membership means exactly
+   * "this name is a module-level variable of this module and has a node
+   * in the graph".
+   *
+   * This is the ONLY gate the read/write reference scan consults. It is
+   * deliberately NOT `localVarTypeMap.get('module')`: that map also holds
+   * bookkeeping entries the sweeps write for type-tracking purposes, and
+   * scanning identifiers against anything broader than "names we emitted
+   * a node for" is how a reference sweep turns into thousands of false
+   * positives.
+   */
+  public moduleVariables = new Map<string, { name: string; nodeId: string }>();
+
+  /**
+   * Issue #251: for each procedure (keyed by its `startLine` as a string,
+   * the same key `currentVarTypeProcKey` uses), the lowercase names that
+   * procedure declares itself — its parameters and every `Dim` / `Static`
+   * / `Private` declaration in its body.
+   *
+   * The module-level variable read/write scan consults this to honour the
+   * issue #205 scoping rule: a procedure that declares its own `codigo`
+   * must not report a read of the module-level `codigo`. `localVarTypeMap`
+   * cannot answer that question on its own — its bare-`Dim` path skips the
+   * write when an outer declaration of the same name already resolves, and
+   * it never sees parameters at all — so both would read as unshadowed.
+   */
+  public procLocalNames = new Map<string, Set<string>>();
+
+  /**
    * Class-name prefix for `qualifiedName` composition.
    *
    * B3 (hueco 5): for `.cls` files every function node's `qualifiedName`
@@ -708,6 +754,21 @@ export class VbaExtractorContext {
    * `currentVarTypeProcKey`. Creates the bucket lazily. Returns the
    * bucket the entry was written to (mostly useful for tests).
    */
+  /**
+   * Issue #251: record `name` as declared by the procedure `procKey`
+   * (`'module'` is accepted and simply ignored — a module-level
+   * declaration shadows nothing). Creates the bucket lazily.
+   */
+  public declareProcLocalName(procKey: 'module' | string, name: string): void {
+    if (procKey === 'module' || !name) return;
+    let bucket = this.procLocalNames.get(procKey);
+    if (!bucket) {
+      bucket = new Set<string>();
+      this.procLocalNames.set(procKey, bucket);
+    }
+    bucket.add(name.toLowerCase());
+  }
+
   public setLocalVarTypeInScope(
     scopeKey: 'module' | string,
     name: string,

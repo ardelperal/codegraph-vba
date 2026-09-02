@@ -11,6 +11,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### New Features
 
+- Module-level variables are now part of the graph, so shared state can be traced to the procedures that read and write it. (#251)
 - A form's own lifecycle handlers — what runs when it opens, loads or closes — now connect to the form in the graph, the same way a button's click handler already did. (#247)
 - VBA procedures now carry their real shape in the graph — whether something is a Sub, a Function or a property getter or setter, what it returns, and which parameters it takes, are optional or are passed by reference. (#250)
 - SQL that creates, alters or drops a table now counts as a write to that table, and a query pointed at another Access database file with `IN "…"` now shows that file in the graph, so cross-backend access is finally visible. (#256)

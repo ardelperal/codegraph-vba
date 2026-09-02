@@ -34,6 +34,41 @@ export function matchVbaMeControl(
   };
 }
 
+/**
+ * Resolve a module-level variable read/write to that variable's node in
+ * the SAME file (issue #251).
+ *
+ * The binding is file-scoped and never falls through to global name
+ * matching. `m_count`, `strSQL` and `blnOk` are declared privately in
+ * dozens of modules of a typical Access project; a global match would
+ * pick one of them at random and claim a coupling between two modules
+ * that never reference each other. The extractor only emits these refs
+ * for names it already registered as module-level variables of the file
+ * being scanned, so the answer, when there is one, is always in that file.
+ */
+export function matchVbaModuleVariable(
+  ref: UnresolvedRef,
+  context: ResolutionContext,
+): ResolvedRef | null {
+  if (ref.metadata?.synthesizedBy !== 'vba-module-var') return null;
+  const wanted = ref.referenceName.toLocaleLowerCase('en-US');
+  const matches = context
+    .getNodesInFile(ref.filePath)
+    .filter(
+      (node) =>
+        node.language === 'vba' &&
+        node.kind === 'variable' &&
+        node.name.toLocaleLowerCase('en-US') === wanted,
+    );
+  if (matches.length !== 1) return null;
+  return {
+    original: ref,
+    targetNodeId: matches[0]!.id,
+    confidence: 1,
+    resolvedBy: 'exact-match',
+  };
+}
+
 /** Resolve Access SourceObject embeddings only to a unique real layout node. */
 export function matchVbaSourceObject(
   ref: UnresolvedRef,

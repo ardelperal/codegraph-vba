@@ -21,7 +21,11 @@ import {
   detectWithMemberCall,
 } from './calls';
 import { scanMeControlReferences, scanFormsBang } from './controls';
-import { scanDoCmdOpenCalls, scanDoCmdOpenQuery } from './docmd';
+import {
+  scanDoCmdOpenCalls,
+  scanDoCmdOpenQuery,
+  scanDoCmdObjectCalls,
+} from './docmd';
 import { sweepTempVars } from './tempvars';
 import { scanSqlInLine, trackSqlVariableAssignment } from './sql-wrapper';
 
@@ -57,6 +61,7 @@ const WITH_END_RE = /^\s*End\s+With\b/iu;
  * fit the declarative shape. The procedural scanners
  * (`scanRaiseEvents`, `scanCallSites`, `scanMeControlReferences`,
  * `scanSqlInLine`, `scanDoCmdOpenCalls`, `scanDoCmdOpenQuery`,
+ * `scanDoCmdObjectCalls`,
  * `scanFormsBang`, `sweepTempVars`, statement/qualified call
  * detection) walk the masked line scanning for call shapes that
  * don't reduce to a single regex — they stay inside the factory's
@@ -447,6 +452,10 @@ export function createCallsAndSqlClassifier(
         // `UnresolvedReference` and stays separate.
         scanDoCmdOpenCalls(ctx, line, callScanLine, caller2, lineNum);
         scanDoCmdOpenQuery(ctx, line, callScanLine, caller2, lineNum);
+        // Issue #254: every remaining DoCmd verb that names an Access object
+        // in a positional argument (RunMacro, TransferSpreadsheet, OutputTo,
+        // ...). One table-driven dispatch; emits references only, never nodes.
+        scanDoCmdObjectCalls(ctx, line, callScanLine, caller2, lineNum);
         // Issue #44: cross-form bang references (`Forms!X` / `Forms("X")!Y`) —
         // scan the unmasked line (form name lives in a string literal in the
         // paren form).

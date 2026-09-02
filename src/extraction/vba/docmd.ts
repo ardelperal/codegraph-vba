@@ -1,8 +1,15 @@
 /**
- * `DoCmd.OpenForm` / `DoCmd.OpenReport` / `DoCmd.OpenQuery` modelling
- * (hueco 6 / issues #48, #52). OpenForm/OpenReport emit a synthetic
- * form-layout/report-layout stub + `opens-form`/`opens-report` edge; OpenQuery
- * emits an `UnresolvedReference` the resolver binds to the real `query` node.
+ * `DoCmd.<Verb>` modelling (hueco 6 / issues #48, #52, #254).
+ *
+ * Three shapes live here:
+ *   1. `OpenForm` / `OpenReport` — a synthetic form-layout/report-layout stub
+ *      plus an `opens-form` / `opens-report` edge.
+ *   2. `OpenQuery` — an `UnresolvedReference` the resolver binds to the real
+ *      `query` node emitted for `queries/<Name>.sql`.
+ *   3. Issue #254: every OTHER `DoCmd` verb that names an Access object in a
+ *      positional argument (`RunMacro`, `TransferSpreadsheet`, `OutputTo`, …).
+ *      These emit an `UnresolvedReference` and NEVER a node — see
+ *      `DOCMD_OBJECT_DISPATCH`.
  *
  * `DoCmd` is in `RUNTIME_RECEIVER_BLACKLIST`, so these methods are skipped by
  * the generic call-site scan and handled here with their own emission path.
@@ -218,5 +225,232 @@ export function scanDoCmdOpenQuery(
       language: 'vba',
       metadata: { synthesizedBy: 'vba-opens-query' },
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #254 (task T12) — the remaining `DoCmd` verbs that name an object.
+//
+// Everything below is ONE table-driven dispatch: a verb, the zero-based
+// position of the argument that names the object, and the provenance tag the
+// emitted reference carries. Adding a verb is adding a row — there is
+// deliberately no per-verb regex.
+//
+// Why a reference and never a node: Dysflow exports `classes/`, `forms/`,
+// `modules/` and `queries/` to the source tree and nothing else. A macro or a
+// table named by one of these verbs has no indexed artifact behind it, so a
+// node for it would be a stub nothing can ever back — the fabricated-target
+// shape the runtime-allowlist work is removing elsewhere. An
+// `UnresolvedReference` costs nothing, stays visible as an actionable `failed`
+// reference, and resolves by itself the day the artifact IS exported.
+//
+// Two verbs from the issue list are deliberately NOT here:
+//   - `RunSQL` names a SQL statement, not an object. Its literal and
+//     variable forms are already modelled by the SQL-wrapper sweep
+//     (`vba/sql-wrapper.ts`), which emits `vba-sql-table` references for the
+//     tables the statement touches. A second emission would double-count.
+//   - `RunCommand` takes an intrinsic `acCmd*` command constant. There is no
+//     project artifact to point at, so there is nothing to reference.
+// ---------------------------------------------------------------------------
+
+type DoCmdObjectDispatch = {
+  /** The `DoCmd` method name, matched case-insensitively. */
+  method: string;
+  /**
+   * Zero-based position, in the call's argument list, of the argument that
+   * names an EXISTING Access object. Where a verb takes both a source and a
+   * destination name (`CopyObject`, `Rename`), this is the source — the
+   * destination does not exist yet, so it cannot be referenced.
+   */
+  argIndex: number;
+  /** Per-verb provenance tag stamped on the emitted reference. */
+  synthesizedBy: string;
+};
+
+/**
+ * Issue #254 dispatch table — verb, argument position, provenance tag.
+ *
+ * Argument positions follow the documented Access `DoCmd` signatures:
+ *   RunMacro            MacroName, RepeatCount, RepeatExpression
+ *   OpenTable           TableName, View, DataMode
+ *   ApplyFilter         FilterName, WhereCondition, ControlName
+ *   CopyObject          DestinationDatabase, NewName, SourceObjectType, SourceObjectName
+ *   DeleteObject        ObjectType, ObjectName
+ *   Rename              NewName, ObjectType, OldName
+ *   SelectObject        ObjectType, ObjectName, InDatabaseWindow
+ *   BrowseTo            ObjectType, ObjectName, PathToSubformControl, …
+ *   OutputTo            ObjectType, ObjectName, OutputFormat, OutputFile, …
+ *   SendObject          ObjectType, ObjectName, OutputFormat, To, …
+ *   TransferSpreadsheet TransferType, SpreadsheetType, TableName, FileName, …
+ *   TransferText        TransferType, SpecificationName, TableName, FileName, …
+ *   TransferDatabase    TransferType, DatabaseType, DatabaseName, ObjectType, Source, Destination, …
+ */
+const DOCMD_OBJECT_DISPATCH: ReadonlyArray<DoCmdObjectDispatch> = [
+  { method: 'RunMacro', argIndex: 0, synthesizedBy: 'vba-runs-macro' },
+  { method: 'OpenTable', argIndex: 0, synthesizedBy: 'vba-opens-table' },
+  { method: 'ApplyFilter', argIndex: 0, synthesizedBy: 'vba-applies-filter' },
+  { method: 'CopyObject', argIndex: 3, synthesizedBy: 'vba-copies-object' },
+  { method: 'DeleteObject', argIndex: 1, synthesizedBy: 'vba-deletes-object' },
+  { method: 'Rename', argIndex: 2, synthesizedBy: 'vba-renames-object' },
+  { method: 'SelectObject', argIndex: 1, synthesizedBy: 'vba-selects-object' },
+  { method: 'BrowseTo', argIndex: 1, synthesizedBy: 'vba-browses-to' },
+  { method: 'OutputTo', argIndex: 1, synthesizedBy: 'vba-outputs-to' },
+  { method: 'SendObject', argIndex: 1, synthesizedBy: 'vba-sends-object' },
+  {
+    method: 'TransferSpreadsheet',
+    argIndex: 2,
+    synthesizedBy: 'vba-transfers-spreadsheet',
+  },
+  { method: 'TransferText', argIndex: 2, synthesizedBy: 'vba-transfers-text' },
+  {
+    method: 'TransferDatabase',
+    argIndex: 4,
+    synthesizedBy: 'vba-transfers-database',
+  },
+];
+
+/**
+ * One regex per dispatch row, built once at module load. It matches only the
+ * `DoCmd.<Verb>` head plus the optional opening paren — the argument list is
+ * split by `splitDoCmdArguments`, because a positional lookup through a list
+ * that mixes literals, intrinsic constants and omitted arguments is not
+ * something a regex should be asked to do.
+ */
+const DOCMD_OBJECT_HEAD_RES: ReadonlyArray<RegExp> = DOCMD_OBJECT_DISPATCH.map(
+  (d) => new RegExp(`\\bDoCmd\\.${d.method}\\b[ \\t]*\\(?[ \\t]*`, 'giu'),
+);
+
+/**
+ * Split a `DoCmd` argument list into its top-level arguments, in source order.
+ *
+ * `text` is the remainder of the line AFTER the `DoCmd.<Verb>` head. Commas
+ * inside a string literal or inside a nested paren/bracket group do not split;
+ * an omitted argument (`DoCmd.CopyObject , "X", …`) yields an empty string so
+ * the positions of the arguments that ARE present stay correct.
+ *
+ * The scan stops at the first top-level `)` (closing the parenthesised call
+ * form), `:` (VBA statement separator) or a comment quote — comments are
+ * already stripped upstream, so that last one is defence in depth.
+ */
+function splitDoCmdArguments(text: string): string[] {
+  const args: string[] = [];
+  let current = '';
+  let depth = 0;
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i] ?? '';
+    if (inString) {
+      current += ch;
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inString = false;
+        }
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      current += ch;
+      continue;
+    }
+    if (ch === '(' || ch === '[') {
+      depth++;
+      current += ch;
+      continue;
+    }
+    if (ch === ')' || ch === ']') {
+      if (depth === 0) break;
+      depth--;
+      current += ch;
+      continue;
+    }
+    if (depth === 0 && (ch === "'" || ch === ':')) break;
+    if (depth === 0 && ch === ',') {
+      args.push(current.trim());
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  args.push(current.trim());
+  return args;
+}
+
+/**
+ * Resolve one `DoCmd` object argument to the name it denotes, or `null` when
+ * it denotes nothing we can know statically.
+ *
+ * A `"literal"` is taken verbatim. A bare identifier is resolved through the
+ * per-proc-then-module `Const` lookup (Issue #52) — a `Const` holding a string
+ * literal IS a static name. Anything else (an undeclared variable, a
+ * concatenation, a function call) resolves to `null` and the call site stays
+ * SILENT. This is deliberately stricter than the `OpenForm`/`OpenReport`
+ * bare-identifier fallback: a guessed target on a verb nobody in the corpus
+ * uses would be noise nobody can act on.
+ */
+function resolveDoCmdObjectArgument(
+  ctx: VbaExtractorContext,
+  rawArg: string,
+): string | null {
+  const arg = rawArg.trim();
+  if (!arg) return null;
+  if (arg.startsWith('"')) return unwrapVbaStringLiteral(arg) || null;
+  if (!/^\p{L}[\p{L}\p{N}_]*$/u.test(arg)) return null;
+  return ctx.resolveLocalConst(arg) ?? null;
+}
+
+/**
+ * Issue #254: scan one line of VBA source for every `DoCmd` verb in
+ * `DOCMD_OBJECT_DISPATCH`. Each match whose object argument resolves to a
+ * static name emits ONE `UnresolvedReference` — no node, ever.
+ *
+ * `maskedLine` has string CONTENT blanked out, so the `docmd` prefix check
+ * rejects a verb name that only appears inside a string literal. The object
+ * name itself lives inside a literal, which is why the split runs on the
+ * original `line`.
+ */
+export function scanDoCmdObjectCalls(
+  ctx: VbaExtractorContext,
+  line: string,
+  maskedLine: string,
+  caller: ProcInfo,
+  lineNum: number,
+): void {
+  for (let d = 0; d < DOCMD_OBJECT_DISPATCH.length; d++) {
+    const dispatch = DOCMD_OBJECT_DISPATCH[d]!;
+    // The shared regexes carry /g, so clone before use to keep `lastIndex`
+    // from leaking across lines and across dispatch rows.
+    const head = DOCMD_OBJECT_HEAD_RES[d]!;
+    const localRe = new RegExp(head.source, head.flags);
+    let m: RegExpExecArray | null;
+    while ((m = localRe.exec(line)) !== null) {
+      if (maskedLine.slice(m.index, m.index + 5).toLowerCase() !== 'docmd') continue;
+      const args = splitDoCmdArguments(line.slice(m.index + m[0].length));
+      const targetName = resolveDoCmdObjectArgument(
+        ctx,
+        args[dispatch.argIndex] ?? '',
+      );
+      if (!targetName) continue;
+      ctx.unresolvedReferences.push({
+        fromNodeId: ctx.findOrCreateFunctionNodeId(caller),
+        referenceName: targetName,
+        // `references` is an EdgeKind literal, so if the named artifact ever
+        // IS indexed the reference becomes a plain `references` edge with no
+        // extractor change.
+        referenceKind: 'references',
+        line: lineNum,
+        column: m.index,
+        filePath: ctx.filePath,
+        language: 'vba',
+        metadata: {
+          synthesizedBy: dispatch.synthesizedBy,
+          docmdVerb: dispatch.method,
+          targetName,
+        },
+      });
+    }
   }
 }

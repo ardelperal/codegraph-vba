@@ -230,3 +230,43 @@ export function parseFormLevelEventHandlerName(
   if (!isAccessEventName(eventName)) return null;
   return { ownerName, eventName };
 }
+
+/**
+ * Sibling layout extension implied by an Access code-behind prefix.
+ * `Form_*` binds to a `.form.txt`; `Report_*` binds to a `.report.txt`.
+ */
+export type CodeBehindExt = '.form.txt' | '.report.txt';
+
+/**
+ * Issue #249 helper: the `Form_` / `Report_` code-behind prefix carried by a
+ * module's RESOLVED `Attribute VB_Name`, used as the fallback when the file
+ * on disk does not carry the prefix in its basename.
+ *
+ * Both binding sites (the event-handler synthesis in `procedures.ts` and the
+ * `Me.<Control>` sweep in `controls.ts`) keep their own basename check as the
+ * fast path and consult this only on a basename miss, so the common case —
+ * a Dysflow export whose filename and `VB_Name` agree — is byte-for-byte
+ * unchanged.
+ *
+ * `classNamePrefix` is `null` for `.bas` modules and holds the resolved
+ * `VB_Name` (or the extension-stripped basename when the module carries no
+ * `VB_Name`) for `.cls` modules, so this fallback can only ever fire for a
+ * class module. That is deliberate: the guard that keeps a plain service
+ * class such as `InformeRiesgoPDFServicio.cls` — whose methods
+ * (`GenerarHTML_Principal`, `GetEstilosCSS_PDF`) look like event handlers to
+ * a naive `<X>_<Y>` split — from synthesizing hundreds of spurious
+ * `form-instance-control` stubs is that NEITHER its filename NOR its
+ * `VB_Name` starts with `Form_` / `Report_`. Widening the prefix test would
+ * reopen exactly that hole, so the test stays the same canonical Access
+ * naming convention; only the string it is applied to widens.
+ *
+ * The trailing `.+` is load-bearing: a bare `Form_` names no form.
+ */
+export function codeBehindExtFromVbName(
+  classNamePrefix: string | null,
+): CodeBehindExt | null {
+  if (!classNamePrefix) return null;
+  if (/^Report_.+$/i.test(classNamePrefix)) return '.report.txt';
+  if (/^Form_.+$/i.test(classNamePrefix)) return '.form.txt';
+  return null;
+}

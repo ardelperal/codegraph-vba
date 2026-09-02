@@ -5,6 +5,7 @@
  * node) the resolver later binds to the form's controls.
  */
 import { VbaExtractorContext, ProcInfo } from './context';
+import { codeBehindExtFromVbName } from './text-utils';
 
 /**
  * `Me.<ControlName>` / `Me!<ControlName>` reference capture — hole 1
@@ -46,16 +47,62 @@ const ACCESS_FORM_MEMBER_BLACKLIST = new Set([
 
 const seenMeControls = new WeakMap<VbaExtractorContext, Set<string>>();
 
-function siblingLayoutPath(filePath: string): string | null {
-  const normalized = filePath.replace(/\\/g, '/');
+/**
+ * The sibling layout file this code-behind's `Me.<Control>` references
+ * resolve against, plus where the `Form_` / `Report_` prefix that authorised
+ * the binding was found.
+ */
+interface SiblingLayoutBinding {
+  /** Path to the sibling `.form.txt` / `.report.txt`, slash-normalized. */
+  siblingPath: string;
+  /**
+   * `null` on the filename fast path; `'vb-name'` when only the module's
+   * resolved `Attribute VB_Name` carried the prefix, so consumers can see
+   * that the file and the module disagree (issue #249).
+   */
+  bindingSource: 'vb-name' | null;
+}
+
+/**
+ * Resolve the sibling layout binding for the file being extracted.
+ *
+ * The BASENAME is the fast path and is checked first, unchanged. Issue #249
+ * adds the fallback below it: a code-behind class exported under a filename
+ * that lost the `Form_` / `Report_` prefix used to produce no control
+ * references at all — the sweep simply bailed and nothing warned — so the
+ * decision to bind now falls back to the module's resolved `VB_Name`.
+ *
+ * The sibling PATH is always derived from the FILE path either way: that is
+ * where the `.form.txt` / `.report.txt` actually sits on disk, whatever the
+ * module calls itself. Only the decision to bind consults `VB_Name`.
+ *
+ * `ctx.classNamePrefix` is `null` for `.bas` modules, and the `.cls` guard
+ * below keeps the fallback on the same file kind the fast path accepts.
+ */
+function siblingLayoutBinding(
+  ctx: VbaExtractorContext,
+): SiblingLayoutBinding | null {
+  const normalized = ctx.filePath.replace(/\\/g, '/');
   const basename = normalized.slice(normalized.lastIndexOf('/') + 1);
   if (/^Form_.+\.cls$/i.test(basename)) {
-    return normalized.replace(/\.cls$/i, '.form.txt');
+    return {
+      siblingPath: normalized.replace(/\.cls$/i, '.form.txt'),
+      bindingSource: null,
+    };
   }
   if (/^Report_.+\.cls$/i.test(basename)) {
-    return normalized.replace(/\.cls$/i, '.report.txt');
+    return {
+      siblingPath: normalized.replace(/\.cls$/i, '.report.txt'),
+      bindingSource: null,
+    };
   }
-  return null;
+  if (!/\.cls$/i.test(basename)) return null;
+  const ext = codeBehindExtFromVbName(ctx.classNamePrefix);
+  if (!ext) return null;
+  return {
+    siblingPath: normalized.replace(/\.cls$/i, ext),
+    bindingSource: 'vb-name',
+  };
 }
 
 /**
@@ -105,7 +152,13 @@ export function scanMeControlReferences(
     // `m.index + ME_PREFIX_LEN`.
     const operator = line.charAt(m.index + 2); // '.' | '!'
     const isBang = operator === '!';
-    const siblingPath = siblingLayoutPath(ctx.filePath);
+    const binding = siblingLayoutBinding(ctx);
+    const siblingPath = binding?.siblingPath ?? null;
+    // Present only when the filename and the module's VB_Name disagree
+    // (issue #249), so the fast path's reference metadata is unchanged.
+    const bindingSourceMeta = binding?.bindingSource
+      ? { bindingSource: binding.bindingSource }
+      : {};
 
     // Issue #140 is deliberately a separate, dot-only sweep for Access
     // form/report code-behind. Keeping `Me` in the generic runtime receiver
@@ -130,7 +183,12 @@ export function scanMeControlReferences(
           column: m.index + ME_PREFIX_LEN,
           filePath: ctx.filePath,
           language: 'vba',
-          metadata: { synthesizedBy: 'vba-me-control', siblingPath, builtIn: true },
+          metadata: {
+            synthesizedBy: 'vba-me-control',
+            siblingPath,
+            builtIn: true,
+            ...bindingSourceMeta,
+          },
         });
         continue;
       }
@@ -158,6 +216,7 @@ export function scanMeControlReferences(
           synthesizedBy: 'vba-me-control',
           siblingPath,
           access: isDirectAssignment(before, after) ? 'write' : 'read',
+          ...bindingSourceMeta,
         },
       });
       continue;

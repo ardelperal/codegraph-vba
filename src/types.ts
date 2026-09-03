@@ -62,6 +62,22 @@ export const NODE_KINDS = [
   'form-layout',
   'form-instance-control',
   'report-layout',
+  // --- VBA error handling (added 2026-09-03, issue #263 / task E6) ---
+  // 'label' — a VBA line label (`errores:`, `salir:`, `Teardown:`). VBA
+  // scopes labels to the PROCEDURE, and the same name repeats across the
+  // whole codebase (`errores` alone is defined 3,735 times in the reference
+  // corpus), so `qualifiedName` is always
+  // `<ModuleOrClass>.<Procedure>.<label>` — without the procedure segment
+  // every handler in a project collides into one symbol.
+  // `metadata.isHandler` says whether an `On Error GoTo` targets it; a label
+  // nobody targets is control flow, not a handler. Handler labels also carry
+  // `metadata.handlerBehavior` plus `regionStartLine` / `regionEndLine`,
+  // copied verbatim from the owning procedure's `errorPolicy` (issue #260) —
+  // never re-derived here.
+  // Deliberately absent from the context builder's `HIGH_VALUE_NODE_KINDS`
+  // and from the MCP layer's `CONTAINER_NODE_KINDS`: labels are the single
+  // most numerous VBA symbol and would flood every default response.
+  'label',
 ] as const;
 
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -101,7 +117,18 @@ export type EdgeKind =
   | 'opens-report'
   | 'raises-event'
   | 'subscribes-event'
-  | 'type-member';
+  | 'type-member'
+  // --- VBA error handling (added 2026-09-03, issue #263 / task E6) ---
+  // 'handles-error' — `On Error GoTo <label>` modeled as an edge from the
+  // procedure issuing it to the `label` node it routes errors to. Carries
+  // `metadata.synthesizedBy: 'vba-error-handler'` and the statement's own
+  // line, and is NOT deduplicated per procedure: a body with two
+  // `On Error GoTo` statements swaps handlers mid-flight, and each swap is a
+  // distinct routing decision, so it emits two edges.
+  // A plain `GoTo <label>` jump is NOT this kind — it reuses the generic
+  // `references` kind tagged `synthesizedBy: 'vba-goto'`, because a jump is
+  // not an error-handling fact and does not deserve a kind of its own.
+  | 'handles-error';
 
 /**
  * Supported programming languages. See NODE_KINDS for why this is a
@@ -429,6 +456,7 @@ export function isEdgeKindLiteral(value: ReferenceKind): value is EdgeKind {
     case 'raises-event':
     case 'subscribes-event':
     case 'type-member':
+    case 'handles-error':
       return true;
     default:
       return false;

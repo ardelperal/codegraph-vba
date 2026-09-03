@@ -26,7 +26,7 @@ import { describe, expect, it } from 'vitest';
 import { VbaExtractor } from '../src/extraction/vba-extractor';
 import { VBA_RULE_TABLES } from '../src/extraction/vba-extractor';
 import { RULES } from '../src/extraction/vba/errors';
-import { Node } from '../src/types';
+import { Edge, Node } from '../src/types';
 
 interface ErrorPolicy {
   protection: 'handler' | 'resume-next' | 'none';
@@ -67,14 +67,17 @@ function policy(nodes: Node[], name: string): ErrorPolicy {
 }
 
 describe('Issue #259: the rule table', () => {
-  it('registers `errors` in VBA_RULE_TABLES with exactly the four tabulated rules', () => {
-    // The issue tabulates these four ids and no others; they are also the
-    // handles `codegraph stats vba-rules` reports.
+  it('registers `errors` in VBA_RULE_TABLES with the four tabulated rules', () => {
+    // The issue tabulates these four ids; they are also the handles
+    // `codegraph stats vba-rules` reports. `goto-jump` was appended by issue
+    // #263, which needs the plain-`GoTo` jumps this table had no reason to
+    // look at while it emitted nothing.
     expect(VBA_RULE_TABLES.errors?.map((r) => r.id)).toEqual([
       'on-error-label',
       'on-error-resume-next',
       'on-error-reset',
       'line-label',
+      'goto-jump',
     ]);
     expect(VBA_RULE_TABLES.errors).toBe(RULES);
   });
@@ -497,11 +500,34 @@ describe('Issue #259: regression guards', () => {
   });
 });
 
+/**
+ * Issue #263 (task E6) later added a `label` node and a `handles-error` edge
+ * on top of this classifier — with maintainer sign-off, and against the
+ * budget §4.3 of the plan sets out. It is the ONLY thing allowed to add rows
+ * here, so the guard below still holds once its rows are set aside: the
+ * error-POLICY classifier itself must remain a pure annotator.
+ */
+function withoutIssue263Rows(result: {
+  nodes: Node[];
+  edges: Edge[];
+}): { nodes: Node[]; edges: Edge[] } {
+  const labelIds = new Set(
+    result.nodes.filter((n) => n.kind === 'label').map((n) => n.id),
+  );
+  return {
+    nodes: result.nodes.filter((n) => n.kind !== 'label'),
+    edges: result.edges.filter(
+      (e) => e.kind !== 'handles-error' && !labelIds.has(e.target),
+    ),
+  };
+}
+
 describe('Issue #259: zero new node kinds, zero new edge kinds', () => {
-  it('emits no node and no edge for the handler, the label or the policy', () => {
-    // The merge-blocking constraint of the whole error-handling wave. The
-    // handler-bearing module must produce exactly the nodes and edges the
-    // module WITHOUT any `On Error` produces, plus nothing.
+  it('emits no node and no edge for the handler or the policy', () => {
+    // The merge-blocking constraint of the whole error-handling wave. Setting
+    // #263's label rows aside, the handler-bearing module must produce exactly
+    // the nodes and edges the module WITHOUT any `On Error` produces, plus
+    // nothing.
     const withHandler = extract([
       'Public Sub Guardar()',
       '    On Error GoTo errores',
@@ -520,20 +546,23 @@ describe('Issue #259: zero new node kinds, zero new edge kinds', () => {
       'End Sub',
     ]);
 
-    expect(withHandler.nodes.map((n) => n.kind).sort()).toEqual(
-      withoutHandler.nodes.map((n) => n.kind).sort(),
+    const withHandlerRows = withoutIssue263Rows(withHandler);
+    const withoutHandlerRows = withoutIssue263Rows(withoutHandler);
+
+    expect(withHandlerRows.nodes.map((n) => n.kind).sort()).toEqual(
+      withoutHandlerRows.nodes.map((n) => n.kind).sort(),
     );
-    expect(withHandler.edges.map((e) => e.kind).sort()).toEqual(
-      withoutHandler.edges.map((e) => e.kind).sort(),
+    expect(withHandlerRows.edges.map((e) => e.kind).sort()).toEqual(
+      withoutHandlerRows.edges.map((e) => e.kind).sort(),
     );
-    expect(withHandler.nodes.length).toBe(withoutHandler.nodes.length);
-    expect(withHandler.edges.length).toBe(withoutHandler.edges.length);
+    expect(withHandlerRows.nodes.length).toBe(withoutHandlerRows.nodes.length);
+    expect(withHandlerRows.edges.length).toBe(withoutHandlerRows.edges.length);
     expect(withHandler.unresolvedReferences.length).toBe(
       withoutHandler.unresolvedReferences.length,
     );
 
-    // No node is named after the label, in any kind.
-    expect(withHandler.nodes.some((n) => n.name === 'errores')).toBe(false);
+    // Outside #263's own `label` kind, no node is named after the label.
+    expect(withHandlerRows.nodes.some((n) => n.name === 'errores')).toBe(false);
   });
 
   it('a module-level `On Error` line alone still creates no module node', () => {

@@ -206,7 +206,7 @@ describe('VBA error-handler region — inErrorHandler (issue #260)', () => {
     expect(flagged(opens[1])).toBe(true);
   });
 
-  it('adds no node, no edge and no unresolved reference', () => {
+  it('adds no node, no edge and no unresolved reference of its own', () => {
     const body = [
       'Public Sub Guardar()',
       '    On Error GoTo errores',
@@ -226,8 +226,15 @@ describe('VBA error-handler region — inErrorHandler (issue #260)', () => {
       ),
     );
 
+    // Issue #263 (task E6) later added the `handles-error` edge onto the
+    // label node — the one sanctioned addition in this wave, and the only
+    // row either side does not share. Set it aside and the invariant this
+    // task is judged by still holds: #260 stamps a FIELD, it creates nothing.
+    const rows = (r: typeof withHandler) =>
+      r.edges.filter((e) => e.kind !== 'handles-error');
+
     expect(withHandler.nodes).toHaveLength(withoutRegion.nodes.length);
-    expect(withHandler.edges).toHaveLength(withoutRegion.edges.length);
+    expect(rows(withHandler)).toHaveLength(rows(withoutRegion).length);
     expect(withHandler.unresolvedReferences).toHaveLength(
       withoutRegion.unresolvedReferences.length,
     );

@@ -25,7 +25,11 @@
 import { describe, expect, it } from 'vitest';
 import { VbaExtractor } from '../src/extraction/vba-extractor';
 import { VBA_RULE_TABLES } from '../src/extraction/vba-extractor';
-import { RULES } from '../src/extraction/vba/errors';
+import {
+  createErrorPolicyClassifier,
+  RULES,
+} from '../src/extraction/vba/errors';
+import { VbaExtractorContext } from '../src/extraction/vba/context';
 import { Edge, Node } from '../src/types';
 
 interface ErrorPolicy {
@@ -37,6 +41,7 @@ interface ErrorPolicy {
   handlerCount: number;
   resumeNextOpen: boolean;
   danglingTarget: string | null;
+  executableStatementCount: number;
 }
 
 /**
@@ -64,6 +69,15 @@ function policy(nodes: Node[], name: string): ErrorPolicy {
   const found = node!.metadata?.errorPolicy as ErrorPolicy | undefined;
   expect(found, `procedure ${name} must carry metadata.errorPolicy`).toBeDefined();
   return found!;
+}
+
+function countPhysicalProcedureLines(body: string[]): number | undefined {
+  const lines = ['Public Sub Probe()', ...body];
+  const ctx = new VbaExtractorContext('src/modules/Probe.bas');
+  ctx.functionNodeByStartLine.set(1, {} as Node);
+  const classifier = createErrorPolicyClassifier();
+  lines.forEach((line, index) => classifier.classifyLine(line, index, ctx));
+  return ctx.vbaErrorPolicy?.executableStatementCount;
 }
 
 describe('Issue #259: the rule table', () => {
@@ -154,8 +168,102 @@ describe('Issue #259: protection — the three classes', () => {
       handlerCount: 0,
       resumeNextOpen: false,
       danglingTarget: null,
+      executableStatementCount: 1,
     });
   });
+
+  it('counts executable statements rather than body lines, including the six-statement boundary', () => {
+    const { nodes } = extract([
+      'Public Sub ExactamenteSeis()',
+      "    ' comment-only lines are not executable",
+      '',
+      '    value = 1',
+      '    value = value + 1',
+      '    value = value + 1',
+      '    value = value + 1',
+      '    value = value + 1',
+      '    FileCopy "source.txt", "target.txt"',
+      'End Sub',
+      '',
+      'Public Sub SoloCincoConRelleno()',
+      '    value = 1',
+      '',
+      "    ' another non-executable line",
+      '    value = value + 1',
+      '    value = value + 1',
+      '    value = value + 1',
+      '    FileCopy "source.txt", "target.txt"',
+      'End Sub',
+    ]);
+
+    expect(policy(nodes, 'ExactamenteSeis').executableStatementCount).toBe(6);
+    expect(policy(nodes, 'SoloCincoConRelleno').executableStatementCount).toBe(5);
+  });
+
+  it('splits true separators without splitting named arguments, dates, or string colons', () => {
+    const { nodes } = extract([
+      'Public Sub TrueSeparators()',
+      '    value = 1: value = 2: value = 3',
+      'End Sub',
+      '',
+      'Public Sub NamedArgument()',
+      '    Foo bar:=1',
+      'End Sub',
+      '',
+      'Public Sub DateLiteral()',
+      '    startedAt = #12:30:00#: finishedAt = #1/2/2026 13:45#',
+      'End Sub',
+      '',
+      'Public Sub StringColon()',
+      '    caption = "status: ready": value = 1',
+      'End Sub',
+    ]);
+
+    expect(policy(nodes, 'TrueSeparators').executableStatementCount).toBe(3);
+    expect(policy(nodes, 'NamedArgument').executableStatementCount).toBe(1);
+        expect(policy(nodes, 'DateLiteral').executableStatementCount).toBe(2);
+        expect(policy(nodes, 'StringColon').executableStatementCount).toBe(2);
+      });
+
+      it('treats the Double type suffix as a suffix, never as a date delimiter', () => {
+        const { nodes } = extract([
+          'Public Sub DoubleSuffixes()',
+          '    value# = 1: other = 2',
+          '    total = 1#: finalValue = 3',
+          'End Sub',
+        ]);
+
+        expect(policy(nodes, 'DoubleSuffixes').executableStatementCount).toBe(4);
+      });
+
+      it('counts ReDim and ReDim Preserve as executable but excludes true declarations', () => {
+        const { nodes } = extract([
+          'Public Sub Arrays()',
+          '    Dim values() As Double',
+          '    Static cached As Boolean',
+          '    Const limit As Long = 4',
+          '    ReDim values(1 To limit)',
+          '    ReDim Preserve values(1 To limit + 1)',
+          'End Sub',
+        ]);
+
+        expect(policy(nodes, 'Arrays').executableStatementCount).toBe(2);
+      });
+
+      it('counts one executable statement continued across physical lines', () => {
+        expect(countPhysicalProcedureLines([
+          '    result = BuildValue( _',
+          '        firstValue, _',
+          '        secondValue)',
+        ])).toBe(1);
+      });
+
+      it('counts a declaration continued across physical lines as zero', () => {
+        expect(countPhysicalProcedureLines([
+          '    Dim result As _',
+          '        String',
+        ])).toBe(0);
+      });
 });
 
 describe('Issue #259: the handler region', () => {
@@ -479,6 +587,7 @@ describe('Issue #259: regression guards', () => {
       handlerCount: 0,
       resumeNextOpen: false,
       danglingTarget: null,
+      executableStatementCount: 2,
     });
   });
 

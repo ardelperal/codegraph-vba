@@ -190,6 +190,10 @@ one-line property accessors where a handler would be noise. Narrowing:
 | …longer than 5 statements | **310** |
 | …that also touch the database, `DoCmd`, the filesystem or a type conversion | **185** |
 
+The **185** figure is the historical broad source-body census using database, `DoCmd`,
+filesystem, and type-conversion markers. It is preserved as historical evidence, not as the
+cardinality expected from E5's narrower relationship query.
+
 Sample of what falls out — all from one class, all write paths, all unprotected in a codebase
 where 78% of procedures are protected:
 
@@ -627,8 +631,13 @@ row counts. Follow `db-vba-call-stub-queries.test.ts`, which does exactly this f
 resolver's published queries.
 
 **Acceptance.** Every query in the doc runs against a real index and returns the expected shape.
-Query 1 returns ≈185 rows on the corpus; hand-check the top 10 and confirm each is genuinely
-unprotected — if any has a handler the extractor missed, E2 has a bug.
+On the current reproducible corpus snapshot, Query 1 identifies **27 distinct procedures**:
+21 in `00_EXPEDIENTES`, 0 in `00_GESTION_RIESGOS`, and 6 in `HPS_SOLICITUDES`. This is
+intentionally narrower than both §3.1's historical 185-procedure broad source-body census and
+the later 103-procedure marker probe because Query 1 requires a concrete SQL-table, `DoCmd`, or
+precision-gated filesystem relationship. Corpus cardinality is snapshot evidence, not a stable
+assertion. Hand-check the top 10 and confirm each is genuinely unprotected — if any has a handler
+the extractor missed, E2 has a bug.
 
 **Changelog (New Features).** "New guidance shows how to find Access code that runs without
 error handling, and where errors end up being shown to the user."

@@ -94,6 +94,12 @@ export interface VbaErrorPolicy {
   /** An `On Error Resume Next` never closed by `On Error GoTo 0` / `-1`. */
   resumeNextOpen: boolean;
   /**
+   * Executable statements in the procedure body. Blank/comment-only lines,
+   * declarations, labels, and the procedure declaration/end markers do not
+   * contribute; colon-separated statements contribute individually.
+   */
+  executableStatementCount: number;
+  /**
    * An `On Error GoTo <label>` whose `<label>` this procedure never defines —
    * a handler that can never run. Resolved per PROCEDURE, not per module: a
    * label defined in a sibling procedure is out of scope and still dangling.
@@ -135,6 +141,8 @@ export interface VbaErrorPolicyState {
   /** lowercased line-label definition → the line it is defined on. */
   definedLabels: Map<string, number>;
   handlerCount: number;
+  /** Exact executable-statement count accumulated while this body is open. */
+  executableStatementCount: number;
   /**
    * The LAST `On Error Resume Next` (`opens: true`) or `On Error GoTo 0|-1`
    * (`opens: false`) seen, by source position. Position-ordered rather than

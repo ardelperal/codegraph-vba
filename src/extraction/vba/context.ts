@@ -171,6 +171,52 @@ export interface VbaErrorPolicyState {
    * exactly as the probe's `handlerLines[0] = first.rest` does.
    */
   labelRestSignals: Map<number, VbaErrorHandlerSignals>;
+  /**
+   * Issue #263 (task E6): every line-label DEFINITION in this body, in source
+   * order, with the name exactly as written and its source position.
+   *
+   * Additive to {@link definedLabels}, which the region resolver reads and
+   * which deliberately stores only `key → line`: the `label` node needs the
+   * original casing for its `name` and its position for `startColumn`, and
+   * duplicating those onto the existing map would change a structure three
+   * older code paths already depend on. One entry per DISTINCT label — a
+   * repeated definition is illegal VBA, and the first one wins here exactly
+   * as it does in `definedLabels`.
+   */
+  labelDefs: VbaLabelSite[];
+  /**
+   * Issue #263: every `On Error GoTo <label>` STATEMENT in this body, in
+   * source order — not a set of targets. 47 procedures in the reference
+   * corpus issue more than one, and each is its own routing decision with its
+   * own line, so each emits its own `handles-error` edge.
+   *
+   * Numeric targets (`On Error GoTo 0` / `-1`, and the VBA line-number form)
+   * never reach here: the first two are resets owned by another rule, and a
+   * line number is not a label this extractor can ever define a node for.
+   */
+  onErrorSites: VbaLabelSite[];
+  /**
+   * Issue #263: every plain `GoTo <label>` jump in this body — an
+   * `On Error GoTo` is excluded, since that is a routing decision, not a
+   * jump. Emitted as a generic `references` edge tagged `vba-goto`.
+   */
+  gotoSites: VbaLabelSite[];
+}
+
+/**
+ * Issue #263: one occurrence of a line label — a definition (`errores:`) or a
+ * mention (`On Error GoTo errores`, `GoTo salir`) — with the name both
+ * lowercased for matching and preserved as written for display.
+ */
+export interface VbaLabelSite {
+  /** Lowercased name; the key `targets` / `definedLabels` are keyed by. */
+  key: string;
+  /** The label exactly as written at THIS site. */
+  name: string;
+  /** 1-based source line. */
+  line: number;
+  /** 0-based column of the match that produced this site. */
+  column: number;
 }
 
 /**

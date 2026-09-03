@@ -80,6 +80,7 @@ import {
   VbaErrorPolicy,
   VbaErrorPolicyState,
 } from './context';
+import { emitLabelNodes } from './labels';
 import { defineRule, runRules, VbaExtractionRule } from './rules';
 
 /**
@@ -112,6 +113,27 @@ const ON_ERROR_RESET_RE = /\bOn\s+Error\s+GoTo\s+(0|-1)\b/i;
 
 /** Global twin of {@link ON_ERROR_RESET_RE}. */
 const ON_ERROR_RESET_G = new RegExp(ON_ERROR_RESET_RE.source, 'gi');
+
+/**
+ * Issue #263: any `GoTo <target>`, with the optional `On Error ` prefix
+ * CAPTURED rather than excluded.
+ *
+ * Capturing it is what lets one scan separate the two statements without a
+ * lookbehind: a match whose group 1 is present is an `On Error GoTo`, already
+ * owned by the `on-error-label` and `on-error-reset` rules, and the
+ * plain-jump rule skips it. A lookbehind would have to re-encode
+ * `On\s+Error\s+` a second time, which is one more place for the two
+ * spellings to drift apart.
+ *
+ * Kept compatible with the probe's `GOTO_RE`, which counts EVERY `GoTo`
+ * (both forms) — `gotoStatements` minus the three `On Error` counters is the
+ * plain-jump total this rule sees.
+ */
+const GOTO_ANY_G =
+  /\b(On\s+Error\s+)?GoTo\s+(-?\d+|\p{L}[\p{L}\p{N}_]*)/giu;
+
+/** Non-global twin of {@link GOTO_ANY_G}, for the rule's dispatch pattern. */
+const GOTO_ANY_RE = new RegExp(GOTO_ANY_G.source, 'iu');
 
 /**
  * A line-label definition. VBA allows a statement to follow on the same line
@@ -270,6 +292,9 @@ export function newErrorPolicyState(
     refMark,
     signalsByLine: new Map(),
     labelRestSignals: new Map(),
+    labelDefs: [],
+    onErrorSites: [],
+    gotoSites: [],
   };
 }
 
@@ -322,7 +347,7 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
     pattern: ON_ERROR_GOTO_RE,
     requires: 'inside-procedure',
     scan: 'masked',
-    emit: (_m, ctx, line) => {
+    emit: (_m, ctx, line, lineNum) => {
       const state = ctx.vbaErrorPolicy;
       if (!state) return null;
       let handlers = 0;
@@ -339,6 +364,16 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
         if (target === '0' || target === '-1') continue;
         const key = target.toLowerCase();
         if (!state.targets.has(key)) state.targets.set(key, target);
+        // Issue #263: the STATEMENT, not just the target. `targets` is a set
+        // keyed by name and cannot express "this body routes errors twice";
+        // one `handles-error` edge per statement can, and 47 procedures in
+        // the corpus need it to.
+        state.onErrorSites.push({
+          key,
+          name: target,
+          line: lineNum,
+          column: match.index,
+        });
         state.handlerCount += 1;
         state.protection = 'handler';
         handlers += 1;
@@ -406,7 +441,19 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       const name = match[1] ?? '';
       if (!name || NOT_A_LABEL.has(name.toLowerCase())) return null;
       const key = name.toLowerCase();
-      if (!state.definedLabels.has(key)) state.definedLabels.set(key, lineNum);
+      if (!state.definedLabels.has(key)) {
+        state.definedLabels.set(key, lineNum);
+        // Issue #263: the same definition, keeping the name as written and
+        // its column so `labels.ts` can emit a node without re-reading the
+        // line. Guarded by the same first-wins condition, so the two views
+        // cannot disagree about which definition counts.
+        state.labelDefs.push({
+          key,
+          name,
+          line: lineNum,
+          column: match.index ?? 0,
+        });
+      }
       // The precision gate. `targets` holds only `On Error GoTo` destinations,
       // so a `siguiente:` / `salir:` / `Teardown:` label leaves the policy
       // untouched and the procedure keeps whatever protection it earned.
@@ -416,6 +463,41 @@ export const RULES: readonly VbaExtractionRule<unknown>[] = [
       }
       return { label: name };
     },
+  }),
+  defineRule({
+    id: 'goto-jump',
+    description:
+      'Issue #263: match a plain `GoTo <label>` jump — an `On Error GoTo` is skipped, since that is a routing decision the `on-error-label` rule already owns — and record it for a `references` edge onto the label node.',
+    pattern: GOTO_ANY_RE,
+    requires: 'inside-procedure',
+    scan: 'masked',
+    emit: (_m, ctx, line, lineNum) => {
+      const state = ctx.vbaErrorPolicy;
+      if (!state) return null;
+      let jumps = 0;
+      GOTO_ANY_G.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = GOTO_ANY_G.exec(line)) !== null) {
+        // Group 1 present means `On Error GoTo` — a different statement with
+        // a different edge kind, owned elsewhere in this table.
+        if (match[1]) continue;
+        const target = match[2] ?? '';
+        // A numeric target is a VBA LINE NUMBER, not a line label:
+        // `LINE_LABEL_RE` cannot define one, so a node for it can never
+        // exist and referencing it would fabricate a permanent dangling
+        // reference for legal code. Out of scope, deliberately.
+        if (!target || /^-?\d+$/.test(target)) continue;
+        state.gotoSites.push({
+          key: target.toLowerCase(),
+          name: target,
+          line: lineNum,
+          column: match.index,
+        });
+        jumps += 1;
+      }
+      return jumps > 0 ? { jumps } : null;
+    },
+    count: (result) => (result as { jumps: number }).jumps,
   }),
 ];
 
@@ -476,6 +558,13 @@ export function closeErrorPolicy(
       ? (state.targets.get(danglingKey) ?? null)
       : null,
   };
+
+  // Issue #263 (task E6): publish the label nodes and their edges BEFORE the
+  // stamping pass below, so a `GoTo` or a second `On Error GoTo` written
+  // inside the handler region is flagged `inErrorHandler` by #260's single
+  // stamping point like every other edge, rather than becoming the one
+  // emitter that quietly opted out of it.
+  emitLabelNodes(ctx, state, policy, endLine);
 
   // Issue #260: THE single stamping point. Every edge and every unresolved
   // reference this procedure body emitted is already in `ctx`, so one pass

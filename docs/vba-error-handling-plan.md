@@ -21,7 +21,7 @@ Filed against `ardelperal/codegraph-vba` on 2026-09-01. Epic: **#264**.
 | E3 mark edges inside a handler | #260 | landed |
 | E4 recognise the error channel | #261 | approved — needs #251 |
 | E5 publish the queries | #262 | approved |
-| E6 label nodes + `handles-error` edges | #263 | approved — full design in the issue: `label` kind, `handles-error` kind, +30% nodes budgeted, no call re-parenting |
+| E6 label nodes + `handles-error` edges | #263 | landed — `label` kind, `handles-error` kind, measured +15.0% nodes / +26.9% edges, no call re-parenting |
 
 ---
 
@@ -635,17 +635,44 @@ error handling, and where errors end up being shown to the user."
 
 ---
 
-### E6 — `label` nodes and `handles-error` edges — **blocked, do not implement**
+### E6 — `label` nodes and `handles-error` edges — **unblocked, landed (#263)**
 
-Held open deliberately. This is the design E2 rejected, and it stays rejected until a query
-appears that `inErrorHandler` genuinely cannot serve (§4.3 sets the bar).
+This was held blocked while E1–E5 were built, and §4.3's three conditions were met before it
+moved: a written statement of the query that forces it (address a handler *as a thing* — a
+stable id, `kind:label` search, dangling and duplicate detection as a graph query rather than
+a scan — which `inErrorHandler`'s per-procedure boolean cannot serve), maintainer sign-off on
+the new `NodeKind` and `EdgeKind` in the issue, and the node-budget forecast below.
 
-If it is ever unblocked, it needs, in this order: a written statement of the query that forces
-it; maintainer sign-off on the new `NodeKind` and `EdgeKind`; and a node-budget forecast
-(≈3,900 nodes and ≈4,200 edges on this corpus, roughly doubling the symbol count). Ship it on
-one project and measure before rolling it out.
+**Do not read this section as licence to add a kind for anything else in E1–E5.** §4.1's
+argument stands for every other error-handling fact: it is per-procedure, so it is a field.
 
-**Do not implement E6 as part of E1–E5. Do not implement it because it seems more complete.**
+**Measured on the corpus, not forecast** (`npx tsx scripts/vba-coverage-probe.mjs`):
+
+| | before | after |
+|---|--:|--:|
+| `label` nodes | 0 | 3,911 |
+| `contains` edges | 16,159 | 20,070 |
+| `handles-error` edges | 0 | 3,832 |
+| `references` edges | 6,281 | 6,473 |
+| unresolved references | 26,755 | 26,755 |
+| **nodes, all kinds** | **26,089** | **30,000** |
+| **edges, all kinds** | **29,521** | **37,456** |
+
++15.0% nodes and +26.9% edges — under the issue's ≈+30% node forecast, because that forecast
+used the older hand census (3,912 labels, ~450 plain `GoTo`) rather than the committed probe
+(3,911 labels, 192 plain `GoTo` = `gotoStatements` 4,062 − `onErrorGoToLabel` 3,832 −
+`onErrorGoToZero` 38). Where the two disagree the probe wins; the extractor matches the probe
+exactly on all three counts. No other node or edge kind moved, and no new unresolved reference
+appeared — every `GoTo` target in this corpus is defined in its own procedure.
+
+**What it deliberately does NOT do:** calls inside a handler stay attributed to the enclosing
+procedure. Re-parenting them onto the label would change `callers` / `callees` for the 3,774
+procedures that have a handler. The label is *addressable*, not a container — E3's
+`inErrorHandler` remains the answer to "did this come from the error path".
+
+`label` is deliberately absent from the context builder's default node filter and from the MCP
+layer's container kinds, for the reason issue #257 kept `parameter` out of both: it is now the
+most numerous VBA symbol in the graph.
 
 ---
 
@@ -663,9 +690,11 @@ The main plan's three rules apply unchanged. Three more, particular to error han
    §3.1's query filters on size *and* on I/O — and why the changelog wording says "can be found",
    not "are flagged".
 
-3. **This feature adds no nodes and no edges. If a PR in E1–E5 changes the node or edge count,
+3. **E1–E5 add no nodes and no edges. If a PR in E1–E5 changes the node or edge count,
    something is wrong.** That invariant is cheap to assert and it is the single best protection
-   against this task quietly turning into E6.
+   against those tasks quietly turning into E6. E6 itself (#263) is the one sanctioned
+   exception, and it landed separately, after E1–E5, against the measured budget in its own
+   section.
 
 **Per-PR checklist:** the main plan's checklist, plus:
 

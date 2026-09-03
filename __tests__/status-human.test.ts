@@ -84,16 +84,16 @@ describe('codegraph status — human-readable prose (#193)', () => {
     await cg.indexAll();
     cg.close();
 
-    // Simulate an index built by the previous engine (constant 24). The bumped
-    // binary (constant 25) must surface the mismatch in the human-readable
+    // Simulate an index built by the previous engine (constant 25). The bumped
+    // binary (constant 26) must surface the mismatch in the human-readable
     // prose as a re-index recommendation, NOT as a healthy "No source changes
     // detected" line.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(path.join(tempDir, codeGraphDirName(), 'codegraph.db'));
     db.prepare(
-      "INSERT INTO project_metadata (key, value, updated_at) VALUES ('indexed_with_extraction_version', '24', 0) " +
-        "ON CONFLICT(key) DO UPDATE SET value = '24'"
+      "INSERT INTO project_metadata (key, value, updated_at) VALUES ('indexed_with_extraction_version', '25', 0) " +
+        "ON CONFLICT(key) DO UPDATE SET value = '25'"
     ).run();
     db.close();
 
@@ -113,8 +113,8 @@ describe('codegraph status — human-readable prose (#193)', () => {
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(path.join(tempDir, codeGraphDirName(), 'codegraph.db'));
     db.prepare(
-      "INSERT INTO project_metadata (key, value, updated_at) VALUES ('indexed_with_extraction_version', '24', 0) " +
-        "ON CONFLICT(key) DO UPDATE SET value = '24'"
+      "INSERT INTO project_metadata (key, value, updated_at) VALUES ('indexed_with_extraction_version', '25', 0) " +
+        "ON CONFLICT(key) DO UPDATE SET value = '25'"
     ).run();
     db.close();
 
@@ -123,8 +123,8 @@ describe('codegraph status — human-readable prose (#193)', () => {
     expect(index.reindexRecommended).toBe(true);
     expect(Array.isArray(index.reindexReasons)).toBe(true);
     expect((index.reindexReasons as string[])).toContain('extraction-version');
-    expect(index.builtWithExtractionVersion).toBe(24);
-    expect(index.currentExtractionVersion).toBe(25);
+    expect(index.builtWithExtractionVersion).toBe(25);
+    expect(index.currentExtractionVersion).toBe(26);
   });
 
   it('a fresh full index keeps the JSON reindexReasons empty and reindexRecommended=false (#193 must not touch the JSON contract)', async () => {

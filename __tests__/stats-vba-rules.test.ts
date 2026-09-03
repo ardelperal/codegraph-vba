@@ -81,7 +81,7 @@ describe('buildStatsVbaRules() — pure unit shape (issue #168)', () => {
     expect(byName.declarations?.ruleCount).toBe(5);
     expect(byName.dims?.ruleCount).toBe(2);
     expect(byName['enums-consts']?.ruleCount).toBe(6);
-    expect(byName.errors?.ruleCount).toBe(4);
+    expect(byName.errors?.ruleCount).toBe(5);
     expect(byName['call-sweep']?.ruleCount).toBe(4);
   });
 
@@ -89,7 +89,7 @@ describe('buildStatsVbaRules() — pure unit shape (issue #168)', () => {
     const out = buildStatsVbaRules();
     const sum = out.concerns.reduce((acc, c) => acc + c.ruleCount, 0);
     expect(out.totalRules).toBe(sum);
-    expect(out.totalRules).toBe(23);
+    expect(out.totalRules).toBe(24);
   });
 
   it('preserves VBA_RULE_TABLES key order in concerns[]', () => {
@@ -188,7 +188,7 @@ describe('codegraph stats vba-rules --json (CLI integration, issue #168)', () =>
       }>;
       totalRules: number;
     };
-    expect(parsed.totalRules).toBe(23);
+    expect(parsed.totalRules).toBe(24);
     expect(parsed.concerns).toHaveLength(7);
     // Every concern has matching static count.
     const byName = Object.fromEntries(parsed.concerns.map((c) => [c.concern, c]));
@@ -197,7 +197,7 @@ describe('codegraph stats vba-rules --json (CLI integration, issue #168)', () =>
     expect(byName.declarations!.ruleCount).toBe(5);
     expect(byName.dims!.ruleCount).toBe(2);
     expect(byName['enums-consts']!.ruleCount).toBe(6);
-    expect(byName.errors!.ruleCount).toBe(4);
+    expect(byName.errors!.ruleCount).toBe(5);
     expect(byName['call-sweep']!.ruleCount).toBe(4);
   });
 
@@ -234,7 +234,7 @@ describe('codegraph stats vba-rules --json (CLI integration, issue #168)', () =>
       expect(stdout).toContain(concern);
     }
     // The pretty mode surfaces the total somewhere on stdout.
-    expect(stdout).toMatch(/\b23\b/);
+    expect(stdout).toMatch(/\b24\b/);
   });
 });
 

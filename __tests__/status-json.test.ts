@@ -184,28 +184,28 @@ describe('reindexReasons in codegraph status --json (#189)', () => {
     expect(index.reindexReasons as unknown[]).toEqual([]);
   });
 
-  it('reports currentExtractionVersion=25, reindexRecommended=true, and reindexReasons=[extraction-version] for an index stamped with the previous extraction-version constant (24)', async () => {
+  it('reports currentExtractionVersion=26, reindexRecommended=true, and reindexReasons=[extraction-version] for an index stamped with the previous extraction-version constant (25)', async () => {
     fs.writeFileSync(path.join(tempDir, 'a.ts'), 'export const x = 1;\n');
     const cg = CodeGraph.initSync(tempDir);
     await cg.indexAll();
     cg.close();
 
-    // Simulate an index built by the previous engine (constant 24). The bumped
-    // binary (constant 25) must surface the mismatch as `extraction-version` in
+    // Simulate an index built by the previous engine (constant 25). The bumped
+    // binary (constant 26) must surface the mismatch as `extraction-version` in
     // the reindexReasons array, alongside the boolean reindexRecommended=true.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(path.join(tempDir, codeGraphDirName(), 'codegraph.db'));
     db.prepare(
-      "INSERT INTO project_metadata (key, value, updated_at) VALUES ('indexed_with_extraction_version', '24', 0) " +
-        "ON CONFLICT(key) DO UPDATE SET value = '24'"
+      "INSERT INTO project_metadata (key, value, updated_at) VALUES ('indexed_with_extraction_version', '25', 0) " +
+        "ON CONFLICT(key) DO UPDATE SET value = '25'"
     ).run();
     db.close();
 
     const out = runStatusJson(tempDir);
     const index = out.index as Record<string, unknown>;
-    expect(index.currentExtractionVersion).toBe(25);
-    expect(index.builtWithExtractionVersion).toBe(24);
+    expect(index.currentExtractionVersion).toBe(26);
+    expect(index.builtWithExtractionVersion).toBe(25);
     expect(index.reindexRecommended).toBe(true);
     expect(Array.isArray(index.reindexReasons)).toBe(true);
     expect((index.reindexReasons as string[])).toContain('extraction-version');
@@ -251,6 +251,6 @@ describe('extraction-version bump smoke probe (#189)', () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { EXTRACTION_VERSION } = require('../dist/extraction/extraction-version');
     expect(stamped).toBe(EXTRACTION_VERSION);
-    expect(EXTRACTION_VERSION).toBe(25);
+    expect(EXTRACTION_VERSION).toBe(26);
   });
 });

@@ -46,6 +46,7 @@ import {
 } from './vba-preprocess';
 import { VbaExtractorContext, VbaClassifier } from './vba/context';
 import { compileSqlWrappers } from './vba/sql-wrapper';
+import { compileErrorChannel } from './vba/error-channel';
 import type { VbaExtractionOptions } from './vba/options';
 import type { VbaExtractionRule } from './vba/rules';
 import { RULES as PROCEDURES_RULES, createProceduresClassifier } from './vba/procedures';
@@ -283,6 +284,10 @@ export class VbaExtractor {
     // and park it on the context. `scanSqlInLine` reads it on every line, so
     // this is the only place it may be built.
     this.ctx.sqlWrappers = compileSqlWrappers(options.sqlWrappers);
+    // Issue #261: same contract for the error channel — compiled once here,
+    // read per identifier by `module-vars.ts` and per statement by
+    // `errors.ts`. Both consumers share this one object so they cannot fork.
+    this.ctx.errorChannel = compileErrorChannel(options.errorChannel);
   }
 
   extract(): ExtractionResult {

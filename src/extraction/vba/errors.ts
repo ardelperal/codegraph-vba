@@ -72,6 +72,7 @@
  * two copies are kept in sync by hand — change one, change the other.
  */
 import { PROCEDURE_END_RE } from './constants';
+import { CompiledErrorChannel, defaultErrorChannel } from './error-channel';
 import { maskStringContent } from './text-utils';
 import {
   VbaClassifier,
@@ -143,17 +144,14 @@ const NOT_A_LABEL = new Set([
  *
  * Names only, never substrings, so `ErrorCount` cannot match `Error`.
  *
- * Identical to the probe's `DEFAULT_ERROR_CHANNEL_NAMES`. Task **E4** turns
- * this into the `vba.errorChannel` config knob and threads it through
- * `VbaExtractionOptions`; until then both classifiers read the same four
- * hard-coded defaults, which is what keeps their distributions comparable.
+ * Issue #261 (task E4) moved this list — and the write matcher built from it —
+ * into `./error-channel`, so the two consumers can no longer fork: this
+ * classifier asks "is this statement a channel WRITE?", `module-vars.ts` asks
+ * "is this variable the channel?", and both now read one compiled object that
+ * `codegraph.json` → `vba.errorChannel` extends. Re-exported from here because
+ * this module was its home and the probe-agreement suite imports it.
  */
-export const DEFAULT_ERROR_CHANNEL_NAMES: readonly string[] = [
-  'm_Error',
-  'p_Error',
-  'g_Error',
-  'Error',
-];
+export { DEFAULT_ERROR_CHANNEL_NAMES } from './error-channel';
 
 /**
  * Calls that make an error visible to a human. `MsgBox` is the form-code
@@ -165,24 +163,6 @@ export const DEFAULT_DISPLAY_CALLS: readonly string[] = ['MsgBox', 'Debug.Print'
 function escapeRe(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
-
-/**
- * A write to the error channel: the channel name in the assignment-TARGET
- * position of a statement — bare (`p_Error = …`), `Me.`-qualified
- * (`Me.Error = …`) or object-qualified (`obj.Error = …`).
- *
- * Anchoring at the start of the statement is the whole precision of this
- * matcher: it is what separates a WRITE from a READ, so the house guard
- * `If m_Error <> "" Then` and the copy `x = m_Error` both correctly miss.
- * Kept identical to the probe's `buildChannelWriteMatcher`.
- */
-const CHANNEL_WRITE_RES: readonly RegExp[] = DEFAULT_ERROR_CHANNEL_NAMES.map(
-  (name) =>
-    new RegExp(
-      `^\\s*(?:Set\\s+)?(?:(?:Me|\\p{L}[\\p{L}\\p{N}_]*)\\s*\\.\\s*)?${escapeRe(name)}\\s*=(?!=)`,
-      'iu',
-    ),
-);
 
 /** `MsgBox` / `Debug.Print`, anywhere in the statement. The probe's twin. */
 const DISPLAY_CALL_RES: readonly RegExp[] = DEFAULT_DISPLAY_CALLS.map(
@@ -213,10 +193,22 @@ function statementsOf(maskedLine: string): string[] {
   });
 }
 
-/** The three signals one masked line (or line fragment) fires, if any. */
-function signalsOf(maskedText: string): VbaErrorHandlerSignals | null {
+/**
+ * The three signals one masked line (or line fragment) fires, if any.
+ *
+ * `errorChannel` is the compiled, config-aware channel (issue #261). A project
+ * that adds `lastFailure` to `codegraph.json` → `vba.errorChannel` gets the
+ * handlers writing it classified `channel` HERE too, not merely its references
+ * flagged in `module-vars.ts` — one list, two consumers, no drift. With no
+ * config the list is the four defaults, so every pre-#261 classification, and
+ * therefore the probe agreement, is unchanged.
+ */
+function signalsOf(
+  maskedText: string,
+  errorChannel: CompiledErrorChannel,
+): VbaErrorHandlerSignals | null {
   const channel = statementsOf(maskedText).some((statement) =>
-    CHANNEL_WRITE_RES.some((re) => re.test(statement)),
+    errorChannel.writeRes.some((re) => re.test(statement)),
   );
   const display = DISPLAY_CALL_RES.some((re) => re.test(maskedText));
   const reraise = ERR_RAISE_RE.test(maskedText);
@@ -237,17 +229,18 @@ function recordHandlerSignals(
   state: VbaErrorPolicyState | null,
   maskedLine: string,
   lineNum: number,
+  errorChannel: CompiledErrorChannel,
 ): void {
   if (!state) return;
 
-  const whole = signalsOf(maskedLine);
+  const whole = signalsOf(maskedLine, errorChannel);
   if (whole) state.signalsByLine.set(lineNum, whole);
 
   const label = LINE_LABEL_RE.exec(maskedLine);
   if (!label) return;
   const name = label[1] ?? '';
   if (!name || NOT_A_LABEL.has(name.toLowerCase())) return;
-  const rest = signalsOf(maskedLine.slice(label[0].length));
+  const rest = signalsOf(maskedLine.slice(label[0].length), errorChannel);
   if (rest) state.labelRestSignals.set(lineNum, rest);
 }
 
@@ -625,7 +618,12 @@ export function createErrorPolicyClassifier(): VbaClassifier {
       // line is only certain once the body has been fully read, so
       // `closeErrorPolicy` does the filtering. Sparse — a line with no signal
       // stores nothing, which is the overwhelming majority of them.
-      recordHandlerSignals(ctx.vbaErrorPolicy, maskedLine, lineNum);
+      recordHandlerSignals(
+        ctx.vbaErrorPolicy,
+        maskedLine,
+        lineNum,
+        ctx.errorChannel ?? defaultErrorChannel(),
+      );
 
       // Procedure END. Deliberately independent of the start branch above: a
       // colon-separated single-line procedure carries both markers (#208).

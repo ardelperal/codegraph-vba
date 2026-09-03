@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 
 const SCRIPT = path.resolve(__dirname, '..', 'scripts', 'prepare-release.mjs');
+const EXTRACTOR = path.resolve(__dirname, '..', 'scripts', 'extract-release-notes.mjs');
 
 function run(cwd: string, ...args: string[]) {
   const out = execFileSync('node', [SCRIPT, ...args], { cwd, encoding: 'utf8' });
@@ -31,6 +32,12 @@ const HEADER = `# Changelog
 Some intro.
 
 `;
+
+/** Read back the `## [1.2.3]` block of the CHANGELOG the script just wrote. */
+function result123(cwd: string) {
+  const result = fs.readFileSync(path.join(cwd, 'CHANGELOG.md'), 'utf8');
+  return result.split('## [1.2.3]')[1].split('## [1.2.2]')[0];
+}
 
 describe('prepare-release.mjs', () => {
   let dir: string;
@@ -171,7 +178,7 @@ describe('prepare-release.mjs', () => {
       run(dir);
       const result = fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8');
       expect(result).toContain(
-        '[1.2.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.2.3',
+        '[1.2.3]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.2.3',
       );
     });
 
@@ -182,12 +189,12 @@ describe('prepare-release.mjs', () => {
       run(dir);
       const result = fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8');
       expect(result).toContain(
-        '[1.2.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.2.3',
+        '[1.2.3]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.2.3',
       );
     });
 
     it('does not double-add an existing link reference', () => {
-      const ref = '[1.2.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.2.3';
+      const ref = '[1.2.3]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.2.3';
       dir = setup(
         HEADER +
           `## [Unreleased]\n\n### Added\n- x\n\n## [1.2.2] - 2026-01-01\n\n${ref}\n`,
@@ -196,6 +203,202 @@ describe('prepare-release.mjs', () => {
       const result = fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8');
       const occurrences = result.split(ref).length - 1;
       expect(occurrences).toBe(1);
+    });
+  });
+
+  // Regression suite for #296. Every fixture above uses the old
+  // single-word Keep-a-Changelog vocabulary, which is why a `\w+`-only
+  // sub-section pattern shipped green while the real CHANGELOG had
+  // already moved to `### New Features` / `### Breaking Changes`.
+  describe("multi-word sub-section headings (the repo's real vocabulary)", () => {
+    it('carries every New Features entry into [version] when merging (Case B)', () => {
+      dir = setup(
+        HEADER +
+          `## [1.2.3] - 2026-02-02
+
+## [Unreleased]
+
+### New Features
+- Feature one
+- Feature two
+
+### Fixes
+- A fix
+
+## [1.2.2] - 2026-01-01
+`,
+      );
+      const out = run(dir);
+      expect(out).toContain('merged 3');
+
+      const v123 = result123(dir);
+      expect(v123).toContain('### New Features');
+      expect(v123).toContain('- Feature one');
+      expect(v123).toContain('- Feature two');
+      expect(v123).toContain('### Fixes');
+      expect(v123).toContain('- A fix');
+    });
+
+    it('reproduces the v1.16.0 shape: New Features first, above an empty pre-created block', () => {
+      // The exact input that lost 16 bullets: a pre-created empty
+      // [version] block, and `### New Features` as the FIRST heading in
+      // [Unreleased] — so it landed in `leading`, which Case B ignored.
+      dir = setup(
+        HEADER +
+          `## [1.2.3] - 2026-02-02
+
+## [Unreleased]
+
+### New Features
+- Headline feature
+
+### Changed
+- A change
+
+### Fixes
+- A fix
+
+## [1.2.2] - 2026-01-01
+`,
+      );
+      run(dir);
+
+      const v123 = result123(dir);
+      expect(v123).toContain('- Headline feature');
+      expect(v123).toContain('- A change');
+      expect(v123).toContain('- A fix');
+    });
+
+    it('merges into a matching multi-word heading instead of duplicating it', () => {
+      dir = setup(
+        HEADER +
+          `## [Unreleased]
+
+### New Features
+- Late feature
+
+## [1.2.3] - 2026-02-02
+
+### New Features
+- Early feature
+
+## [1.2.2] - 2026-01-01
+`,
+      );
+      run(dir);
+
+      const v123 = result123(dir);
+      expect(v123).toContain('- Early feature');
+      expect(v123).toContain('- Late feature');
+      expect(v123.split('### New Features').length - 1).toBe(1);
+    });
+
+    it('still merges the single-word headings the older entries use', () => {
+      // Must stay silent: the fix widens the pattern, it must not change
+      // how the legacy vocabulary behaves.
+      dir = setup(
+        HEADER +
+          `## [Unreleased]
+
+### Added
+- New thing
+
+## [1.2.3] - 2026-02-02
+
+### Added
+- Old thing
+
+## [1.2.2] - 2026-01-01
+`,
+      );
+      run(dir);
+
+      const v123 = result123(dir);
+      expect(v123).toContain('- Old thing');
+      expect(v123).toContain('- New thing');
+      expect(v123.split('### Added').length - 1).toBe(1);
+    });
+
+    it('carries over entries written before any heading rather than dropping them', () => {
+      // Defence in depth: whatever the heading vocabulary becomes, a
+      // bullet with no recognised heading above it must survive.
+      dir = setup(
+        HEADER +
+          `## [Unreleased]
+
+- Heading-less entry
+
+### Fixes
+- A fix
+
+## [1.2.3] - 2026-02-02
+
+### Fixes
+- Prior fix
+
+## [1.2.2] - 2026-01-01
+`,
+      );
+      const out = run(dir);
+      expect(out).toContain('merged 2');
+
+      const v123 = result123(dir);
+      expect(v123).toContain('- Heading-less entry');
+      expect(v123).toContain('- Prior fix');
+      expect(v123).toContain('- A fix');
+    });
+
+    it('leaves [Unreleased] empty so the next release cannot republish these entries', () => {
+      // The second half of #296: entries left behind in [Unreleased]
+      // after a release get published a second time by the next one.
+      dir = setup(
+        HEADER +
+          `## [Unreleased]
+
+### New Features
+- Shipped once
+
+## [1.2.3] - 2026-02-02
+
+### Fixes
+- Prior
+`,
+      );
+      run(dir);
+
+      const result = fs.readFileSync(path.join(dir, 'CHANGELOG.md'), 'utf8');
+      const unrel = result.split('## [Unreleased]')[1].split('## [1.2.3]')[0];
+      expect(unrel).not.toContain('- Shipped once');
+      expect(unrel.trim()).toBe('');
+    });
+
+    it('the published notes carry the New Features section end to end', () => {
+      // Closes the loop through the script the workflow actually pipes
+      // into `gh release create --notes-file`.
+      dir = setup(
+        HEADER +
+          `## [1.2.3] - 2026-02-02
+
+## [Unreleased]
+
+### New Features
+- Headline feature
+
+### Fixes
+- A fix
+
+## [1.2.2] - 2026-01-01
+`,
+      );
+      run(dir);
+
+      const notes = execFileSync('node', [EXTRACTOR, '1.2.3'], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      expect(notes).toContain('### New Features');
+      expect(notes).toContain('- Headline feature');
+      expect(notes).toContain('- A fix');
     });
   });
 

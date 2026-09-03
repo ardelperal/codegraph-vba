@@ -22,11 +22,13 @@
  *     the common case.
  *
  *   Case B — `[<version>]` exists AND `[Unreleased]` has content:
- *     Merge `[Unreleased]`'s sub-sections (### Added / ### Fixed /
- *     ### Changed / ### Removed / ### Deprecated / ### Security) into
- *     the corresponding sub-sections of `[<version>]`. Unmatched
- *     sub-sections are appended to `[<version>]`. The `[Unreleased]`
- *     block is then emptied.
+ *     Merge `[Unreleased]`'s sub-sections into the corresponding
+ *     sub-sections of `[<version>]`. Heading text is matched verbatim
+ *     and may be multi-word — this CHANGELOG uses `### New Features`
+ *     and `### Breaking Changes` alongside the older single-word
+ *     Keep-a-Changelog names. Unmatched sub-sections, and any entries
+ *     appearing before the first heading, are appended to
+ *     `[<version>]`. The `[Unreleased]` block is then emptied.
  *
  *   Case C — `[Unreleased]` has no content:
  *     No-op. Exit 0. Re-runs of the workflow are safe.
@@ -108,7 +110,12 @@ function joinChangelog({ preface, blocks }) {
  * sub-section so we can splice cleanly when merging.
  */
 function splitSubsections(body) {
-  const subsectionRe = /^### (\w+)\s*$/;
+  // Multi-word headings are the norm, not the exception: this CHANGELOG
+  // uses `### New Features` / `### Breaking Changes` alongside the older
+  // single-word Keep-a-Changelog vocabulary (`### Added`, `### Fixed`).
+  // A `\w+`-only pattern silently failed to recognise the multi-word ones,
+  // which dropped every entry under them on the Case B path — see #296.
+  const subsectionRe = /^### (.+?)\s*$/;
   const leading = [];
   const subs = []; // { heading: 'Added' | 'Fixed' | …, headerLine: string, body: string[] }
   let cur = null;
@@ -209,6 +216,20 @@ function main() {
   const verSubs = splitSubsections(ver.body);
 
   let merged = 0;
+
+  // Entries that sit before Unreleased's first `### Heading` have no
+  // sub-section to merge into. Carry them over verbatim rather than
+  // letting them fall off the end of the merge loop: in #296 an
+  // unrecognised heading pushed 16 bullets in here and they were lost
+  // without a warning. Losing content must not be a silent outcome.
+  const unrelLeading = trimTrailingBlank(unrelSubs.leading);
+  if (blockHasContent(unrelLeading)) {
+    const existing = trimTrailingBlank(verSubs.leading);
+    const sep = existing.length && !/^\s*$/.test(existing[existing.length - 1]) ? [''] : [];
+    verSubs.leading = existing.concat(sep, unrelLeading, ['']);
+    merged += unrelLeading.filter((l) => /^\s*([-*]|\d+\.)\s+/.test(l)).length;
+  }
+
   for (const us of unrelSubs.subs) {
     const target = verSubs.subs.find((s) => s.heading === us.heading);
     const usBody = trimTrailingBlank(us.body);
@@ -241,7 +262,7 @@ function main() {
 }
 
 /**
- * Append a `[X.Y.Z]: https://github.com/colbymchenry/codegraph/releases/tag/vX.Y.Z`
+ * Append a `[X.Y.Z]: https://github.com/ardelperal/codegraph-vba/releases/tag/vX.Y.Z`
  * link reference at the end of the file IF one doesn't already exist. The
  * link ref is what makes `## [X.Y.Z]` heading text auto-link to its tag in
  * GitHub's renderer; without it the heading still renders, just unlinked.
@@ -251,7 +272,9 @@ function main() {
  * which CommonMark accepts regardless.
  */
 function appendLinkRef(text, version) {
-  const refLine = `[${version}]: https://github.com/colbymchenry/codegraph/releases/tag/v${version}`;
+  // This fork publishes its own releases; an upstream URL points at a tag
+  // that does not exist here, so the `## [X.Y.Z]` heading links nowhere (#296).
+  const refLine = `[${version}]: https://github.com/ardelperal/codegraph-vba/releases/tag/v${version}`;
   // Already there? Look for a line that EQUALS this (anywhere in the file)
   // to keep idempotency robust against the scattered-vs-block layout.
   const lines = text.split('\n');

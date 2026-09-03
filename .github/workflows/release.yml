@@ -12,8 +12,11 @@ name: Release
 #      release notes from CHANGELOG.md,
 #   5. publishes the npm thin-installer (shim + per-platform packages).
 #
-# Before triggering: bump package.json. CHANGELOG.md entries can live under
-# `## [Unreleased]` — step 2 takes care of moving them. Set the NPM_TOKEN secret.
+# Before triggering: bump package.json on the default branch, and dispatch this
+# workflow from that branch — a guard step rejects anything else, because step 2
+# pushes its commit to whichever branch triggered the run. CHANGELOG.md entries
+# can live under `## [Unreleased]`; step 2 moves them. Never pre-create a
+# `## [<version>]` block. Set the NPM_TOKEN secret.
 on:
   workflow_dispatch: {}
 
@@ -24,6 +27,24 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - name: Refuse to release from a non-default branch
+        # The promote step below pushes the CHANGELOG back to the branch
+        # this workflow was dispatched on. Dispatched from a short-lived
+        # `release/*` branch, that commit lands there and disappears with
+        # the branch — which is exactly how v1.16.0 shipped while `main`
+        # kept a stale CHANGELOG and package.json (#296). Releases come
+        # from the default branch or they do not happen.
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::Release was dispatched from '$REF_NAME'. Run it from '$DEFAULT_BRANCH' so the CHANGELOG promotion is pushed to a branch that survives."
+            exit 1
+          fi
+          echo "Releasing from '$REF_NAME' (default branch)."
+
       - uses: actions/checkout@v6
         with:
           # Default checkout is detached at a SHA; we need an actual branch

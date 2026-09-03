@@ -637,8 +637,8 @@ error handling, and where errors end up being shown to the user."
 
 ### E6 — `label` nodes and `handles-error` edges — **unblocked, landed (#263)**
 
-This was held blocked while E1–E5 were built, and §4.3's three conditions were met before it
-moved: a written statement of the query that forces it (address a handler *as a thing* — a
+This was held blocked while the cheaper model was built, and §4.3's three conditions were met
+before it moved: a written statement of the query that forces it (address a handler *as a thing* — a
 stable id, `kind:label` search, dangling and duplicate detection as a graph query rather than
 a scan — which `inErrorHandler`'s per-procedure boolean cannot serve), maintainer sign-off on
 the new `NodeKind` and `EdgeKind` in the issue, and the node-budget forecast below.
@@ -693,7 +693,8 @@ The main plan's three rules apply unchanged. Three more, particular to error han
 3. **E1–E5 add no nodes and no edges. If a PR in E1–E5 changes the node or edge count,
    something is wrong.** That invariant is cheap to assert and it is the single best protection
    against those tasks quietly turning into E6. E6 itself (#263) is the one sanctioned
-   exception, and it landed separately, after E1–E5, against the measured budget in its own
+   exception, and it landed separately — after E1-E3, alongside E4, and before E5 — against
+   the measured budget in its own
    section.
 
 **Per-PR checklist:** the main plan's checklist, plus:

@@ -2,6 +2,7 @@ import {
   RUNTIME_OBJECTS as CANONICAL_RUNTIME_OBJECTS,
   isRuntimeObject as canonicalIsRuntimeObject,
 } from '../extraction/vba/runtime-objects';
+import { isExactVbaFilesystemStatementReference } from '../extraction/vba/filesystem-statements';
 
 /**
  * Canonical list of VBA/Access runtime objects and singletons whose
@@ -171,6 +172,7 @@ export function classifyVbaReferenceAsRuntime(ref: {
   metadata?: { synthesizedBy?: unknown } | null;
 }): boolean {
   if ((ref.language ?? '').toLowerCase() !== 'vba') return false;
+  if (isExactVbaFilesystemStatementReference(ref)) return true;
   // Issue #188 — bare DAO enum values and VBA intrinsic constants are
   // emitted as `reference_kind='unqualified-ident'` with no
   // `synthesizedBy` stamp (they're identifiers, not calls). Name

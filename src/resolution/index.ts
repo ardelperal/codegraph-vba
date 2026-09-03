@@ -31,6 +31,7 @@ import { LRUCache } from './lru-cache';
 import { isRuntimeObject, classifyVbaReferenceAsRuntime } from './vba-runtime-objects';
 import { normalizeAccessObjectName } from './vba-access-object-name';
 import { generateNodeId } from '../extraction/tree-sitter-helpers';
+import { isExactVbaFilesystemStatementReference } from '../extraction/vba/filesystem-statements';
 
 /**
  * Outcome of resolving a single VBA call-stub (issue #110). Recorded on the
@@ -791,6 +792,11 @@ export class ReferenceResolver {
    * Resolve a single reference
    */
   resolveOne(ref: UnresolvedRef): ResolvedRef | null {
+    // Exact VBA filesystem statements are runtime syntax, even when a project
+    // declares a same-named Kill/Open/Close procedure. Never offer these refs
+    // to normal symbol matching; persistence classifies the same exact shape.
+    if (isExactVbaFilesystemStatementReference(ref)) return null;
+
     // Skip built-in/external references
     if (this.isBuiltInOrExternal(ref)) {
       return null;

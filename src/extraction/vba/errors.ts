@@ -208,11 +208,92 @@ const ERR_RAISE_RE = /\bErr\s*\.\s*Raise\b/i;
  *
  * Kept identical to the probe's `statementsOf`.
  */
+function splitVbaStatements(line: string): string[] {
+  const statements: string[] = [];
+  let start = 0;
+  let inString = false;
+  let inDate = false;
+
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index];
+    if (char === '"' && !inDate) {
+      if (inString && line[index + 1] === '"') {
+        index += 1;
+      } else {
+        inString = !inString;
+      }
+      continue;
+    }
+        if (char === '#' && !inString) {
+          if (inDate) {
+            inDate = false;
+            continue;
+          }
+
+          // `#` is also VBA's Double type suffix (`value#`, `1#`). It only
+          // opens a date/time literal when it appears where an expression can
+          // begin and a closing `#` exists ahead. A suffix must not hide a later
+          // colon statement separator by leaving `inDate` open.
+          const before = line.slice(0, index).trimEnd().slice(-1);
+          const canOpenDate = before === '' || /[=(:,+\-*/&<>]/.test(before);
+          if (canOpenDate && line.indexOf('#', index + 1) >= 0) {
+            inDate = true;
+          }
+          continue;
+        }
+    if (char === ':' && !inString && !inDate && line[index + 1] !== '=') {
+      statements.push(line.slice(start, index));
+      start = index + 1;
+    }
+  }
+
+  statements.push(line.slice(start));
+  return statements;
+}
+
 function statementsOf(maskedLine: string): string[] {
-  return maskedLine.split(':').map((part) => {
+  return splitVbaStatements(maskedLine).map((part) => {
     const guard = /^\s*(?:(?:If|ElseIf)\b.*?\bThen\b|Else\b)/i.exec(part);
     return guard ? part.slice(guard[0].length) : part;
   });
+}
+
+/** Non-executable declarations that may legally occur inside a procedure. */
+const PROCEDURE_DECLARATION_RE =
+  /^(?:Dim|Static|Const|Private|Public)\b/i;
+
+/** One procedure terminator after colon splitting. */
+const PROCEDURE_END_STATEMENT_RE = /^End\s+(?:Sub|Function|Property)\b/i;
+
+/**
+ * Count executable statements on one already comment-stripped, string-masked
+ * source line. The procedure declaration, its terminator, declarations, and
+ * bare labels are structural; every remaining colon-separated statement is an
+ * executable statement. A label with trailing code contributes that code once.
+ */
+function executableStatementsOnLine(
+  maskedLine: string,
+  procedureStartsHere: boolean,
+): number {
+  let count = 0;
+  const parts = splitVbaStatements(maskedLine);
+  for (let index = 0; index < parts.length; index++) {
+    let statement = (parts[index] ?? '').trim();
+    if (!statement) continue;
+    if (procedureStartsHere && index === 0) continue;
+    if (PROCEDURE_END_STATEMENT_RE.test(statement)) continue;
+    if (PROCEDURE_DECLARATION_RE.test(statement)) continue;
+
+    const label = index < parts.length - 1
+      ? LINE_LABEL_RE.exec(`${statement}:`)
+      : null;
+    if (label && !NOT_A_LABEL.has((label[1] ?? '').toLowerCase())) {
+      statement = statement.slice(label[0].length - 1).trim();
+      if (!statement) continue;
+    }
+    count += 1;
+  }
+  return count;
 }
 
 /**
@@ -278,6 +359,7 @@ export function newErrorPolicyState(
     targets: new Map(),
     definedLabels: new Map(),
     handlerCount: 0,
+    executableStatementCount: 0,
     lastScopeEvent: null,
     openedTarget: null,
     handlerStartLine: null,
@@ -547,6 +629,7 @@ export function closeErrorPolicy(
     behavior: classifyBehavior(state, best, endLine),
     handlerCount: state.handlerCount,
     resumeNextOpen: state.lastScopeEvent?.opens ?? false,
+    executableStatementCount: state.executableStatementCount,
     danglingTarget: danglingKey
       ? (state.targets.get(danglingKey) ?? null)
       : null,
@@ -679,6 +762,39 @@ function markErrorHandlerRegion(
  */
 export function createErrorPolicyClassifier(): VbaClassifier {
   let lastLineNum = 0;
+  let pendingExecutableLine: string | null = null;
+  let pendingStartsProcedure = false;
+
+  const countExecutableLine = (
+    ctx: VbaExtractorContext,
+    maskedLine: string,
+    procedureStartsHere: boolean,
+  ): void => {
+    const continued = / _\s*$/.test(maskedLine);
+    const fragment = continued
+      ? maskedLine.replace(/ _\s*$/, ' ')
+      : maskedLine;
+    if (pendingExecutableLine === null) {
+      pendingExecutableLine = fragment;
+      pendingStartsProcedure = procedureStartsHere;
+    } else {
+      pendingExecutableLine += fragment.trimStart();
+    }
+    if (continued) return;
+
+    ctx.vbaErrorPolicy!.executableStatementCount += executableStatementsOnLine(
+      pendingExecutableLine,
+      pendingStartsProcedure,
+    );
+    pendingExecutableLine = null;
+    pendingStartsProcedure = false;
+  };
+
+  const flushExecutableLine = (ctx: VbaExtractorContext): void => {
+    if (pendingExecutableLine === null || ctx.vbaErrorPolicy === null) return;
+    countExecutableLine(ctx, '', false);
+  };
+
   return {
     name: 'errorPolicy',
     count: 0,
@@ -686,16 +802,22 @@ export function createErrorPolicyClassifier(): VbaClassifier {
       const lineNum = i + 1;
       lastLineNum = lineNum;
       const maskedLine = maskStringContent(line);
+      const procedureStartsHere = ctx.functionNodeByStartLine.has(lineNum);
 
       // Procedure START: the pre-walk already emitted a function node for
       // this line, so no second `PROC_RE` dispatch is needed.
-      if (ctx.functionNodeByStartLine.has(lineNum)) {
+      if (procedureStartsHere) {
+        flushExecutableLine(ctx);
         closeErrorPolicy(ctx, lineNum - 1);
         ctx.vbaErrorPolicy = newErrorPolicyState(
           lineNum,
           ctx.edges.length,
           ctx.unresolvedReferences.length,
         );
+      }
+
+      if (ctx.vbaErrorPolicy) {
+        countExecutableLine(ctx, maskedLine, procedureStartsHere);
       }
 
       runRules(RULES, ctx, line, maskedLine, lineNum, {
@@ -721,6 +843,7 @@ export function createErrorPolicyClassifier(): VbaClassifier {
       }
     },
     finalize(ctx) {
+      flushExecutableLine(ctx);
       closeErrorPolicy(ctx, lastLineNum);
     },
   };

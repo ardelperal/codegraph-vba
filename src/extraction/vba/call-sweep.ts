@@ -30,6 +30,7 @@ import {
 } from './docmd';
 import { sweepTempVars } from './tempvars';
 import { scanSqlInLine, trackSqlVariableAssignment } from './sql-wrapper';
+import { emitVbaFilesystemStatementReference } from './filesystem-statements';
 
 /**
  * Issue #46: `Set <var> = New <Type>[.<Inner>]` late-instantiation.
@@ -376,10 +377,24 @@ export function createCallsAndSqlClassifier(
         // mask so an argument list made only of string literals stays visible.
         const clauseLines =
           stmtProcStartBodyClauses ?? splitSingleLineIfClauses(stmtScanLine);
-        for (const clauseLine of clauseLines) {
-          const stmtCall = detectStatementCall(clauseLine);
+            for (const clauseLine of clauseLines) {
+              const caller = stack[stack.length - 1]!;
+              // Issue #262: intrinsic filesystem STATEMENTS have reserved grammar,
+              // not user-call grammar. Claim their exact shapes before the generic
+              // statement-call detector can bind Kill/Open/Close to project code.
+              if (
+                emitVbaFilesystemStatementReference(
+                  ctx,
+                  caller,
+                  clauseLine,
+                  lineNum,
+                )
+              ) {
+                continue;
+              }
+
+              const stmtCall = detectStatementCall(clauseLine);
           if (stmtCall) {
-            const caller = stack[stack.length - 1]!;
             // Returns true when a same-file calls edge was emitted; false
             // when the call was silenced (blacklist / runtime receiver /
             // unresolvable same-file target).

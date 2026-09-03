@@ -26,6 +26,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Work a procedure does only when something goes wrong is now marked as such, and each error handler records whether it records the message, shows it to the user, re-raises it, or does more than one of those — so a procedure's failure path can be told apart from its normal one. (#260)
 - Each error handler in Access code is now its own symbol you can search for and jump to, linked to the procedure that routes errors to it, so a handler can be found and followed directly instead of only asking whether a procedure has one. (#263)
 - The variables this kind of Access project uses to pass error messages between objects are now recognised as such, so an error can be followed from where it happened to where the user sees it. (#261)
+- New guidance shows how to find Access code that runs without error handling, including procedures with more than five executable statements that touch SQL tables, `DoCmd` targets, filesystem functions, or exact `Kill`/`Open`/`Close` statements, plus suppression scopes left open, missing handler labels, and where errors reach the user. (#262)
 
 ### Changed
 

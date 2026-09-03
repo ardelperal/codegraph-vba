@@ -13,8 +13,75 @@
  * there and the reparenting semantics the ppid watchdog relies on are POSIX-only
  * (same exclusion as mcp-ppid-watchdog.test.ts).
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { spawn, ChildProcessWithoutNullStreams } from 'child_process';
+
+const parsePools = vi.hoisted(() => [] as Array<{
+  destroy: ReturnType<typeof vi.fn>;
+}>);
+
+vi.mock('../src/extraction/parse-pool', () => ({
+  resolveParsePoolSize: () => 1,
+  resolveParseTimeoutMs: () => 30_000,
+  ParseWorkerPool: class {
+    readonly size = 1;
+    readonly destroy = vi.fn();
+    async requestParse() {
+      return { nodes: [], edges: [], errors: [{ message: 'fixture warning', severity: 'warning' }] };
+    }
+    recycleAll() {}
+    constructor() { parsePools.push(this); }
+  },
+}));
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    existsSync: (target: fs.PathLike) => String(target).endsWith('parse-worker.js') || actual.existsSync(target),
+  };
+});
+
+vi.mock('ignore', () => ({
+  default: () => ({ add() { return this; }, ignores: () => false }),
+}));
+vi.mock('../src/project-config', () => ({
+  loadExtensionOverrides: () => ({}),
+  loadIncludeIgnoredPatterns: () => [],
+  loadExcludePatterns: () => [],
+  loadVbaConfig: () => ({}),
+  loadIncludePatterns: () => [],
+  loadDysflowExportConfig: () => true,
+}));
+vi.mock('../src/resolution/frameworks', () => ({ detectFrameworks: () => [] }));
+vi.mock('../src/extraction/tree-sitter', () => ({ extractFromSource: vi.fn() }));
+
+vi.mock('../src/extraction/grammars', () => ({
+  detectLanguage: () => 'typescript',
+  isSourceFile: (file: string) => file.endsWith('.ts'),
+  isLanguageSupported: () => true,
+  isFileLevelOnlyLanguage: () => false,
+  initGrammars: vi.fn(async () => undefined),
+  loadGrammarsForLanguages: vi.fn(async () => undefined),
+  readGrammarWasmBytes: vi.fn(async () => ({})),
+}));
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    execFileSync: vi.fn((command: string, args: string[]) => {
+      if (command !== 'git') return actual.execFileSync(command, args);
+      if (args[0] === 'rev-parse' && args[1] === '--show-toplevel') return process.cwd() + '\n';
+      if (args[0] === 'rev-parse') return '.git\n';
+      if (args[0] === 'ls-files' && args.includes('-s')) {
+        return '100644 0000000000000000000000000000000000000000 0\t__tests__/init-resource-cleanup.test.ts\0';
+      }
+      if (args[0] === 'ls-files') return '';
+      throw new Error(`Unexpected git invocation: ${args.join(' ')}`);
+    }),
+  };
+});
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -117,4 +184,41 @@ describe.skipIf(process.platform === 'win32')('index/init orphan supervision (#9
     // Confirm it died from the parent-death path, not some other cause.
     expect(stderr).toMatch(/Parent process exited.*aborting/);
   }, 20000);
+});
+
+/**
+ * The worker-pool cleanup half of #241 is source-level and cross-platform. It
+ * drives a real ExtractionOrchestrator over one controlled repository-visible
+ * file while replacing only the worker boundary.
+ */
+describe('index parse-pool cleanup (#241)', () => {
+  afterEach(() => { parsePools.length = 0; });
+
+  async function createOrchestrator() {
+    const { ExtractionOrchestrator } = await import('../src/extraction');
+    return new ExtractionOrchestrator(process.cwd(), {} as never);
+  }
+
+  it('destroys the parse pool exactly once after a successful index', async () => {
+    const orchestrator = await createOrchestrator();
+
+    const result = await orchestrator.indexAll();
+
+    expect(result.success).toBe(true);
+    expect(parsePools).toHaveLength(1);
+    expect(parsePools[0]!.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys the parse pool exactly once when a post-parse callback throws', async () => {
+    const orchestrator = await createOrchestrator();
+
+    await expect(orchestrator.indexAll((progress) => {
+      if (progress.phase === 'parsing' && progress.current === 1) {
+        throw new Error('synthetic post-parse failure');
+      }
+    })).rejects.toThrow('synthetic post-parse failure');
+
+    expect(parsePools).toHaveLength(1);
+    expect(parsePools[0]!.destroy).toHaveBeenCalledTimes(1);
+  });
 });

@@ -1702,6 +1702,7 @@ export class ExtractionOrchestrator {
     const useWorker = fs.existsSync(parseWorkerPath);
 
     let pool: ParseWorkerPool | null = null;
+    try {
     if (useWorker) {
       // CODEGRAPH_PARSE_WORKERS: explicit worker count; 1 = the old single-worker
       // behaviour (the conservative rollback). Unset → clamp(cores-1, 1, 8).
@@ -1961,7 +1962,6 @@ export class ExtractionOrchestrator {
     }
 
     if (signal?.aborted || aborted) {
-      if (pool) await pool.destroy();
       return {
         success: false,
         filesIndexed,
@@ -2098,9 +2098,6 @@ export class ExtractionOrchestrator {
       }
     }
 
-    // Shut down the parse worker pool.
-    if (pool) await pool.destroy();
-
     return {
       success: filesIndexed > 0 || errors.filter((e) => e.severity === 'error').length === 0,
       filesIndexed,
@@ -2112,6 +2109,9 @@ export class ExtractionOrchestrator {
       errors,
       durationMs: Date.now() - startTime,
     };
+    } finally {
+      if (pool) await pool.destroy();
+    }
   }
 
   /**

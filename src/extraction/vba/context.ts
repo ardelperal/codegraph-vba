@@ -74,8 +74,18 @@ export interface VbaErrorPolicy {
   /** The procedure's terminating `End Sub` / `End Function` / `End Property`. */
   handlerEndLine: number | null;
   /**
-   * What the handler body does. Always `null` here — it is derived in task E3,
-   * where the handler body's calls are already being classified.
+   * Issue #260 (task E3): what the handler body does.
+   *
+   * `'channel'` — writes the error message into `m_Error` / `p_Error` /
+   * `g_Error` / `Me.Error` and returns normally, which is how ~71% of this
+   * corpus propagates errors. `'display'` — `MsgBox` / `Debug.Print`, i.e.
+   * the error surfaces to a human here. `'reraise'` — `Err.Raise`, the only
+   * shape that uses VBA's own mechanism to propagate. `'mixed'` — more than
+   * one of those. `'unknown'` — a handler with no recognised signal.
+   *
+   * `null` means the procedure has no handler to describe at all
+   * (`protection` is `'resume-next'` or `'none'`), which is deliberately a
+   * different answer from `'unknown'`.
    */
   behavior: 'channel' | 'display' | 'reraise' | 'mixed' | 'unknown' | null;
   /** `On Error GoTo <label>` sites; `> 1` means the procedure swaps handlers. */
@@ -89,6 +99,25 @@ export interface VbaErrorPolicy {
    * No procedure in the measured corpus has one.
    */
   danglingTarget: string | null;
+}
+
+/**
+ * Issue #260: the three independent things a handler body can do, collected
+ * per line and OR-ed over the handler region at the procedure's end.
+ *
+ * Independent on purpose: `behavior` is `mixed` when more than one of them
+ * fired, so a body that both records the error and shows it must not have a
+ * winner picked for it by evaluation order. This mirrors the `signals` object
+ * in `scripts/vba-coverage-probe.mjs`, which is the instrument the corpus
+ * census was measured with.
+ */
+export interface VbaErrorHandlerSignals {
+  /** A write to a configured error-channel variable (`p_Error = "…"`). */
+  channel: boolean;
+  /** A call that shows the error to a human (`MsgBox`, `Debug.Print`). */
+  display: boolean;
+  /** `Err.Raise` — the frame re-throws instead of recording. */
+  reraise: boolean;
 }
 
 /**
@@ -115,6 +144,33 @@ export interface VbaErrorPolicyState {
   /** lowercased label whose definition opened the handler region. */
   openedTarget: string | null;
   handlerStartLine: number | null;
+  /**
+   * Issue #260: `ctx.edges.length` / `ctx.unresolvedReferences.length` at the
+   * moment this procedure body opened. Everything emitted from inside the
+   * body sits at or after these marks, so the end-of-procedure pass that
+   * stamps `metadata.inErrorHandler` scans only this procedure's own rows
+   * instead of re-walking the whole file once per procedure.
+   */
+  edgeMark: number;
+  refMark: number;
+  /**
+   * Issue #260: sparse per-line handler signals for THIS procedure body,
+   * keyed by 1-based line. Only lines that fired at least one signal get an
+   * entry. Collected for the whole body and filtered to the handler region at
+   * close, because the region's first line is only known for certain once the
+   * body has been fully read (a label defined BEFORE the `On Error GoTo` that
+   * targets it is resolved retroactively).
+   */
+  signalsByLine: Map<number, VbaErrorHandlerSignals>;
+  /**
+   * Issue #260: signals from the text AFTER a label definition on the label's
+   * OWN line, keyed by that line. VBA allows `errores: MsgBox "x"`, and only
+   * the trailing statement belongs to the handler — the label itself does
+   * not. Kept apart from {@link signalsByLine} (which holds the whole line)
+   * so the region's first line contributes only its trailing statement,
+   * exactly as the probe's `handlerLines[0] = first.rest` does.
+   */
+  labelRestSignals: Map<number, VbaErrorHandlerSignals>;
 }
 
 /**
@@ -467,6 +523,28 @@ export class VbaExtractorContext {
       this.timings = new Map<string, number>();
       this.classifierInvokeCounts = new Map<string, number>();
     }
+  }
+
+  /**
+   * Issue #260: is `lineNum` inside the error handler of the procedure that
+   * is open right now?
+   *
+   * The lower bound is the open procedure's `handlerStartLine` — the line
+   * AFTER the handler label, which is the same boundary published on the
+   * node's `errorPolicy`. The upper bound is implicit and is the reason this
+   * reads live state rather than a stored range: `vbaErrorPolicy` is cleared
+   * at the procedure's `End Sub` / `End Function` / `End Property`, so the
+   * next procedure starts with a fresh accumulator and can never inherit the
+   * previous one's region. That is the off-by-one guard, by construction.
+   *
+   * Returns `false` outside any procedure, and inside a procedure whose
+   * handler region has not opened yet (no `On Error GoTo`, or a label nobody
+   * targets — which is control flow, not a handler).
+   */
+  public inErrorHandler(lineNum: number): boolean {
+    const state = this.vbaErrorPolicy;
+    if (state === null || state.handlerStartLine === null) return false;
+    return lineNum >= state.handlerStartLine;
   }
 
   /**

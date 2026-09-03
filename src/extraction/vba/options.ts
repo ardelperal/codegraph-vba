@@ -69,4 +69,20 @@ export interface VbaExtractionOptions {
    * belongs on the extractor context, never in this object.
    */
   sqlWrappers?: readonly string[];
+  /**
+   * Issue #261 — the module-level variable names this project uses to carry
+   * an error message from where it happened to where the user sees it
+   * (`m_Error`, `p_Error`, a project's own `lastFailure`). A read or write of
+   * one of them is flagged `metadata.errorChannel: true`, and a handler that
+   * writes one is classified `behavior: 'channel'`.
+   *
+   * Bare VBA identifiers, matched as WHOLE names — never substrings, never
+   * user-supplied regex (this runs per identifier per line, the same reasoning
+   * `sqlWrappers` was built on). Sourced from `codegraph.json` →
+   * `vba.errorChannel`, and EXTENDS the built-in list rather than replacing
+   * it. Kept as plain strings for the same reason `sqlWrappers` is: the
+   * compiled `Set`/`RegExp` form cannot cross the `structuredClone` worker
+   * boundary, so it is built on the extractor context instead.
+   */
+  errorChannel?: readonly string[];
 }

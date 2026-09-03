@@ -1616,6 +1616,9 @@ export class ExtractionOrchestrator {
       // compiled matcher is built inside the extractor because a RegExp
       // cannot cross the `structuredClone` worker boundary.
       sqlWrappers: vbaConfig.sqlWrappers,
+      // Issue #261: the project's error-channel variable names. Plain strings
+      // for the same worker-boundary reason as `sqlWrappers`.
+      errorChannel: vbaConfig.errorChannel,
     };
     // Issue #154 — gate the 3 Dysflow-specific VBA sub-extractors. `true`
     // (the default) keeps the pre-refactor behavior; `false` opts out so
@@ -2275,6 +2278,7 @@ export class ExtractionOrchestrator {
         targets: vbaReindexConfig.targets,
         maxRaiseFanout: vbaReindexConfig.maxRaiseFanout,
         sqlWrappers: vbaReindexConfig.sqlWrappers,
+        errorChannel: vbaReindexConfig.errorChannel,
       },
     );
 

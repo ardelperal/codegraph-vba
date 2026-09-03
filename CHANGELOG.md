@@ -41,6 +41,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Initializing or indexing a project now reliably releases its database and parser workers after both successful runs and unexpected failures, preventing stale Windows file locks from blocking worktree removal. (#241)
 - A VBA module that declares its own variable named `Error` no longer reports every `On Error GoTo` line as a read of it, so error-handling statements stop showing up as data access. (#292)
 - VBA: a call written with the `Call` keyword, or with an argument list, is now reported as a call rather than as an ambiguous bare-identifier read, so a genuinely missing procedure is no longer filtered out by the constant-lookup rules meant for plain identifier reads. A bare name with no `Call` keyword and no arguments still counts as an identifier read, because it really can be a constant. (#265)
 - A form or report whose file was saved under a different name than the module itself carries now gets its event handlers and control references wired up, instead of quietly coming through with none of them. (#249)

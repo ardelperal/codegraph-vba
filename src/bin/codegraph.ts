@@ -562,6 +562,7 @@ program
     const clack = await importESM('@clack/prompts');
 
     clack.intro('Initializing CodeGraph');
+    let cg: Awaited<ReturnType<(typeof import('../index'))['default']['init']>> | undefined;
 
     try {
       // Refuse to index your home directory / a filesystem root — it pulls in
@@ -588,7 +589,8 @@ program
       }
 
       const { default: CodeGraph, getDatabasePath } = await loadCodeGraph();
-      const cg = await CodeGraph.init(projectPath, { index: false });
+      const initializedGraph = await CodeGraph.init(projectPath, { index: false });
+      cg = initializedGraph;
       clack.log.success(`Initialized in ${projectPath}`);
 
       // Indexing runs by default now. The legacy -i/--index flag is still
@@ -604,11 +606,11 @@ program
         const supervision = installCommandSupervision('init', { progressPaths: [dbPath, `${dbPath}-wal`] });
         try {
           if (options.verbose) {
-            return await cg.indexAll({ onProgress: createVerboseProgress(), verbose: true });
+            return await initializedGraph.indexAll({ onProgress: createVerboseProgress(), verbose: true });
           }
           process.stdout.write(`${colors.dim}${getGlyphs().rail}${colors.reset}\n`);
           const progress = createShimmerProgress();
-          const r = await cg.indexAll({ onProgress: progress.onProgress });
+          const r = await initializedGraph.indexAll({ onProgress: progress.onProgress });
           await progress.stop();
           return r;
         } finally {
@@ -617,7 +619,7 @@ program
       };
       const result = await runIndex();
       printIndexResult(clack, result, projectPath);
-      await recordIndexTelemetry(cg, result);
+      await recordIndexTelemetry(initializedGraph, result);
 
       // An empty graph at a git super-repo usually means `.gitignore` excludes
       // the child repos that hold the code — surface them and offer to opt in
@@ -632,10 +634,11 @@ program
       } catch { /* non-fatal */ }
 
       clack.outro('Done');
-      cg.destroy();
     } catch (err) {
       clack.log.error(`Failed: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      process.exitCode = 1;
+    } finally {
+      cg?.destroy();
     }
   });
 

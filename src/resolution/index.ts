@@ -1137,6 +1137,14 @@ export class ReferenceResolver {
             ? {
                 synthesizedBy: 'vba-module-var',
                 access: ref.original.metadata.access,
+                // Issue #261: and keep the error-channel flag, so the
+                // propagation chain stays identifiable AFTER resolution —
+                // an edge that lost it would leave the answer to "how does
+                // this error reach the user" only in the unresolved table.
+                // Absent (never `false`) when this is ordinary module state.
+                ...(ref.original.metadata.errorChannel
+                  ? { errorChannel: true }
+                  : {}),
               }
             : {}),
           ...(ref.original.metadata?.synthesizedBy === 'vba-me-control'

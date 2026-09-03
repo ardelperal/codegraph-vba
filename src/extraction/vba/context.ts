@@ -24,6 +24,7 @@ import {
 } from '../sql-table-scan';
 import { PRIMITIVE_TYPES } from './constants';
 import type { CompiledSqlWrappers } from './sql-wrapper';
+import type { CompiledErrorChannel } from './error-channel';
 
 export interface ProcInfo {
   name: string;
@@ -554,6 +555,25 @@ export class VbaExtractorContext {
    * a runtime require cycle.
    */
   public sqlWrappers: CompiledSqlWrappers | null = null;
+
+  /**
+   * Issue #261: the error channel — the module-level variable names this
+   * project propagates error messages through — compiled ONCE per extractor
+   * instance from `codegraph.json` → `vba.errorChannel` and parked here.
+   *
+   * Two hot paths read it: `module-vars.ts` tests every identifier that is
+   * already a module-level variable of this file (flagging the reference
+   * `errorChannel: true`), and `errors.ts` tests every statement of every
+   * procedure body for a channel WRITE. Neither may rebuild the `Set` and the
+   * RegExps it holds inside the line loop.
+   *
+   * `null` means "nobody supplied options" (tests, out-of-repo callers);
+   * `error-channel.ts` then falls back to its memoised default channel, which
+   * is the same four names. The type is imported TYPE-ONLY on purpose, exactly
+   * as {@link sqlWrappers} is: `error-channel.ts` is a leaf and a value import
+   * here would be the start of a runtime cycle.
+   */
+  public errorChannel: CompiledErrorChannel | null = null;
 
   constructor(filePath: string) {
     this.filePath = filePath;

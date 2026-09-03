@@ -15,9 +15,18 @@
  * registered as a module-level variable of the module being extracted.
  * Any looser rule turns a codebase-wide sweep into thousands of
  * references to names that merely collide.
+ *
+ * Issue #261 adds ONE field on top: when the matched variable is the project's
+ * error channel (`m_Error`, `p_Error`, … — see `./error-channel`), the
+ * reference also carries `metadata.errorChannel: true`. No new node kind, no
+ * new edge kind and not a single extra row: the propagation chain
+ * `inner procedure --property-set--> m_Error --property-get--> caller` is the
+ * one this sweep already emits, and the flag is what makes it identifiable as
+ * error flow instead of ordinary module state.
  */
 import { VbaExtractorContext, ProcInfo } from './context';
 import { isDirectAssignment } from './controls';
+import { defaultErrorChannel, isErrorChannelName } from './error-channel';
 
 /**
  * Every bare identifier on the line. The sweep is a membership test
@@ -100,6 +109,10 @@ export function scanModuleVariableReferences(
   lineNum: number,
 ): void {
   if (ctx.moduleVariables.size === 0) return;
+  // Issue #261: the compiled error channel, hoisted out of the identifier
+  // loop. `null` means nobody supplied options (tests, out-of-repo callers),
+  // in which case the memoised default channel — the same four names — applies.
+  const channel = ctx.errorChannel ?? defaultErrorChannel();
   // Issue #205 scoping: names this procedure declares itself — its
   // parameters and its own `Dim` / `Static` declarations — are locals that
   // happen to share a name with module state. Reading one of those is not
@@ -139,9 +152,11 @@ export function scanModuleVariableReferences(
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
+    const declaredName = ctx.moduleVariables.get(key)!.name;
+
     ctx.unresolvedReferences.push({
       fromNodeId,
-      referenceName: ctx.moduleVariables.get(key)!.name,
+      referenceName: declaredName,
       referenceKind,
       line: lineNum,
       column: m.index,
@@ -150,6 +165,16 @@ export function scanModuleVariableReferences(
       metadata: {
         synthesizedBy: 'vba-module-var',
         access: isWrite ? 'write' : 'read',
+        // Issue #261: this variable IS the error channel, so this reference
+        // is a hop of the error-propagation chain rather than ordinary
+        // module state. Set on reads and writes alike — the write is where
+        // the message enters, the read is where the caller picks it up, and
+        // an answer to "how does this error reach the user" needs both.
+        //
+        // Only ever `true`; its ABSENCE is the "not the channel" encoding, so
+        // this adds a key to a minority of rows instead of a `false` to every
+        // one of them (the same shape #260 chose for `inErrorHandler`).
+        ...(isErrorChannelName(channel, declaredName) ? { errorChannel: true } : {}),
       },
     });
   }

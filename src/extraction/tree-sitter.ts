@@ -6557,6 +6557,7 @@ export function extractFromSource(
     targets: vbaOptions?.targets ?? vbaTargets,
     maxRaiseFanout: vbaOptions?.maxRaiseFanout ?? maxRaiseFanout,
     sqlWrappers: vbaOptions?.sqlWrappers,
+    errorChannel: vbaOptions?.errorChannel,
   };
   const detectedLanguage = language || detectLanguage(filePath, source);
   const fileExtension = path.extname(filePath).toLowerCase();

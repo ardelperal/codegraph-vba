@@ -26,6 +26,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Language } from './types';
 import { isLanguageSupported } from './extraction/grammars';
+import { ERROR_CHANNEL_ENTRY_RE } from './extraction/vba/error-channel';
 import { logWarn } from './errors';
 import { codeGraphDirName } from './directory';
 
@@ -94,6 +95,22 @@ export interface ProjectConfig {
      * warns and is ignored.
      */
     sqlWrappers?: string[];
+    /**
+     * Issue #261 — extra module-level variable names this project uses as its
+     * error channel: the field a failing procedure writes and its caller
+     * reads, which is how an error message actually travels in an Access
+     * codebase of this shape (VBA's own mechanism unwinds one frame and is
+     * used for that, not for the message).
+     *
+     * Bare VBA identifiers only, matched as WHOLE names — `"lastFailure"`
+     * flags `lastFailure` and never `lastFailureCount`. Raw regular
+     * expressions are deliberately NOT accepted, for the same reason
+     * `sqlWrappers` refuses them: these names are tested against every
+     * identifier of every line of every VBA file. Entries EXTEND the built-in
+     * list (`m_Error`, `p_Error`, `g_Error`, `Error`) — they never replace
+     * it. A non-array value, or a non-identifier entry, warns and is ignored.
+     */
+    errorChannel?: string[];
   };
   /**
    * Gitignore-style patterns for first-party source to force INTO the index even
@@ -121,6 +138,7 @@ export interface VbaConfig {
   maxRaiseFanout?: number;
   dysflowExport?: boolean;
   sqlWrappers?: string[];
+  errorChannel?: string[];
 }
 
 /** Parsed, validated view of a project's `codegraph.json`. */
@@ -378,10 +396,34 @@ function extractVbaTargets(parsed: object, file: string): VbaConfig | undefined 
     }
   }
 
+  // Issue #261 — extra error-channel variable names. Same warn-and-ignore
+  // shape as `sqlWrappers`, and the same "no user regex" rule: an entry is a
+  // bare VBA identifier, tested as a whole name against every identifier of
+  // every line. A wrong type never throws, it just leaves the built-in
+  // channel list in force.
+  const errorChannel = vba.errorChannel;
+  if (errorChannel !== undefined) {
+    if (!Array.isArray(errorChannel)) {
+      logWarn(`Ignoring "vba.errorChannel" in ${PROJECT_CONFIG_FILENAME}: value must be an array of strings`, { file });
+    } else {
+      const channelOut: string[] = [];
+      for (const raw of errorChannel) {
+        const entry = typeof raw === 'string' ? raw.trim() : '';
+        if (!entry || !ERROR_CHANNEL_ENTRY_RE.test(entry)) {
+          logWarn(`Ignoring an invalid "vba.errorChannel" entry in ${PROJECT_CONFIG_FILENAME}: every entry must be a bare variable name ("m_Error")`, { file });
+          continue;
+        }
+        channelOut.push(entry);
+      }
+      if (channelOut.length > 0) out.errorChannel = channelOut;
+    }
+  }
+
   return out.targets !== undefined
     || out.maxRaiseFanout !== undefined
     || out.dysflowExport !== undefined
     || out.sqlWrappers !== undefined
+    || out.errorChannel !== undefined
     ? out
     : undefined;
 }
@@ -481,17 +523,26 @@ function loadParsedConfig(rootDir: string): ParsedConfig {
         ...(fileConfig.vba?.sqlWrappers ?? []),
       ])]
     : undefined;
+  // `errorChannel` is a list too, so it UNIONs on the same grounds (#261).
+  const mergedErrorChannel = localConfig.vba?.errorChannel || fileConfig.vba?.errorChannel
+    ? [...new Set([
+        ...(localConfig.vba?.errorChannel ?? []),
+        ...(fileConfig.vba?.errorChannel ?? []),
+      ])]
+    : undefined;
   if (
     mergedTargets
     || mergedMaxRaiseFanout !== undefined
     || mergedDysflowExport !== undefined
     || mergedSqlWrappers !== undefined
+    || mergedErrorChannel !== undefined
   ) {
     vba = {};
     if (mergedTargets) vba.targets = mergedTargets;
     if (mergedMaxRaiseFanout !== undefined) vba.maxRaiseFanout = mergedMaxRaiseFanout;
     if (mergedDysflowExport !== undefined) vba.dysflowExport = mergedDysflowExport;
     if (mergedSqlWrappers !== undefined) vba.sqlWrappers = mergedSqlWrappers;
+    if (mergedErrorChannel !== undefined) vba.errorChannel = mergedErrorChannel;
   }
 
   const config: ParsedConfig = {

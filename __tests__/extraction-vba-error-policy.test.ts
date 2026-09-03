@@ -214,7 +214,11 @@ describe('Issue #259: the handler region', () => {
     expect(p.handlerEndLine).toBe(9);
   });
 
-  it('leaves `behavior` null — it is derived in E3, not guessed here', () => {
+  it('names `behavior` from the handler body (issue #260 filled in E2\'s null)', () => {
+    // E2 shipped this field as a hard `null` and said E3 would derive it.
+    // Issue #260 did; the full behaviour matrix lives in
+    // `extraction-vba-error-handler-region.test.ts`. This assertion stays
+    // here so the field's OWNER — the object E2 builds — keeps a test.
     const { nodes } = extract([
       'Public Sub Guardar()',
       '    On Error GoTo errores',
@@ -225,7 +229,18 @@ describe('Issue #259: the handler region', () => {
       'End Sub',
     ]);
 
-    expect(policy(nodes, 'Guardar').behavior).toBeNull();
+    expect(policy(nodes, 'Guardar').behavior).toBe('display');
+  });
+
+  it('leaves `behavior` null when there is no handler to describe', () => {
+    const { nodes } = extract([
+      'Public Sub Sin()',
+      '    Call Escribir',
+      'End Sub',
+    ]);
+
+    expect(policy(nodes, 'Sin').protection).toBe('none');
+    expect(policy(nodes, 'Sin').behavior).toBeNull();
   });
 });
 

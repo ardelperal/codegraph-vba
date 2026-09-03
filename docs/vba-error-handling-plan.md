@@ -18,7 +18,7 @@ Filed against `ardelperal/codegraph-vba` on 2026-09-01. Epic: **#264**.
 |---|---|---|
 | E1 error metrics in the probe | #258 | approved |
 | E2 `errorPolicy` on the procedure node | #259 | approved |
-| E3 mark edges inside a handler | #260 | approved — needs #265 |
+| E3 mark edges inside a handler | #260 | landed |
 | E4 recognise the error channel | #261 | approved — needs #251 |
 | E5 publish the queries | #262 | approved |
 | E6 label nodes + `handles-error` edges | #263 | approved — full design in the issue: `label` kind, `handles-error` kind, +30% nodes budgeted, no call re-parenting |
@@ -510,6 +510,51 @@ wrong, and this task should not encode the ambiguity.
 
 **Changelog (New Features).** "Calls that only run when something goes wrong are now marked as
 such, so a procedure's error path can be told apart from its normal one."
+
+**Status — landed (#260).** The dependency question above is resolved: **#265** made the two
+unambiguous statement-call forms (`Call X`, `X arg1, arg2`) classify as `calls`, so the
+`behavior` classifier reads real calls rather than bare-identifier reads.
+
+`metadata.inErrorHandler` is stamped at ONE place — `closeErrorPolicy` in
+`src/extraction/vba/errors.ts`, over the procedure's own slice of `ctx.edges` /
+`ctx.unresolvedReferences` — rather than in each of the six emitters, so a new emitter inherits
+it. `ctx.inErrorHandler(lineNum)` exposes the same predicate to anything that needs it during
+the walk.
+
+`behavior` mirrors the probe's classifier by hand — the same channel-write matcher, the same
+display-call list, the same `Err.Raise` test, the same statement splitter with its `If … Then`
+guard strip, and the same "`mixed` means more than one signal" rule. The probe cannot import the
+extractor (it must also run against a shipped `dist/`), so the two copies are kept in sync by
+hand: change one, change the other.
+`__tests__/extraction-vba-error-handler-region.test.ts` runs BOTH classifiers over one fixture
+and asserts they agree procedure by procedure, so a fork fails there rather than in a corpus
+re-measurement nobody runs.
+
+Measured over the three corpus projects, the extractor's distribution is **identical to the
+probe's**, procedure by procedure — 0 disagreements over all 4,817:
+
+| `behavior` | Procedures |
+|---|--:|
+| `channel` | 2,681 |
+| `mixed` | 921 |
+| `unknown` | 106 |
+| `display` | 52 |
+| `reraise` | 14 |
+| `null` (no handler: 227 resume-next + 816 unprotected) | 1,043 |
+
+This is the **exclusive** table of §2.3, not the raw signal totals — the ~970 `display` /
+~2,788 `channel` figures the task was written against were the non-exclusive counts
+(3,602 channel / 971 display / 16 re-raise as raw signals), which the probe already superseded.
+
+Totals are unchanged, as required: 26,089 nodes, 29,521 edges and 26,755 unresolved references
+on this branch and on `origin/main`, with identical `nodesByKind` / `edgesByKind` /
+`unresolvedByKind` breakdowns. 57 edges and 2,823 unresolved references gained the flag.
+
+One shape the corpus turned out NOT to have: a handler label carrying a trailing statement on
+its own line (`errores: MsgBox "x"`) occurs **0 times** in 3,774 handlers. The `behavior`
+signals read that trailing statement anyway, because the probe does; the `inErrorHandler` flag
+uses `[handlerStartLine, handlerEndLine]` — the region published on the node — so an edge
+emitted on the label's own line would not be flagged. On this corpus the two can never disagree.
 
 ---
 

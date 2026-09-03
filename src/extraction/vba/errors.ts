@@ -1,5 +1,6 @@
 /**
- * Error-policy sweep (issue #259, task E2 of `docs/vba-error-handling-plan.md`).
+ * Error-policy sweep (issue #259, task E2 of `docs/vba-error-handling-plan.md`,
+ * extended by issue #260 / task E3).
  *
  * Records how each procedure handles errors as an `errorPolicy` object on the
  * `function` node the procedures sweep already emitted. It adds **zero node
@@ -10,6 +11,13 @@
  * labels are the same label (`errores`) doing the same job, so a label node
  * would carry exactly one bit — "a handler exists" — which is a boolean field.
  *
+ * Issue #260 keeps that invariant while making the handler region visible on
+ * the graph the extractor already builds: every edge and every unresolved
+ * reference emitted from inside a handler gets `metadata.inErrorHandler:
+ * true`, so `Riesgo.Guardar -> MsgBox` (runs only on failure) stops looking
+ * identical to `Riesgo.Guardar -> Escribir` (runs always). It is a field
+ * added to existing rows — no row is created, dropped or reordered.
+ *
  * ## What it answers
  *
  *   - "Which risky procedures have no error handling at all?" (§3.1) —
@@ -17,6 +25,9 @@
  *     procedure body has no text to match.
  *   - "Which `On Error Resume Next` scopes are never closed?" (§3.2) —
  *     `resumeNextOpen: true`.
+ *   - "Where does an error surface to the user?" (§3.3) — `behavior`.
+ *   - "What does this procedure do ONLY when things go wrong?" (§3.4) — the
+ *     edges and references carrying `metadata.inErrorHandler`.
  *
  * ## The precision gate
  *
@@ -65,6 +76,7 @@ import { maskStringContent } from './text-utils';
 import {
   VbaClassifier,
   VbaExtractorContext,
+  VbaErrorHandlerSignals,
   VbaErrorPolicy,
   VbaErrorPolicyState,
 } from './context';
@@ -120,8 +132,131 @@ const NOT_A_LABEL = new Set([
   'then', 'wend', 'while', 'with', 'rem', 'call', 'set', 'let', 'dim',
 ]);
 
+/* ─────────────────── handler behaviour (issue #260, task E3) ───────────── */
+
+/**
+ * The error-propagation channel this corpus actually uses: a module-level or
+ * object field the failing procedure writes and the caller reads. §2.3 of the
+ * plan measures 3,602 handlers touching it against 16 that re-raise — VBA's
+ * own error mechanism unwinds one frame, the MESSAGE travels through one of
+ * these variables.
+ *
+ * Names only, never substrings, so `ErrorCount` cannot match `Error`.
+ *
+ * Identical to the probe's `DEFAULT_ERROR_CHANNEL_NAMES`. Task **E4** turns
+ * this into the `vba.errorChannel` config knob and threads it through
+ * `VbaExtractionOptions`; until then both classifiers read the same four
+ * hard-coded defaults, which is what keeps their distributions comparable.
+ */
+export const DEFAULT_ERROR_CHANNEL_NAMES: readonly string[] = [
+  'm_Error',
+  'p_Error',
+  'g_Error',
+  'Error',
+];
+
+/**
+ * Calls that make an error visible to a human. `MsgBox` is the form-code
+ * shape, `Debug.Print` the developer-only one; §2.3 counts both as "display",
+ * so this list — identical to the probe's `DEFAULT_DISPLAY_CALLS` — does too.
+ */
+export const DEFAULT_DISPLAY_CALLS: readonly string[] = ['MsgBox', 'Debug.Print'];
+
+function escapeRe(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * A write to the error channel: the channel name in the assignment-TARGET
+ * position of a statement — bare (`p_Error = …`), `Me.`-qualified
+ * (`Me.Error = …`) or object-qualified (`obj.Error = …`).
+ *
+ * Anchoring at the start of the statement is the whole precision of this
+ * matcher: it is what separates a WRITE from a READ, so the house guard
+ * `If m_Error <> "" Then` and the copy `x = m_Error` both correctly miss.
+ * Kept identical to the probe's `buildChannelWriteMatcher`.
+ */
+const CHANNEL_WRITE_RES: readonly RegExp[] = DEFAULT_ERROR_CHANNEL_NAMES.map(
+  (name) =>
+    new RegExp(
+      `^\\s*(?:Set\\s+)?(?:(?:Me|\\p{L}[\\p{L}\\p{N}_]*)\\s*\\.\\s*)?${escapeRe(name)}\\s*=(?!=)`,
+      'iu',
+    ),
+);
+
+/** `MsgBox` / `Debug.Print`, anywhere in the statement. The probe's twin. */
+const DISPLAY_CALL_RES: readonly RegExp[] = DEFAULT_DISPLAY_CALLS.map(
+  (call) =>
+    new RegExp(`\\b${call.split('.').map(escapeRe).join('\\s*\\.\\s*')}\\b`, 'i'),
+);
+
+/** `Err.Raise` — the frame re-throws. The probe's twin. */
+const ERR_RAISE_RE = /\bErr\s*\.\s*Raise\b/i;
+
+/**
+ * Split a masked line into statements and strip any leading `If … Then` /
+ * `ElseIf … Then` / `Else` guard, so the house shape
+ * `If Err.Number <> 1000 Then p_Error = "…"` presents `p_Error = "…"` to the
+ * channel matcher as a statement in its own right.
+ *
+ * This is also what makes the corpus's fifth most common handler shape —
+ * `DoCmd.Hourglass False` cleanup first, the guarded channel write second —
+ * classify as `channel`: the signals are collected per statement over the
+ * WHOLE region, so a leading call cannot shadow a later write.
+ *
+ * Kept identical to the probe's `statementsOf`.
+ */
+function statementsOf(maskedLine: string): string[] {
+  return maskedLine.split(':').map((part) => {
+    const guard = /^\s*(?:(?:If|ElseIf)\b.*?\bThen\b|Else\b)/i.exec(part);
+    return guard ? part.slice(guard[0].length) : part;
+  });
+}
+
+/** The three signals one masked line (or line fragment) fires, if any. */
+function signalsOf(maskedText: string): VbaErrorHandlerSignals | null {
+  const channel = statementsOf(maskedText).some((statement) =>
+    CHANNEL_WRITE_RES.some((re) => re.test(statement)),
+  );
+  const display = DISPLAY_CALL_RES.some((re) => re.test(maskedText));
+  const reraise = ERR_RAISE_RE.test(maskedText);
+  if (!channel && !display && !reraise) return null;
+  return { channel, display, reraise };
+}
+
+/**
+ * Record what one masked line contributes to the open body's handler
+ * behaviour: the whole line under {@link VbaErrorPolicyState.signalsByLine},
+ * and — when the line defines a label — its trailing statement separately
+ * under `labelRestSignals`, so a region opened by `errores: MsgBox "x"` reads
+ * the `MsgBox` without reading the label.
+ *
+ * No-op outside a procedure body.
+ */
+function recordHandlerSignals(
+  state: VbaErrorPolicyState | null,
+  maskedLine: string,
+  lineNum: number,
+): void {
+  if (!state) return;
+
+  const whole = signalsOf(maskedLine);
+  if (whole) state.signalsByLine.set(lineNum, whole);
+
+  const label = LINE_LABEL_RE.exec(maskedLine);
+  if (!label) return;
+  const name = label[1] ?? '';
+  if (!name || NOT_A_LABEL.has(name.toLowerCase())) return;
+  const rest = signalsOf(maskedLine.slice(label[0].length));
+  if (rest) state.labelRestSignals.set(lineNum, rest);
+}
+
 /** A fresh accumulator for a procedure body opening at `startLine`. */
-export function newErrorPolicyState(startLine: number): VbaErrorPolicyState {
+export function newErrorPolicyState(
+  startLine: number,
+  edgeMark: number,
+  refMark: number,
+): VbaErrorPolicyState {
   return {
     startLine,
     protection: 'none',
@@ -131,6 +266,10 @@ export function newErrorPolicyState(startLine: number): VbaErrorPolicyState {
     lastScopeEvent: null,
     openedTarget: null,
     handlerStartLine: null,
+    edgeMark,
+    refMark,
+    signalsByLine: new Map(),
+    labelRestSignals: new Map(),
   };
 }
 
@@ -328,9 +467,9 @@ export function closeErrorPolicy(
     handlerLabel: labelKey ? (state.targets.get(labelKey) ?? null) : null,
     handlerStartLine: state.handlerStartLine,
     handlerEndLine: state.handlerStartLine === null ? null : endLine,
-    // Task E3 derives this, where the handler body's calls are already being
-    // classified. Emitting a guess here would be fabrication.
-    behavior: null,
+    // Issue #260 (task E3): derived below, from the signals collected over
+    // the handler region this function has just finished resolving.
+    behavior: classifyBehavior(state, best, endLine),
     handlerCount: state.handlerCount,
     resumeNextOpen: state.lastScopeEvent?.opens ?? false,
     danglingTarget: danglingKey
@@ -338,10 +477,113 @@ export function closeErrorPolicy(
       : null,
   };
 
+  // Issue #260: THE single stamping point. Every edge and every unresolved
+  // reference this procedure body emitted is already in `ctx`, so one pass
+  // over its own slice of the two accumulators flags all of them — instead
+  // of six emitters each remembering a flag, which is six places to forget
+  // it. New emitters inherit the behaviour for free.
+  markErrorHandlerRegion(ctx, state, policy);
+
   const node = ctx.functionNodeByStartLine.get(state.startLine);
   if (!node) return;
   if (!node.metadata) node.metadata = {};
   node.metadata.errorPolicy = policy;
+}
+
+/**
+ * Issue #260: fold the per-line signals collected over the whole body down to
+ * the handler region, and name the result.
+ *
+ * Only a `handler`-protected procedure gets a `behavior` at all: an
+ * `On Error Resume Next` body has no handler to describe, and neither does an
+ * unprotected one, so both stay `null`. A `handler` procedure whose region is
+ * empty — or whose target label is never defined — is `unknown`, not `null`:
+ * "it handles errors and does nothing recognisable with them" is a different
+ * fact from "it does not handle errors". Both rules are the probe's.
+ *
+ * `mixed` is what MORE THAN ONE signal means. The three are collected
+ * independently precisely so evaluation order cannot silently pick a winner —
+ * §2.3 of the plan reports 921 handlers that both record the error AND show
+ * it, and the pre-probe classifier hid every one of them behind whichever
+ * test it happened to run first.
+ */
+function classifyBehavior(
+  state: VbaErrorPolicyState,
+  region: { key: string; line: number } | null,
+  endLine: number,
+): VbaErrorPolicy['behavior'] {
+  if (state.protection !== 'handler') return null;
+
+  const signals: VbaErrorHandlerSignals = {
+    channel: false,
+    display: false,
+    reraise: false,
+  };
+  if (region) {
+    const merge = (part: VbaErrorHandlerSignals | undefined): void => {
+      if (!part) return;
+      signals.channel ||= part.channel;
+      signals.display ||= part.display;
+      signals.reraise ||= part.reraise;
+    };
+    // The label's own line contributes ONLY its trailing statement — the
+    // `errores: MsgBox "x"` one-liner form — because the label itself is not
+    // handler code. Every later line contributes in full.
+    merge(state.labelRestSignals.get(region.line));
+    for (const [line, part] of state.signalsByLine) {
+      if (line > region.line && line <= endLine) merge(part);
+    }
+  }
+
+  const hit = (['channel', 'display', 'reraise'] as const).filter(
+    (name) => signals[name],
+  );
+  if (hit.length === 0) return 'unknown';
+  if (hit.length === 1) return hit[0]!;
+  return 'mixed';
+}
+
+/**
+ * Issue #260: stamp `metadata.inErrorHandler: true` on every edge and every
+ * unresolved reference this procedure emitted from inside its handler region.
+ *
+ * Scoped two ways, and both matter:
+ *
+ *   - by POSITION in the accumulators (`edgeMark` / `refMark`, taken when the
+ *     body opened), so the scan is per-procedure rather than per-file and a
+ *     module with N procedures stays linear rather than quadratic;
+ *   - by LINE against `[handlerStartLine, handlerEndLine]`, the exact region
+ *     published on the node. A row with no line — a `contains` edge, say — is
+ *     structural, not emitted from a statement, and is never flagged.
+ *
+ * The flag is only ever set to `true`; its ABSENCE is the "not in a handler"
+ * encoding, so this adds a key to a minority of rows instead of a `false` to
+ * every one of them. Nothing here creates, drops or reorders a row.
+ */
+function markErrorHandlerRegion(
+  ctx: VbaExtractorContext,
+  state: VbaErrorPolicyState,
+  policy: VbaErrorPolicy,
+): void {
+  const start = policy.handlerStartLine;
+  const end = policy.handlerEndLine;
+  if (start === null || end === null) return;
+
+  for (let i = state.edgeMark; i < ctx.edges.length; i++) {
+    const edge = ctx.edges[i];
+    if (!edge || edge.line === undefined) continue;
+    if (edge.line < start || edge.line > end) continue;
+    if (!edge.metadata) edge.metadata = {};
+    edge.metadata.inErrorHandler = true;
+  }
+
+  for (let i = state.refMark; i < ctx.unresolvedReferences.length; i++) {
+    const ref = ctx.unresolvedReferences[i];
+    if (!ref) continue;
+    if (ref.line < start || ref.line > end) continue;
+    if (!ref.metadata) ref.metadata = {};
+    ref.metadata.inErrorHandler = true;
+  }
 }
 
 /**
@@ -367,12 +609,23 @@ export function createErrorPolicyClassifier(): VbaClassifier {
       // this line, so no second `PROC_RE` dispatch is needed.
       if (ctx.functionNodeByStartLine.has(lineNum)) {
         closeErrorPolicy(ctx, lineNum - 1);
-        ctx.vbaErrorPolicy = newErrorPolicyState(lineNum);
+        ctx.vbaErrorPolicy = newErrorPolicyState(
+          lineNum,
+          ctx.edges.length,
+          ctx.unresolvedReferences.length,
+        );
       }
 
       runRules(RULES, ctx, line, maskedLine, lineNum, {
         'inside-procedure': ctx.vbaErrorPolicy !== null,
       });
+
+      // Issue #260: collect this line's handler signals for the OPEN body.
+      // Collected for the whole body, not just the region: the region's first
+      // line is only certain once the body has been fully read, so
+      // `closeErrorPolicy` does the filtering. Sparse — a line with no signal
+      // stores nothing, which is the overwhelming majority of them.
+      recordHandlerSignals(ctx.vbaErrorPolicy, maskedLine, lineNum);
 
       // Procedure END. Deliberately independent of the start branch above: a
       // colon-separated single-line procedure carries both markers (#208).

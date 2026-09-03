@@ -56,6 +56,37 @@ const LEADING_SET_RE = /^\s*Set\s+$/i;
 const seenModuleVarRefs = new WeakMap<VbaExtractorContext, Set<string>>();
 
 /**
+ * Issue #292: `On Error` is a statement keyword pair, not a variable read.
+ *
+ * `Public Error As String` is this codebase's error-channel convention and
+ * appears in dozens of classes, so without this mask every
+ * `On Error GoTo errores` line reports a `property-get` of a module variable
+ * named `Error` — 909 of them across the corpus. On its own that is a stray
+ * edge; once E4 labels channel references it becomes a confident claim that
+ * the line participates in error propagation, which is the worst failure mode
+ * available here.
+ *
+ * Replaced with spaces of the SAME LENGTH, deliberately: the emitted
+ * reference carries `column: m.index`, so a substitution that shifted offsets
+ * would corrupt every column on the line.
+ *
+ * Scoped to the `On Error` pair only. VBA also spells the `Error` statement
+ * (`Error 5`) and the `Error$()` function with the same word, and both have
+ * zero occurrences in this corpus; telling those from an identically-named
+ * variable is a parser problem rather than a masking one, so they are left
+ * for a corpus that actually contains them.
+ */
+const ON_ERROR_KEYWORD_RE = /\bOn\s+Error\b/gi;
+
+/** Blank out the `On Error` keyword pair, preserving every column offset. */
+function maskOnErrorKeyword(line: string): string {
+  ON_ERROR_KEYWORD_RE.lastIndex = 0;
+  if (!ON_ERROR_KEYWORD_RE.test(line)) return line;
+  ON_ERROR_KEYWORD_RE.lastIndex = 0;
+  return line.replace(ON_ERROR_KEYWORD_RE, (match) => ' '.repeat(match.length));
+}
+
+/**
  * Scan one procedure-body line for reads and writes of this module's
  * module-level variables.
  *
@@ -81,9 +112,12 @@ export function scanModuleVariableReferences(
     seenModuleVarRefs.set(ctx, seen);
   }
 
+  // Issue #292: mask the `On Error` keyword pair before the identifier walk.
+  const scanLine = maskOnErrorKeyword(line);
+
   IDENTIFIER_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = IDENTIFIER_RE.exec(line)) !== null) {
+  while ((m = IDENTIFIER_RE.exec(scanLine)) !== null) {
     const name = m[0];
     const key = name.toLowerCase();
     if (!ctx.moduleVariables.has(key)) continue;
@@ -92,11 +126,11 @@ export function scanModuleVariableReferences(
     // `obj.gblConn` / `Me!gblConn` names a member of something else that
     // happens to be spelled like this module's variable. The module
     // variable itself is only ever reached by its bare name.
-    const previous = m.index > 0 ? line.charAt(m.index - 1) : '';
+    const previous = m.index > 0 ? scanLine.charAt(m.index - 1) : '';
     if (previous === '.' || previous === '!') continue;
 
-    const before = line.slice(0, m.index);
-    const after = line.slice(m.index + name.length);
+    const before = scanLine.slice(0, m.index);
+    const after = scanLine.slice(m.index + name.length);
     const isWrite = isDirectAssignment(before.replace(LEADING_SET_RE, ''), after);
     const referenceKind = isWrite ? 'property-set' : 'property-get';
 

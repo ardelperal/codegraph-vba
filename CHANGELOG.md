@@ -9,6 +9,15 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- Release notes published to GitHub now carry every section of the changelog. A section whose heading was more than one word — such as the list of new features — could be dropped from the published notes without any warning, which is how v1.16.0 shipped with its entire feature list missing. Those entries have been restored to the changelog. (#296)
+- Each version heading in the changelog now links to this project's own release instead of a different project's, where the tag does not exist. (#296)
+- Publishing a release now refuses to run from anywhere but the project's main branch, so the changelog update it makes can no longer be left behind on a temporary branch and lost. (#296)
+
+
+## [1.16.0] - 2026-09-03
+
 ### New Features
 
 - Module-level variables are now part of the graph, so shared state can be traced to the procedures that read and write it. (#251)
@@ -193,12 +202,13 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Closed ArkTS test database handles before removing temporary directories, preventing Windows `EBUSY`/`EPERM` teardown failures.
-[1.7.3]: https://github.com/colbymchenry/codegraph/releases/tag/v1.7.3
-[1.8.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.8.0
-[1.9.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.9.0
-[1.10.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.10.0
-[1.11.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.11.0
-[1.12.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.12.0
-[1.13.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.13.0
-[1.14.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.14.0
-[1.15.0]: https://github.com/colbymchenry/codegraph/releases/tag/v1.15.0
+[1.7.3]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.7.3
+[1.8.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.8.0
+[1.9.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.9.0
+[1.10.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.10.0
+[1.11.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.11.0
+[1.12.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.12.0
+[1.13.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.13.0
+[1.14.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.14.0
+[1.15.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.15.0
+[1.16.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.16.0

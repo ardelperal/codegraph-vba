@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.17.2] - 2026-09-12
+
 ### Fixes
 
 - Fork documentation now describes v1.17.1 capabilities and pins the integrated upstream v1.4.1 lineage, replacing stale version, feature-parity, and implementation-plan claims. (#312)
@@ -244,3 +247,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.16.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.16.0
 [1.17.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.17.0
 [1.17.1]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.17.1
+[1.17.2]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.17.2

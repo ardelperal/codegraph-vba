@@ -1,0 +1,18 @@
+Version =21
+VersionRequired =20
+PublishOption =1
+Checksum =-2222222222
+Begin Form
+    Caption ="Invoices"
+    RecordSource ="tblInvoiceHeaders"
+    Width =10000
+    Height =6000
+    Begin CommandButton
+        Name ="btnSave"
+        Caption ="Save"
+        Left =1000
+        Top =1000
+        Width =1500
+        Height =400
+    End
+End

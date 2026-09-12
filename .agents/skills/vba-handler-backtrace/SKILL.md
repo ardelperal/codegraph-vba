@@ -13,11 +13,28 @@ This skill is triggered when tracing VBA event flows, diagnosing execution flow 
 ## Step-by-Step Execution Guide
 
 ### Step 1: Trace Control Event Handlers (Graph Traversal)
-1. Use the `traverseGraph` helper to trace call paths starting from a control node (e.g., `btnSave`) or event handler.
-2. Recursively trace outgoing relationship edges (`defines-event`, `calls`, etc.) in the SQLite database:
+1. Resolve the starting node FIRST, scoped to its layout. Control nodes are
+   `form-instance-control`, forms and reports are `form-layout` /
+   `report-layout`. The same control name (`btnSave`) exists on several forms,
+   so match on the layout file too — never on the name alone.
+2. Use the `traverseGraph` helper with that node id. It follows the two
+   directions the extractor actually stores:
+   - an `event-handler` edge is stored HANDLER -> control/layout, so the
+     handler is reached by following it BACKWARDS from the control;
+   - a call is followed forwards, through `calls` edges and through the
+     `references` edge the resolver stores for VBA's statement-form Sub call
+     (a bare `SaveRecord` on its own line is ambiguous at parse time, so it is
+     resolved as a reference to the procedure, not as `calls`).
+   Containment, typing and data references (tables, saved queries) are NOT
+   call steps and never appear as children.
+3. Handle the result envelope:
    - Node attributes `id`, `name`, and `kind` must be retrieved.
-   - Set maximum search depth to prevent excessive execution (default is `10` unless custom is specified).
+   - Set maximum search depth to prevent excessive execution (default is `10` unless custom is specified); an exceeded depth reports `MAX_DEPTH_EXCEEDED`.
+   - An unknown start node reports `tree: null` and `START_NODE_NOT_FOUND` — that is a lookup miss, not proof the control has no handler.
    - Trace circular dependencies using the `visited` node set tracking logic. If a cycle is detected, flag `cycle_detected: true` and terminate branch expansion.
+4. The trace is STATIC evidence from exported source. It does not prove the
+   handler ran, and it does not say whether the `.accdb` binary matches the
+   export.
 
 ### Step 2: Extract Signature Custom UDT Parameters
 1. Use the `parseSignatureParams` helper to parse subroutine or function signatures.
@@ -39,14 +56,14 @@ Format the final trace tree and extraction metadata into the following schema:
 ```json
 {
   "tree": {
-    "id": "btnSave",
+    "id": "Form_Orders.form.txt::btnSave",
     "name": "btnSave",
-    "kind": "control",
+    "kind": "form-instance-control",
     "children": [
       {
-        "id": "btnSave_Click",
+        "id": "Form_Orders.cls::btnSave_Click",
         "name": "btnSave_Click",
-        "kind": "event",
+        "kind": "function",
         "children": [
           {
             "id": "SaveRecord",

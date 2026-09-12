@@ -43,6 +43,8 @@ import {
 } from '../src/resolution/frameworks';
 import type { FrameworkResolver } from '../src/resolution/types';
 import CodeGraph from '../src/index';
+import { DatabaseSync } from 'node:sqlite';
+import { getCodeGraphDir } from '../src/directory';
 
 // ---------------------------------------------------------------------------
 // Fixture gate: every test builds its OWN isolated temp project so config and
@@ -292,7 +294,11 @@ describe('Test B: dysflowExportResolver ÔÇö shape and registration', () => {
     expect(resolver).toBeDefined();
     expect(resolver.name).toBe('dysflow-export');
     expect(typeof resolver.detect).toBe('function');
-    expect(typeof resolver.extract).toBe('function');
+    // Issue #314: the resolver deliberately has NO `extract()`. Per-file
+    // dispatch of the 3 Dysflow sub-extractors lives in the VBA branch of
+    // `extractFromSource` (`src/extraction/tree-sitter.ts`). An `extract()`
+    // here would run them a SECOND time for every Dysflow artifact.
+    expect(resolver.extract).toBeUndefined();
   });
 
   it('is registered in the framework resolver registry', () => {
@@ -419,5 +425,111 @@ describe('Test C: dysflowExport: true (the default) ÔÇö behavior matches the 
     );
     expect(manifestRefs).toHaveLength(1);
     expect(manifestRefs[0]?.referenceName).toBe('Test_X_RunAll');
+  });
+});
+
+describe('Test D: issue #314 — the dysflow-export framework must not re-extract', () => {
+  // The real index path ALWAYS passes the detected framework names into
+  // `extractFromSource`, and `dysflowExportResolver.detect()` returns true for
+  // every project that carries a Dysflow artifact. So `frameworkNames:
+  // ['dysflow-export']` + `dysflowExport: true` is the combination production
+  // runs on — and the combination no test covered before this one, which is
+  // how the double extraction shipped.
+  const CASES: Array<[string, string, string]> = [
+    ['form', 'src/forms/Form_Dup.form.txt', FORM_SRC],
+    ['manifest', 'tests/tests.vba.smoke.json', TEST_MANIFEST_SRC],
+    ['sequence', 'tests/sequences/dup.json', TEST_SEQUENCE_SRC],
+  ];
+
+  it.each(CASES)(
+    'a %s emits the same nodes and references with and without the framework registered',
+    (_kind, filePath, source) => {
+      const without = extractFromSource(filePath, source, 'vba');
+      const withFramework = extractFromSource(
+        filePath,
+        source,
+        'vba',
+        ['dysflow-export'],
+        undefined,
+        undefined,
+        true,
+      );
+
+      expect(withFramework.nodes.map((n) => n.id)).toEqual(
+        without.nodes.map((n) => n.id),
+      );
+      expect(
+        withFramework.unresolvedReferences.map((u) => u.referenceName),
+      ).toEqual(without.unresolvedReferences.map((u) => u.referenceName));
+    },
+  );
+
+  it.each(CASES)(
+    'a %s emits no duplicate node ids when the framework is registered',
+    (_kind, filePath, source) => {
+      const r = extractFromSource(
+        filePath,
+        source,
+        'vba',
+        ['dysflow-export'],
+        undefined,
+        undefined,
+        true,
+      );
+      const ids = r.nodes.map((n) => n.id);
+      expect(new Set(ids).size).toBe(ids.length);
+    },
+  );
+
+  it('the dysflowExport: false opt-out still wins with the framework registered', () => {
+    const r = extractFromSource(
+      'src/forms/Form_Dup.form.txt',
+      FORM_SRC,
+      'vba',
+      ['dysflow-export'],
+      undefined,
+      undefined,
+      false,
+    );
+    expect(r.nodes).toHaveLength(1);
+    expect(r.nodes[0]?.kind).toBe('file');
+    expect(r.unresolvedReferences).toHaveLength(0);
+  });
+
+  it('indexing a Dysflow project stores each manifest and sequence reference once', async () => {
+    // No `.bas` defines the referenced procedures on purpose: a ref that
+    // resolves is consumed, and only a ref that stays unresolved is still
+    // countable in `unresolved_refs` after indexing.
+    const dir = freshProject({
+      'tests/tests.vba.smoke.json': TEST_MANIFEST_SRC,
+      'tests/sequences/dup.json': TEST_SEQUENCE_SRC,
+    });
+    const cg = await CodeGraph.init(dir, { index: false });
+    openProjects.push({ cg, dir });
+    await cg.indexAll();
+
+    // Read the stored refs directly: node ids are deterministic, so duplicate
+    // NODES collapse on insert and only `unresolved_refs` exposes the double
+    // extraction. One row per manifest entry and per sequence procedure.
+    const db = new DatabaseSync(
+      path.join(getCodeGraphDir(dir), 'codegraph.db'),
+      { readOnly: true },
+    );
+    try {
+      const rows = db
+        .prepare(
+          `select file_path, reference_name, count(*) as c
+             from unresolved_refs
+            where file_path like '%.json'
+            group by file_path, reference_name`,
+        )
+        .all() as Array<{ file_path: string; reference_name: string; c: number }>;
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) {
+        expect({ ...row, c: row.c }).toEqual({ ...row, c: 1 });
+      }
+    } finally {
+      db.close();
+    }
   });
 });

@@ -2,11 +2,11 @@
 
 # CodeGraph (VBA & Access Fork)
 
-## 🎉 1.5 Released — VBA conditional-compilation is now correct + TempVars/RecordSource/RowSource indexed
+## v1.17.1 Released — Bounded Access Behavior Evidence and Layout-Aware Handler Lookup
 
 Already installed? Run `codegraph-vba upgrade` to update in place.
 
-Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
+Follow the upstream project at [@getcodegraph](https://x.com/getcodegraph) on X for upstream updates.
 
 ### Supercharge Claude Code, Cursor, Codex, OpenCode, Hermes Agent, Gemini, Antigravity, and Kiro with Semantic Code Intelligence
 
@@ -18,7 +18,9 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 > This repository is a fork of the official [CodeGraph](https://github.com/colbymchenry/codegraph). 
 > It is renamed to **`codegraph-vba`** to avoid name collisions and features custom parser support for **VBA (Visual Basic for Applications)** and **MS Access** applications.
 
-### [Official Documentation & Website →](https://colbymchenry.github.io/codegraph/)
+### [Upstream Documentation & Website →](https://colbymchenry.github.io/codegraph/)
+
+> These pages describe upstream CodeGraph. Features added there after the integrated v1.4.1 base are not automatically available in this fork.
 
 [![Windows](https://img.shields.io/badge/Windows-supported-blue.svg)](#supported-platforms)
 [![macOS](https://img.shields.io/badge/macOS-supported-blue.svg)](#supported-platforms)
@@ -35,11 +37,11 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 <br>
 
-**The CodeGraph platform is coming** — for every PR, know exactly what to test, what could break, which flows are affected, and whether business logic is compromised.
+**The upstream CodeGraph platform is coming** — for every PR, know exactly what to test, what could break, which flows are affected, and whether business logic is compromised.
 
 <a href="https://getcodegraph.com"><img alt="Join the waitlist for early beta access" src="https://raw.githubusercontent.com/colbymchenry/codegraph/main/assets/waitlist.svg?v=2" height="52"></a>
 
-<sub>Get <b>early beta access</b> to the hosted product · <a href="https://getcodegraph.com">getcodegraph.com</a></sub>
+<sub>Get <b>early beta access</b> to the upstream hosted product · <a href="https://getcodegraph.com">getcodegraph.com</a></sub>
 
 </div>
 
@@ -47,7 +49,11 @@ Follow [@getcodegraph](https://x.com/getcodegraph) on X for updates.
 
 ## This is a fork — VBA / Access + Dysflow
 
-This repository is a fork of [`colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph), maintained at [`ardelperal/codegraph-vba`](https://github.com/ardelperal/codegraph-vba). It is **identical to the upstream for every language except VBA / Access** — the fork adds nothing new to TypeScript, Python, Go, Rust, Java, etc., and is kept rebased against `colbymchenry/codegraph:main` so it stays current with upstream fixes and benchmarks.
+This repository is maintained at [`ardelperal/codegraph-vba`](https://github.com/ardelperal/codegraph-vba). It extends CodeGraph with VBA / Access analysis and fork-specific integration changes; it is not guaranteed identical to current upstream for other languages.
+
+The integrated upstream base is **v1.4.1**, commit [`ecc8b30`](https://github.com/colbymchenry/codegraph/commit/ecc8b307ac2f8a7d06bff02ee513c4ea2380b2f8), merged through [`910c7bb`](https://github.com/ardelperal/codegraph-vba/commit/910c7bb09fcc1e681e86803f93fffdb758086a22). Upstream v1.6.0 is not integrated. Fork and upstream versions are independent.
+
+See [fork capabilities and lineage](docs/fork-capabilities.md) for the delivered VBA, Access data/UI, error-analysis, and behavior-evidence scope.
 
 **Why fork?** To add VBA / Access language support that does not exist upstream, so agents can navigate Microsoft Access projects managed by Dysflow the same way they navigate TypeScript or Python today. See the [VBA / Access + Dysflow integration](#vba--access--dysflow-integration) section below for the feature spec, the pattern table, and the hard invariants.
 
@@ -70,7 +76,7 @@ pnpm run build            # produces dist/bin/codegraph.js
 # The binary is now at dist/bin/codegraph.js — point your agent's MCP at this path
 ```
 
-**If you do not need VBA / Access support**, install the upstream package instead — it is otherwise identical and gets released more frequently:
+**If you do not need VBA / Access support**, consider the upstream package instead. It follows its own release line; check its documentation rather than assuming feature parity:
 
 ```bash
 npm i -g @colbymchenry/codegraph

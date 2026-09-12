@@ -1,7 +1,7 @@
 # Changelog
 
 All notable changes to CodeGraph are documented here. Each entry also ships as
-a [GitHub Release](https://github.com/colbymchenry/codegraph/releases) tagged
+a [GitHub Release](https://github.com/ardelperal/codegraph-vba/releases) tagged
 `vX.Y.Z`, which is where most people will look.
 
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- Fork documentation now describes v1.17.1 capabilities and pins the integrated upstream v1.4.1 lineage, replacing stale version, feature-parity, and implementation-plan claims. (#312)
 
 ## [1.17.1] - 2026-09-12
 

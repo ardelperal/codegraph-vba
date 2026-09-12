@@ -1,60 +1,37 @@
-# Fork notes
+# Notas del fork
 
-Este fork de [`colbymchenry/codegraph`](https://github.com/colbymchenry/codegraph)
-añade soporte para indexar proyectos Microsoft Access / VBA
-(`.bas`, `.cls`, `.form.txt`, `.report.txt`).
+`codegraph-vba` amplía CodeGraph para analizar proyectos VBA, Microsoft Access y exportaciones de Dysflow.
 
-## Por qué
+El alcance publicado hasta `v1.17.1` y el linaje upstream verificado se recogen en [Capacidades del fork](docs/fork-capabilities.md).
 
-El upstream no incluye VBA en su mapa de extensiones
-(`src/extraction/grammars.ts`), así que los proyectos de esta organización no
-entran al índice. La lógica de negocio vive en los `.bas` y `.cls`, no en el
-resto del repo, por lo que el grafo queda inútil sin VBA.
+## Trabajo ya implementado
 
-## Convención de código de formularios (no negociable)
+El plan inicial de extractores está entregado. El modelo incluye código VBA, UI y eventos de Access, consultas y datos, análisis de errores y evidencia de comportamiento.
 
-- `.cls` es la **fuente de verdad** del código de un formulario.
-- `.form.txt` contiene **solo** UI (controles, layout, propiedades).
-- El extractor UI no debe emitir nodos `function` / `sub` / `module` desde
-  `.form.txt`: cualquier código que el editor Access serializa ahí se ignora y
-  se sobrescribe en el próximo import por Dysflow.
+Consulte el [modelo y los ejemplos actuales](README.md#vba--access--dysflow-integration) y el [historial de cambios](CHANGELOG.md), no el antiguo plan de implementación.
 
-## Plan de cambios (en rama aparte, no en `main`)
+## Invariantes de las fuentes
 
-1. `src/types.ts`: añadir `'vba'` al array `LANGUAGES`.
-2. `src/extraction/grammars.ts`:
-   - Mapear `.bas` / `.cls` / `.frm` / `.dsr` / `.form.txt` / `.report.txt` a
-     `'vba'`.
-   - Ampliar `isLanguageSupported` y `getLanguageDisplayName`.
-3. `src/extraction/vba-extractor.ts` (nuevo): extractor regex para `.bas` y
-   `.cls`. Detecta:
-   - `Public Function / Private Function / Public Sub / Private Sub`.
-   - `Property Get / Let / Set`.
-   - `Dim … As New Clase`, `New Clase`.
-   - `WithEvents m_X As Form_Foo` + handlers `m_X_Evento`.
-   - Call sites `Identificador.Identificador(`.
-   - SQL embebido: `FROM <tabla>`, `INTO <tabla>`, `UPDATE <tabla>`.
-4. `src/extraction/vba-form-extractor.ts` (nuevo): extractor UI para
-   `.form.txt` y `.report.txt`. Solo nodos `property` por control y un edge
-   `references` al `.cls` del mismo `basename`.
-5. `src/extraction/index.ts`: registrar ambos extractores donde hoy se enrutan
-   `liquid`, `razor`, `vue`, `svelte`.
-6. Tests en `__tests__/` con fixtures de `00_EXPEDIENTES_staging` y
-   `00_NO_CONFORMIDADES_staging`.
+- **Código canónico:** `.cls` contiene el código asociado a formularios e informes; `.bas` contiene los módulos estándar.
+- **UI separada:** `.form.txt` y `.report.txt` aportan layouts, controles y propiedades, nunca procedimientos duplicados del código incrustado.
+- **Evidencia estática:** CodeGraph indexa texto exportado. Dysflow gestiona el ciclo con el binario Access; el grafo no demuestra ejecución ni sincronización del `.accdb`.
+- **Inferencias explícitas:** las relaciones heurísticas conservan su procedencia; una relación ausente no prueba ausencia de efectos en ejecución.
 
-Todas las edges sintéticas deben llevar `provenance: 'heuristic'` y
-`metadata.synthesizedBy` (`vba-name-resolution`, `vba-new-binding`,
-`vba-withevents`, `vba-sql-table`, `vba-form-binding`).
-
-## Remotes
-
-- `origin`: `ardelperal/codegraph-vba` (este fork).
-- `upstream`: `colbymchenry/codegraph` (fuente original).
+Las pruebas del [extractor UI](__tests__/extraction-vba-form.test.ts) y del [ejemplo documentado](__tests__/vba-documented-example.test.ts) respaldan esta separación.
 
 ## Sincronización con upstream
 
-```bash
-git fetch upstream
-git checkout main
-git merge upstream/main
-```
+`origin` corresponde a `ardelperal/codegraph-vba`; `upstream`, a `colbymchenry/codegraph`.
+
+La base integrada es upstream `v1.4.1`, no upstream `v1.6.0`. Las dos líneas de versión son independientes; la planificación de un merge no equivale a código integrado.
+
+Una sincronización debe identificar el tag y commit upstream objetivo, medir la divergencia y preservar la identidad y las pruebas VBA/Access del fork.
+
+## Comprobación antes de actualizar estas notas
+
+- [ ] Verificar versión y ascendencia en Git antes de afirmar que upstream está integrado.
+- [ ] Mantener los contratos detallados en el README y la página de capacidades, con enlaces a pruebas.
+
+## Navegación
+
+[Capacidades del fork](docs/fork-capabilities.md) · [Instalación](README.md#get-started) · [Historial](CHANGELOG.md)

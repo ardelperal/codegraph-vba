@@ -105,7 +105,8 @@ export interface BehaviorEvidenceRequest {
   layout?: string;
   /** Call-path depth budget. Default 5, clamped to 1..20. */
   maxCallDepth?: number;
-  /** Maximum evidence entries. Default 50, clamped to 1..500. */
+  /** Maximum evidence entries. Default 50, clamped to 1..500.
+   * Traversal also visits at most (maxResults + 1) * maxCallDepth path steps. */
   maxResults?: number;
 }
 
@@ -178,7 +179,7 @@ export interface BehaviorEvidenceResult {
     truncated: {
       /** A path hit `maxCallDepth` and was cut short. */
       callDepth: boolean;
-      /** Entries were dropped at `maxResults`. */
+      /** Entries were dropped, or the traversal work budget left paths unexplored. */
       results: boolean;
       /** A path re-entered a procedure already on it. */
       cycle: boolean;
@@ -466,12 +467,19 @@ export function buildBehaviorEvidence(
     return out;
   };
 
-  const paths: Node[][] = [];
-  const walk = (chain: Node[]): void => {
+  // Stream paths: output deduplication must never permit exponential work.
+  // One extra result's depth allows exact-fit requests to finish honestly.
+  let remainingSteps = (maxResults + 1) * maxCallDepth;
+  function* walk(chain: Node[]): Generator<Node[]> {
+    if (remainingSteps === 0) {
+      result.context.truncated.results = true;
+      return;
+    }
+    remainingSteps--;
     const head = chain[chain.length - 1]!;
     if (chain.length >= maxCallDepth) {
       if (calleesOf(head.id).length > 0) result.context.truncated.callDepth = true;
-      paths.push(chain);
+      yield chain;
       return;
     }
     const callees = calleesOf(head.id).filter((node) => {
@@ -482,12 +490,20 @@ export function buildBehaviorEvidence(
       return true;
     });
     if (callees.length === 0) {
-      paths.push(chain);
+      yield chain;
       return;
     }
-    for (const callee of callees) walk([...chain, callee]);
-  };
-  for (const handler of handlers) walk([handler.node]);
+    for (const callee of callees) {
+      yield* walk([...chain, callee]);
+      if (result.context.truncated.results) return;
+    }
+  }
+  function* paths(): Generator<Node[]> {
+    for (const handler of handlers) {
+      yield* walk([handler.node]);
+      if (result.context.truncated.results) return;
+    }
+  }
 
   // ---- 4. Attribute data references and effects to each procedure -----
   const dataCache = new Map<string, BehaviorDataEvidence[]>();
@@ -591,17 +607,15 @@ export function buildBehaviorEvidence(
   const seenEntries = new Set<string>();
   const seenData = new Set<string>();
 
-  for (const chain of paths) {
+  const reported = new Map<string, Node>();
+  for (const chain of paths()) {
+    const chainData: BehaviorDataEvidence[] = [];
     const tables = new Set<string>();
     const effects = new Set<string>();
 
     for (const step of chain) {
       for (const item of dataFor(step)) {
-        const key = `${item.procedure}|${item.name}|${item.access}|${item.attributedBy}|${item.location}`;
-        if (!seenData.has(key)) {
-          seenData.add(key);
-          result.context.data.push(item);
-        }
+        chainData.push(item);
         if (item.targetKind !== 'query') tables.add(item.name);
         effects.add(
           item.access === 'unknown'
@@ -626,11 +640,17 @@ export function buildBehaviorEvidence(
       break;
     }
     result.evidence.push(entry);
+    for (const step of chain) reported.set(step.id, step);
+    for (const item of chainData) {
+      const dataKey = `${item.procedure}|${item.name}|${item.access}|${item.attributedBy}|${item.location}`;
+      if (!seenData.has(dataKey)) {
+        seenData.add(dataKey);
+        result.context.data.push(item);
+      }
+    }
   }
 
   // ---- 6. Unresolved references inside the reported procedures --------
-  const reported = new Map<string, Node>();
-  for (const chain of paths) for (const step of chain) reported.set(step.id, step);
 
   const byFile = new Map<string, Node[]>();
   for (const node of reported.values()) {

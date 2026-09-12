@@ -105,7 +105,8 @@ export interface BehaviorEvidenceRequest {
   layout?: string;
   /** Call-path depth budget. Default 5, clamped to 1..20. */
   maxCallDepth?: number;
-  /** Maximum evidence entries. Default 50, clamped to 1..500. */
+  /** Maximum evidence entries. Default 50, clamped to 1..500.
+   * Traversal also visits at most (maxResults + 1) * maxCallDepth path steps. */
   maxResults?: number;
 }
 
@@ -178,7 +179,7 @@ export interface BehaviorEvidenceResult {
     truncated: {
       /** A path hit `maxCallDepth` and was cut short. */
       callDepth: boolean;
-      /** Entries were dropped at `maxResults`. */
+      /** Entries were dropped, or the traversal work budget left paths unexplored. */
       results: boolean;
       /** A path re-entered a procedure already on it. */
       cycle: boolean;
@@ -314,12 +315,41 @@ export function buildBehaviorEvidence(
     },
   };
 
-  const owningLayout = (node: Node): string | null => {
-    if (LAYOUT_NODE_KINDS.has(node.kind)) return node.name;
-    for (const edge of queries.getIncomingEdges(node.id, ['contains'])) {
-      const owner = queries.getNodeById(edge.source);
-      if (owner && LAYOUT_NODE_KINDS.has(owner.kind)) return owner.name;
+  const indexedLayouts = (node: Node): Node[] => {
+    const layouts = new Map<string, Node>();
+    const collect = (bound: Node): void => {
+      if (LAYOUT_NODE_KINDS.has(bound.kind)) layouts.set(bound.id, bound);
+      // Synthesized report section controls can lack a contains edge. Their
+      // indexed layout file still identifies the owner without guessing from .cls.
+      if (bound.kind === 'form-instance-control') {
+        for (const owner of queries.getNodesByFile(bound.filePath)) {
+          if (LAYOUT_NODE_KINDS.has(owner.kind)) layouts.set(owner.id, owner);
+        }
+      }
+      for (const edge of queries.getIncomingEdges(bound.id, ['contains'])) {
+        const owner = queries.getNodeById(edge.source);
+        if (owner && LAYOUT_NODE_KINDS.has(owner.kind)) layouts.set(owner.id, owner);
+      }
+    };
+    collect(node);
+    if (PROCEDURE_KINDS.has(node.kind)) {
+      for (const edge of queries.getOutgoingEdges(node.id, ['event-handler'])) {
+        const bound = queries.getNodeById(edge.target);
+        if (bound) collect(bound);
+      }
     }
+    return [...layouts.values()];
+  };
+  const matchesLayout = (node: Node, wanted: string): boolean =>
+    node.name.toLowerCase() === wanted ||
+    path.basename(node.filePath ?? '').toLowerCase() === wanted;
+  const owningLayout = (node: Node): string | null => {
+    const layouts = indexedLayouts(node);
+    const scoped = request.layout
+      ? layouts.filter(layout => matchesLayout(layout, request.layout!.toLowerCase()))
+      : layouts;
+    if (scoped.length === 1) return scoped[0]!.name;
+    if (layouts.length > 0) return null; // Never invent one owner for shared expressions.
     const base = path.basename(node.filePath ?? '');
     const stripped = base.replace(/\.(form|report)\.txt$/i, '');
     return stripped === base ? null : stripped;
@@ -338,9 +368,11 @@ export function buildBehaviorEvidence(
       .filter((node) => UI_NODE_KINDS.has(node.kind) || PROCEDURE_KINDS.has(node.kind));
     const scoped = request.layout
       ? candidates.filter((node) => {
+          const wantedLayout = request.layout!.toLowerCase();
+          const layouts = indexedLayouts(node);
+          if (layouts.length > 0) return layouts.some(layout => matchesLayout(layout, wantedLayout));
           const layoutName = owningLayout(node);
           const base = path.basename(node.filePath ?? '');
-          const wantedLayout = request.layout!.toLowerCase();
           return (
             layoutName?.toLowerCase() === wantedLayout ||
             base.toLowerCase() === wantedLayout ||
@@ -421,6 +453,12 @@ export function buildBehaviorEvidence(
     // if any, instead of pretending it was reached through a control.
     const binding = queries
       .getOutgoingEdges(target.id, ['event-handler'])
+      .filter(edge => {
+        if (!request.layout) return true;
+        const bound = queries.getNodeById(edge.target);
+        return bound !== null && bound !== undefined && indexedLayouts(bound)
+          .some(layout => matchesLayout(layout, request.layout!.toLowerCase()));
+      })
       .sort((a, b) => a.target.localeCompare(b.target))[0];
     const wiredBy = binding ? metadataString(binding, 'synthesizedBy') : null;
     handlers.push({
@@ -466,12 +504,19 @@ export function buildBehaviorEvidence(
     return out;
   };
 
-  const paths: Node[][] = [];
-  const walk = (chain: Node[]): void => {
+  // Stream paths: output deduplication must never permit exponential work.
+  // One extra result's depth allows exact-fit requests to finish honestly.
+  let remainingSteps = (maxResults + 1) * maxCallDepth;
+  function* walk(chain: Node[]): Generator<Node[]> {
+    if (remainingSteps === 0) {
+      result.context.truncated.results = true;
+      return;
+    }
+    remainingSteps--;
     const head = chain[chain.length - 1]!;
     if (chain.length >= maxCallDepth) {
       if (calleesOf(head.id).length > 0) result.context.truncated.callDepth = true;
-      paths.push(chain);
+      yield chain;
       return;
     }
     const callees = calleesOf(head.id).filter((node) => {
@@ -482,12 +527,20 @@ export function buildBehaviorEvidence(
       return true;
     });
     if (callees.length === 0) {
-      paths.push(chain);
+      yield chain;
       return;
     }
-    for (const callee of callees) walk([...chain, callee]);
-  };
-  for (const handler of handlers) walk([handler.node]);
+    for (const callee of callees) {
+      yield* walk([...chain, callee]);
+      if (result.context.truncated.results) return;
+    }
+  }
+  function* paths(): Generator<Node[]> {
+    for (const handler of handlers) {
+      yield* walk([handler.node]);
+      if (result.context.truncated.results) return;
+    }
+  }
 
   // ---- 4. Attribute data references and effects to each procedure -----
   const dataCache = new Map<string, BehaviorDataEvidence[]>();
@@ -591,17 +644,15 @@ export function buildBehaviorEvidence(
   const seenEntries = new Set<string>();
   const seenData = new Set<string>();
 
-  for (const chain of paths) {
+  const reported = new Map<string, Node>();
+  for (const chain of paths()) {
+    const chainData: BehaviorDataEvidence[] = [];
     const tables = new Set<string>();
     const effects = new Set<string>();
 
     for (const step of chain) {
       for (const item of dataFor(step)) {
-        const key = `${item.procedure}|${item.name}|${item.access}|${item.attributedBy}|${item.location}`;
-        if (!seenData.has(key)) {
-          seenData.add(key);
-          result.context.data.push(item);
-        }
+        chainData.push(item);
         if (item.targetKind !== 'query') tables.add(item.name);
         effects.add(
           item.access === 'unknown'
@@ -626,11 +677,17 @@ export function buildBehaviorEvidence(
       break;
     }
     result.evidence.push(entry);
+    for (const step of chain) reported.set(step.id, step);
+    for (const item of chainData) {
+      const dataKey = `${item.procedure}|${item.name}|${item.access}|${item.attributedBy}|${item.location}`;
+      if (!seenData.has(dataKey)) {
+        seenData.add(dataKey);
+        result.context.data.push(item);
+      }
+    }
   }
 
   // ---- 6. Unresolved references inside the reported procedures --------
-  const reported = new Map<string, Node>();
-  for (const chain of paths) for (const step of chain) reported.set(step.id, step);
 
   const byFile = new Map<string, Node[]>();
   for (const node of reported.values()) {

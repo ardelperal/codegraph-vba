@@ -70,11 +70,18 @@ describe('FileWatcher', () => {
     fs.writeFileSync(path.join(srcDir, 'index.ts'), 'export const x = 1;');
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setFsWatchForTests(null); // reset the injected fs.watch seam
     vi.restoreAllMocks();
-    if (fs.existsSync(testDir)) {
+    // The CodeGraph-integration tests close their handle in an inner
+    // afterEach, but Windows keeps the SQLite file mapped for a few ms after
+    // close() returns, so an immediate rmSync hits EPERM on the temp dir.
+    // Same beat + guard every other CodeGraph-touching suite in this repo uses.
+    await new Promise((r) => setTimeout(r, 50));
+    try {
       fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup EPERM on Windows
     }
   });
 
@@ -708,5 +715,123 @@ describe('FileWatcher', () => {
 
       cg.unwatch();
     });
+  });
+});
+
+describe('issue #318 — a queries.json manifest must trigger a sync', () => {
+  // `.sql` is not globally indexable: a `.sql` counts as an Access saved query
+  // only when its directory also carries a `queries.json`. The manifest itself
+  // is not a source file, so before #318 a manifest write scheduled nothing —
+  // and a first export that wrote its `.sql` files before the manifest left
+  // every query out of the graph until someone touched a `.sql` again.
+  let testDir: string;
+
+  const newWatcher = (syncFn: SyncFn, opts: WatchOptions = {}) =>
+    new FileWatcher(testDir, syncFn, { inertForTests: true, ...opts });
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codegraph-queries-'));
+    fs.mkdirSync(path.join(testDir, 'queries'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    __setFsWatchForTests(null);
+    vi.restoreAllMocks();
+    // Give Windows a beat to release the SQLite handle the CodeGraph test
+    // opened; rmSync would otherwise hit EPERM on a file still mapped.
+    await new Promise((r) => setTimeout(r, 50));
+    try {
+      fs.rmSync(testDir, { recursive: true, force: true });
+    } catch {
+      // ignore cleanup EPERM on Windows
+    }
+  });
+
+  it('schedules a sync when a queries.json lands', async () => {
+    const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
+    const watcher = newWatcher(syncFn, { debounceMs: 100 });
+    watcher.start();
+    await watcher.waitUntilReady();
+
+    fs.writeFileSync(
+      path.join(testDir, 'queries', 'queries.json'),
+      '[{ "name": "Q1", "file": "Q1.sql" }]',
+    );
+    __emitWatchEventForTests(testDir, 'queries/queries.json');
+
+    // Recorded immediately: flush() clears pendingFiles once the sync runs.
+    expect(watcher.getPendingFiles().map((f) => f.path)).toContain(
+      'queries/queries.json',
+    );
+    await waitFor(() => syncFn.mock.calls.length > 0);
+
+    watcher.stop();
+  });
+
+  it('still drops a .sql whose directory has no manifest', async () => {
+    const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
+    const watcher = newWatcher(syncFn, { debounceMs: 100 });
+    watcher.start();
+    await watcher.waitUntilReady();
+
+    // No queries.json beside it — an ordinary SQL migration in a non-Access
+    // repo must stay ignored, which is the whole point of the sibling gate.
+    __emitWatchEventForTests(testDir, 'migrations/0001_init.sql');
+
+    await new Promise((r) => setTimeout(r, 300));
+    expect(syncFn).not.toHaveBeenCalled();
+
+    watcher.stop();
+  });
+
+  it('still drops a queries.json inside an ignored tree', async () => {
+    const syncFn = vi.fn().mockResolvedValue({ filesChanged: 0, durationMs: 0 });
+    const watcher = newWatcher(syncFn, { debounceMs: 100 });
+    watcher.start();
+    await watcher.waitUntilReady();
+
+    __emitWatchEventForTests(testDir, 'node_modules/dep/queries.json');
+
+    await new Promise((r) => setTimeout(r, 300));
+    expect(syncFn).not.toHaveBeenCalled();
+
+    watcher.stop();
+  });
+
+  it('indexes the saved queries when the manifest arrives after the .sql files', async () => {
+    // The ordering that motivated the issue, end to end through CodeGraph.
+    fs.writeFileSync(
+      path.join(testDir, 'queries', 'Q1.sql'),
+      'SELECT * FROM TbLate;\n',
+    );
+
+    const cg = await CodeGraph.init(testDir, { index: false });
+    try {
+      await cg.indexAll();
+      // No manifest yet, so the .sql is correctly not a query.
+      expect(cg.searchNodes('Q1', { kinds: ['query'] })).toHaveLength(0);
+
+      cg.watch({ debounceMs: 100, inertForTests: true });
+      await cg.waitUntilWatcherReady();
+
+      // The .sql event is dropped (still no manifest), exactly as before.
+      __emitWatchEventForTests(testDir, 'queries/Q1.sql');
+
+      // The manifest lands last. This is the event that used to go nowhere.
+      fs.writeFileSync(
+        path.join(testDir, 'queries', 'queries.json'),
+        '[{ "name": "Q1", "file": "Q1.sql" }]',
+      );
+      __emitWatchEventForTests(testDir, 'queries/queries.json');
+
+      await waitFor(
+        () => cg.searchNodes('Q1', { kinds: ['query'] }).length > 0,
+        8000,
+      );
+
+      cg.unwatch();
+    } finally {
+      await cg.close();
+    }
   });
 });

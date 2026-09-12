@@ -24,6 +24,7 @@
 import * as path from 'path';
 import { Node, ExtractionResult, ExtractionError, UnresolvedReference } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
+import { stripJsonBom } from './json-source';
 
 /** One `tests[]` entry that carries a string `procedure`. */
 interface ManifestTestEntry {
@@ -66,7 +67,10 @@ export class VbaTestManifestExtractor {
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(this.source);
+      // A leading UTF-8 BOM makes `JSON.parse` throw, which would turn a
+      // perfectly valid manifest into a warning and zero references (#316).
+      // PowerShell 5.1 writes that BOM by default for `-Encoding UTF8`.
+      parsed = JSON.parse(stripJsonBom(this.source));
     } catch (error) {
       // Malformed manifest — low-severity so it never breaks the index.
       this.errors.push({

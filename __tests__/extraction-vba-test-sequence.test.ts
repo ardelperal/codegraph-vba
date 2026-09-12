@@ -313,3 +313,43 @@ describe('VbaTestSequenceExtractor — resolver integration', () => {
     await cg.destroy();
   });
 });
+
+describe('issue #316 — a UTF-8 BOM must not discard a sequence', () => {
+  // Same failure mode as the test manifests: `sequences/*.json` is read as
+  // plain UTF-8, Node keeps the leading ﻿, and `JSON.parse` rejects it.
+  const SEQUENCE = JSON.stringify({
+    description: 'bom',
+    runnerPolicy: { tool: 'dysflow', sequential: true },
+    procedures: ['Test_Bom_RunSlice', 'Test_Bom_Reset'],
+  });
+
+  it('emits the same nodes and references as the same sequence without a BOM', () => {
+    const plain = extract('tests/sequences/bom.json', SEQUENCE);
+    const withBom = extract('tests/sequences/bom.json', '﻿' + SEQUENCE);
+
+    expect(withBom.errors).toEqual([]);
+    expect(withBom.nodes.map((n) => n.id)).toEqual(plain.nodes.map((n) => n.id));
+    expect(withBom.unresolvedReferences).toEqual(plain.unresolvedReferences);
+    expect(
+      withBom.unresolvedReferences.map((u) => u.referenceName),
+    ).toEqual(['Test_Bom_RunSlice', 'Test_Bom_Reset']);
+  });
+
+  it('still reports genuinely malformed JSON as a warning with no nodes', () => {
+    const r = extract('tests/sequences/broken.json', '﻿{ "procedures": [');
+    expect(r.nodes).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]?.severity).toBe('warning');
+    expect(r.errors[0]?.code).toBe('parse_error');
+  });
+
+  it('does not let a BOM sneak the strict-sequence shape past the content gate', () => {
+    const r = extract(
+      'tests/sequences/strict.json',
+      '﻿' + JSON.stringify({ executionUnits: ['tests/tests.vba.json'] }),
+    );
+    expect(r.nodes).toEqual([]);
+    expect(r.unresolvedReferences).toEqual([]);
+    expect(r.errors).toEqual([]);
+  });
+});

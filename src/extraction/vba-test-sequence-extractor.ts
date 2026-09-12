@@ -34,6 +34,7 @@
 import * as path from 'path';
 import { Node, ExtractionResult, ExtractionError, UnresolvedReference } from '../types';
 import { generateNodeId } from './tree-sitter-helpers';
+import { stripJsonBom } from './json-source';
 
 /**
  * Content-shape gate: is `parsed` a Dysflow VBA test sequence — a top-level
@@ -74,7 +75,10 @@ export class VbaTestSequenceExtractor {
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(this.source);
+      // A leading UTF-8 BOM makes `JSON.parse` throw, which would turn a
+      // perfectly valid sequence into a warning and zero references (#316).
+      // PowerShell 5.1 writes that BOM by default for `-Encoding UTF8`.
+      parsed = JSON.parse(stripJsonBom(this.source));
     } catch (error) {
       this.errors.push({
         message: `VBA test sequence parse error: ${

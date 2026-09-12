@@ -139,3 +139,43 @@ describe('VbaTestManifestExtractor — manifest references (SUB-2)', () => {
     expect(refs.map((u) => u.referenceName)).toEqual(['Test_Ok']);
   });
 });
+
+describe('issue #316 — a UTF-8 BOM must not discard a manifest', () => {
+  // `.json` is not in VBA_FAMILY_RE, so manifests are read as plain UTF-8 and
+  // Node keeps the BOM as a leading ﻿. `JSON.parse` rejects it, which used
+  // to turn a valid manifest into a warning and zero references. PowerShell 5.1
+  // writes that BOM by default for `-Encoding UTF8`.
+  const MANIFEST = JSON.stringify({
+    tests: [{ procedure: 'Test_Bom_RunAll', name: 'bom', tags: ['smoke'] }],
+  });
+
+  it('emits the same nodes and references as the same manifest without a BOM', () => {
+    const plain = extract('tests/tests.vba.bom.json', MANIFEST);
+    const withBom = extract('tests/tests.vba.bom.json', '﻿' + MANIFEST);
+
+    expect(withBom.errors).toEqual([]);
+    expect(withBom.nodes.map((n) => n.id)).toEqual(plain.nodes.map((n) => n.id));
+    expect(withBom.unresolvedReferences).toEqual(plain.unresolvedReferences);
+    expect(
+      withBom.unresolvedReferences.map((u) => u.referenceName),
+    ).toEqual(['Test_Bom_RunAll']);
+  });
+
+  it('still reports genuinely malformed JSON as a warning with no nodes', () => {
+    const r = extract('tests/tests.vba.broken.json', '﻿{ "tests": [');
+    expect(r.nodes).toEqual([]);
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]?.severity).toBe('warning');
+    expect(r.errors[0]?.code).toBe('parse_error');
+  });
+
+  it('does not let a BOM sneak a wrong-shaped JSON past the content gate', () => {
+    const r = extract(
+      'tests/tests.vba.notamanifest.json',
+      '﻿' + JSON.stringify({ slices: [{ submanifests: [] }] }),
+    );
+    expect(r.nodes).toEqual([]);
+    expect(r.unresolvedReferences).toEqual([]);
+    expect(r.errors).toEqual([]);
+  });
+});

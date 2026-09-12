@@ -421,6 +421,38 @@ The two are **sibling tools**: Dysflow owns the Access binary round-trip (sync, 
 
 **Scope:** Dysflow-managed projects only (Dysflow's `.form.txt` / `.report.txt` SaveAsText format). Legacy `.frm` / `.dsr` Access binary formats are not in scope.
 
+### Semantic acceptance
+
+Extraction tests prove the graph holds what it should; this proves the
+**answers** are right — which expected paths and entities are missing, and
+which unrelated ones get reported. Node and edge counts detect neither.
+
+```bash
+npm run acceptance:vba
+```
+
+It builds a fresh, isolated index over a throwaway copy of
+`__tests__/fixtures/vba-consumer-semantics/`, asks the public consumer surfaces
+the questions in `__tests__/fixtures/vba-consumer-semantics-ground-truth.json`
+— expected answers read off the source by hand, each with its source location,
+each carrying what must be present **and** what must not — compares them, and
+exits non-zero on the first missing or unexpected identity. It also runs on the
+normal test and CI path; no separate workflow hosts it.
+
+To evaluate an authorized copy of your own export with the same criteria and
+harness, write a ground-truth file in the same shape and point the run at both:
+
+```bash
+VBA_ACCEPTANCE_CORPUS=/path/to/export-copy VBA_ACCEPTANCE_GROUND_TRUTH=/path/to/ground-truth.json npm run acceptance:vba
+```
+
+The run is local: it reads only the directory you name, copies it to a
+temporary directory it deletes afterwards, never touches an `.accdb`, never
+discovers projects on your machine, and keeps your paths out of the report it
+prints. Keep a ground-truth file derived from private data beside the export
+copy — don't commit it. Passing the checked-in corpus is not certification of
+arbitrary projects, and says nothing about live Access execution.
+
 ### Worked example: from a control to the tables it touches
 
 Runnable against any indexed Dysflow export. It is also executed as a test —

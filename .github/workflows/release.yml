@@ -178,6 +178,17 @@ jobs:
           done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/bin/*' -exec dirname {} \; | sort -u)
 
       - name: Verify every package is actually on the registry
+        env:
+          # Per-package patience. Each per-platform package bundles a Node
+          # runtime and unpacks to ~200 MB over ~1,000 files, and npm's
+          # registry can take MINUTES to make one of that size resolvable —
+          # on the v1.17.0 run (#307) the last one landed 3m09s after the
+          # publish step had already finished, so a 200s budget failed a
+          # release that had in fact shipped correctly. Only whichever package
+          # was published last tends to lag, so the worst case is one wait, not
+          # six. Do not trim this back without re-reading that run.
+          VERIFY_ATTEMPTS: 60
+          VERIFY_INTERVAL_SECONDS: 10
         run: |
           V="${{ steps.ver.outputs.version }}"
           # npm publish can print success without persisting; confirm against the
@@ -186,10 +197,15 @@ jobs:
             [ -d "$dir" ] || continue
             name=$(node -p "require('./$dir/package.json').name")
             ok=
-            for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+            for i in $(seq 1 "$VERIFY_ATTEMPTS"); do
               if npm view "$name@$V" version >/dev/null 2>&1; then ok=1; break; fi
-              echo "waiting for $name@$V to appear ($i)…"; sleep 10
+              echo "waiting for $name@$V to appear ($i/$VERIFY_ATTEMPTS)…"
+              sleep "$VERIFY_INTERVAL_SECONDS"
             done
+            # The loop sleeps AFTER its last failed check, so without this the
+            # final wait is thrown away and a package that appears during it is
+            # reported missing — which is exactly how #307 went red.
+            if [ -z "$ok" ] && npm view "$name@$V" version >/dev/null 2>&1; then ok=1; fi
             [ -n "$ok" ] || { echo "::error::$name@$V never appeared on the registry"; exit 1; }
             echo "verified $name@$V"
           done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/bin/*' -exec dirname {} \; | sort -u)

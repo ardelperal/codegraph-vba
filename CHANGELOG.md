@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixes
+
+- Publishing a release no longer reports failure for a release that shipped correctly. The final check that each package reached the npm registry gave up after a little over three minutes and threw away its own last wait, while a package of this size can take longer than that to become available — so a perfectly good release was marked red. It now waits proportionately and checks once more at the end, while a package that genuinely never arrives still fails the release. (#307)
+
 
 ## [1.17.0] - 2026-09-12
 

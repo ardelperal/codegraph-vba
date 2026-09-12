@@ -28,6 +28,12 @@ Use this skill to assess the impact of changes in Access/VBA database tables and
 
 ### Step 4: Compute Downstream Impact & Warnings
 1. Compile the list of queries, forms/reports, and VBA callers affected.
+   `runImpactAnalysis` walks the call chain back from every procedure that
+   touches the query and then crosses the handler -> control/layout binding in
+   its stored direction, so a form reached ONLY through code is reported even
+   when nothing binds the query through `RecordSource` / `RowSource`. Ownership
+   comes from the layout's `contains` edge, not from the file name, so controls
+   sharing a name across forms stay apart.
 2. If a table schema changes, verify which columns/queries/forms are impacted downstream.
 3. Emit warnings for unaliased columns or ambiguous references.
 

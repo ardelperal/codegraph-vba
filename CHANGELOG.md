@@ -11,6 +11,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- Tracing an Access form control now reaches its event handler and everything that handler calls. Starting a trace at a button used to come back empty, because the trace followed the wiring between a control and its handler in the wrong direction, and because the common way of calling a procedure in VBA — writing its name on a line by itself — was not being counted as a call at all. (#298)
+- Impact analysis for a saved query now names the forms and reports affected by it even when nothing binds the query to the screen directly, so a query reached only through code no longer looks harmless. Ownership of a control is taken from the form that contains it, so two forms with a button of the same name no longer answer for each other. (#298)
+- A trace no longer pads its answer with relationships that are not steps in the code's execution, such as what contains a procedure or which table it reads, and an unknown starting point now says so instead of returning an empty result that reads like "nothing calls this". (#298)
 - Release notes published to GitHub now carry every section of the changelog. A section whose heading was more than one word — such as the list of new features — could be dropped from the published notes without any warning, which is how v1.16.0 shipped with its entire feature list missing. Those entries have been restored to the changelog. (#296)
 - Each version heading in the changelog now links to this project's own release instead of a different project's, where the tag does not exist. (#296)
 - Publishing a release now refuses to run from anywhere but the project's main branch, so the changelog update it makes can no longer be left behind on a temporary branch and lost. (#296)

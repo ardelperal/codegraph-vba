@@ -1,0 +1,20 @@
+Version =21
+VersionRequired =20
+PublishOption =1
+Checksum =-3333333333
+Begin Report
+    Caption ="Sales"
+    RecordSource ="tblSalesHeaders"
+    Width =10000
+    Begin Section
+        Name ="Detalle"
+        Height =400
+    End
+    Begin TextBox
+        Name ="txtTotal"
+        ControlSource ="Total"
+        Left =1000
+        Top =200
+        Width =1500
+    End
+End

@@ -191,27 +191,109 @@ function getAllFiles(dir: string): string[] {
 }
 
 /**
- * Recursively queries the SQLite graph database backwards to find caller chain ancestors.
+ * Node kinds that can own a call chain — a VBA procedure, under any of the
+ * kind names the graph has used.
  */
-function findGraphAncestors(db: any, startNodeId: string): string[] {
-  const visited = new Set<string>();
-  const ancestors: string[] = [];
+const CALLER_NODE_KINDS = ['function', 'method', 'event', 'sub'];
 
-  function traverse(nodeId: string) {
-    if (visited.has(nodeId)) return;
-    visited.add(nodeId);
+/**
+ * Node kinds that represent a UI object an event handler can be wired to.
+ * The canonical Access kinds first, then the legacy ones older graphs used.
+ */
+const UI_NODE_KINDS = new Set([
+  'form-instance-control',
+  'form-layout',
+  'report-layout',
+  'control',
+  'form',
+  'report',
+]);
 
-    const rows = db.prepare('SELECT source FROM edges WHERE target = ?').all(nodeId) as Array<{ source: string }>;
+const LAYOUT_NODE_KINDS = new Set(['form-layout', 'report-layout']);
+
+interface GraphNodeRow {
+  id: string;
+  name: string;
+  kind: string;
+  file_path: string;
+}
+
+/**
+ * Walks the graph backwards from a procedure to every procedure that can
+ * reach it.
+ *
+ * Only caller relationships are followed. `calls` is the explicit one and
+ * `defines-event` the legacy one; a `references` edge counts only when it
+ * comes FROM a procedure, which is how the resolver stores VBA's
+ * statement-form Sub call (`SaveOrderTotals` on its own line resolves as an
+ * ambiguous bare identifier — see issue #265 — so the edge is `references`,
+ * not `calls`). Containment is deliberately not a caller relationship: a
+ * module contains a procedure, it does not call it.
+ */
+function findCallChain(db: any, startNodeId: string): string[] {
+  const visited = new Set<string>([startNodeId]);
+  const chain: string[] = [startNodeId];
+  const stmt = db.prepare(
+    `SELECT e.source AS id
+       FROM edges e
+       JOIN nodes n ON n.id = e.source
+      WHERE e.target = ?
+        AND (e.kind IN ('calls', 'defines-event')
+             OR (e.kind = 'references'
+                 AND n.kind IN (${CALLER_NODE_KINDS.map(() => '?').join(', ')})))
+      ORDER BY e.source`
+  );
+
+  const queue = [startNodeId];
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!;
+    const rows = stmt.all(nodeId, ...CALLER_NODE_KINDS) as Array<{ id: string }>;
     for (const row of rows) {
-      if (row.source !== undefined) {
-        ancestors.push(row.source);
-        traverse(row.source);
-      }
+      if (row.id === undefined || visited.has(row.id)) continue;
+      visited.add(row.id);
+      chain.push(row.id);
+      queue.push(row.id);
     }
   }
 
-  traverse(startNodeId);
-  return ancestors;
+  return chain;
+}
+
+/**
+ * Names the form or report that owns a UI node.
+ *
+ * A layout node names itself. A control is resolved through the `contains`
+ * edge its layout emits — ownership is a graph relationship, not a guess
+ * made from the file name. The basename fallback only fires for a control
+ * whose layout file was never indexed (a cross-file stub), and for the
+ * legacy `control`/`form` kinds that predate layout containment.
+ */
+function resolveOwningLayout(db: any, uiNodeId: string): string | null {
+  const node = db
+    .prepare('SELECT id, name, kind, file_path FROM nodes WHERE id = ?')
+    .get(uiNodeId) as GraphNodeRow | undefined;
+  if (!node) return null;
+
+  if (LAYOUT_NODE_KINDS.has(node.kind)) return node.name;
+
+  const owner = db
+    .prepare(
+      `SELECT n.name AS name
+         FROM edges e
+         JOIN nodes n ON n.id = e.source
+        WHERE e.target = ?
+          AND e.kind = 'contains'
+          AND n.kind IN ('form-layout', 'report-layout')
+        ORDER BY e.source
+        LIMIT 1`
+    )
+    .get(uiNodeId) as { name: string } | undefined;
+  if (owner) return owner.name;
+
+  if (!node.file_path) return null;
+  const base = path.basename(node.file_path);
+  const stripped = base.replace(/\.(form|report)\.txt$/i, '');
+  return (stripped === base ? base.split('.')[0] : stripped) || null;
 }
 
 /**
@@ -314,35 +396,67 @@ export function runImpactAnalysis(
     }
   }
 
-  // 3. Database traversal for event handlers & controls
+  // 3. Database traversal: from the procedures that touch the query, back up
+  //    the call chain and across the handler -> control/layout binding.
+  //
+  //    The binding is stored HANDLER -> control (and HANDLER -> layout for a
+  //    form-level event), so the owning form is found by following the
+  //    handler's OUTGOING `event-handler` edge — not by walking further up
+  //    the ancestor chain, which never reaches the UI at all. That inverted
+  //    assumption is why a query reached only through code, with no
+  //    RecordSource/RowSource binding, used to report no affected form.
+  const stmtUiTargets = db.prepare(
+    "SELECT target AS id FROM edges WHERE source = ? AND kind = 'event-handler' ORDER BY target"
+  );
+
+  const addForm = (formName: string | null) => {
+    if (formName && !output.downstream_impact.forms.includes(formName)) {
+      output.downstream_impact.forms.push(formName);
+    }
+  };
+
   for (const caller of output.callers) {
-    // Find matching function node containing caller.line in caller.file
+    // Find the procedure node whose line range contains this reference.
     const matchingNodes = db.prepare(`
       SELECT id, name, kind, file_path
       FROM nodes
       WHERE (file_path = ? OR file_path LIKE ?)
         AND start_line <= ?
         AND end_line >= ?
-        AND kind IN ('function', 'event', 'sub')
-    `).all(caller.file, `%/${path.basename(caller.file)}`, caller.line, caller.line) as Array<{ id: string; name: string; kind: string; file_path: string }>;
+        AND kind IN (${CALLER_NODE_KINDS.map(() => '?').join(', ')})
+    `).all(
+      caller.file,
+      `%/${path.basename(caller.file)}`,
+      caller.line,
+      caller.line,
+      ...CALLER_NODE_KINDS,
+    ) as GraphNodeRow[];
 
     for (const node of matchingNodes) {
-      const ancestors = findGraphAncestors(db, node.id);
-      for (const ancestorId of ancestors) {
-        const ancestorNode = db.prepare('SELECT name, kind, file_path FROM nodes WHERE id = ?').get(ancestorId) as { name: string; kind: string; file_path: string } | undefined;
-        if (ancestorNode) {
-          const fileBase = path.basename(ancestorNode.file_path);
+      const chain = findCallChain(db, node.id);
+      for (const chainNodeId of chain) {
+        const chainNode = db
+          .prepare('SELECT id, name, kind, file_path FROM nodes WHERE id = ?')
+          .get(chainNodeId) as GraphNodeRow | undefined;
+        if (!chainNode) continue;
+
+        if (chainNodeId !== node.id) {
+          const fileBase = path.basename(chainNode.file_path ?? '');
           if (['.bas', '.cls', '.frm'].includes(path.extname(fileBase).toLowerCase())) {
             if (!output.downstream_impact.vba_callers.includes(fileBase)) {
               output.downstream_impact.vba_callers.push(fileBase);
             }
           }
-          if (ancestorNode.kind === 'control' || ancestorNode.kind === 'form') {
-            const formBase = path.basename(ancestorNode.file_path).split('.')[0] || '';
-            if (formBase && !output.downstream_impact.forms.includes(formBase)) {
-              output.downstream_impact.forms.push(formBase);
-            }
-          }
+        }
+
+        // A legacy graph put the control itself in the caller chain.
+        if (UI_NODE_KINDS.has(chainNode.kind)) {
+          addForm(resolveOwningLayout(db, chainNodeId));
+          continue;
+        }
+
+        for (const ui of stmtUiTargets.all(chainNodeId) as Array<{ id: string }>) {
+          addForm(resolveOwningLayout(db, ui.id));
         }
       }
     }

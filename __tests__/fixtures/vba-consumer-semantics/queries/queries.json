@@ -1,0 +1,5 @@
+[
+    { "name": "qryOrderTotals", "file": "queries/qryOrderTotals.sql" },
+    { "name": "qryInvoiceTotals", "file": "queries/qryInvoiceTotals.sql" },
+    { "name": "qrySalesTotals", "file": "queries/qrySalesTotals.sql" }
+]

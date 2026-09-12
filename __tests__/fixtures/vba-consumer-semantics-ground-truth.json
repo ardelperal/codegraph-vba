@@ -1,0 +1,166 @@
+{
+  "corpus": "__tests__/fixtures/vba-consumer-semantics",
+  "reviewedBy": "human source review of the corpus files listed in each case's `source`",
+  "note": "Expected answers were read off the SOURCE, not produced by running the implementation. Every case carries both what must be present and what must NOT be, so a consumer that answers with an unrelated form fails as loudly as one that answers with nothing.",
+  "cases": [
+    {
+      "id": "orders-save-control",
+      "kind": "behavior",
+      "question": "Which canonical handler and called procedures are reached from this control?",
+      "source": "Form_Orders.form.txt:11 btnSave -> Form_Orders.cls:14 btnSave_Click -> modOrders.bas:7 SaveOrderTotals -> queries/qryOrderTotals.sql",
+      "target": { "name": "btnSave", "layout": "Form_Orders" },
+      "expect": {
+        "handlers": ["btnSave_Click"],
+        "callPaths": [["btnSave_Click", "SaveOrderTotals"]],
+        "tables": ["tblOrderLines", "tblProducts"],
+        "effects": ["data-access:qryOrderTotals"]
+      },
+      "reject": {
+        "callPathMembers": ["SaveInvoiceTotals", "PurgeOrderLines", "LoadSalesTotals"],
+        "tables": ["tblInvoiceLines", "tblAuditLog", "tblSaleLines", "DAO"]
+      }
+    },
+    {
+      "id": "invoices-save-control",
+      "kind": "behavior",
+      "question": "Are same-named controls scoped correctly?",
+      "source": "Form_Invoices.form.txt:11 btnSave -> Form_Invoices.cls:12 btnSave_Click -> modInvoices.bas:5 SaveInvoiceTotals",
+      "target": { "name": "btnSave", "layout": "Form_Invoices" },
+      "expect": {
+        "handlers": ["btnSave_Click"],
+        "callPaths": [["btnSave_Click", "SaveInvoiceTotals"]],
+        "tables": ["tblInvoiceLines"],
+        "effects": ["data-access:qryInvoiceTotals"]
+      },
+      "reject": {
+        "callPathMembers": ["SaveOrderTotals"],
+        "tables": ["tblOrderLines", "tblProducts"]
+      }
+    },
+    {
+      "id": "orders-form-lifecycle",
+      "kind": "behavior",
+      "question": "Which handler runs on the form's own lifecycle event?",
+      "source": "Form_Orders.form.txt:5 Begin Form -> Form_Orders.cls:23 Form_Load -> modOrders.bas:13 RefreshOrders",
+      "target": { "name": "Form_Orders" },
+      "expect": {
+        "handlers": ["Form_Load"],
+        "callPaths": [["Form_Load", "RefreshOrders"]],
+        "scopes": ["form"]
+      },
+      "reject": {
+        "handlers": ["btnSave_Click", "btnExport_Click"],
+        "callPathMembers": ["SaveOrderTotals"]
+      }
+    },
+    {
+      "id": "report-section-control",
+      "kind": "behavior",
+      "question": "Does a report answer the same way a form does?",
+      "source": "Report_Sales.report.txt:8 Detalle -> Report_Sales.cls:17 Detalle_Format -> modSales.bas:11 FormatSalesRow",
+      "target": { "name": "Detalle", "layout": "Report_Sales" },
+      "expect": {
+        "handlers": ["Detalle_Format"],
+        "callPaths": [["Detalle_Format", "FormatSalesRow"]]
+      },
+      "reject": {
+        "callPathMembers": ["LoadSalesTotals"],
+        "tables": ["tblSaleLines"]
+      }
+    },
+    {
+      "id": "admin-write-and-open",
+      "kind": "behavior",
+      "question": "Which saved queries and tables are reached, with supported read/write evidence?",
+      "source": "Form_Admin.form.txt:10 btnPurge -> Form_Admin.cls:13 btnPurge_Click -> modAdmin.bas:5 PurgeOrderLines (DELETE FROM tblAuditLog; DoCmd.OpenForm \"Form_Invoices\")",
+      "target": { "name": "btnPurge", "layout": "Form_Admin" },
+      "expect": {
+        "handlers": ["btnPurge_Click"],
+        "callPaths": [["btnPurge_Click", "PurgeOrderLines"]],
+        "tables": ["tblAuditLog"],
+        "effects": ["write:tblAuditLog", "opens-form:Form_Invoices"]
+      },
+      "reject": {
+        "effects": ["read:tblAuditLog", "data-access:tblAuditLog"],
+        "tables": ["tblOrderLines"]
+      }
+    },
+    {
+      "id": "admin-expression-wired-control",
+      "kind": "behavior",
+      "question": "Is an expression-wired event represented explicitly rather than as an invented procedure name?",
+      "source": "Form_Admin.form.txt:18 btnAudit with OnClick =\"=AuditNow()\" at :20 -> modAdmin.bas:10 AuditNow",
+      "target": { "name": "btnAudit", "layout": "Form_Admin" },
+      "expect": {
+        "handlers": ["AuditNow"],
+        "callPaths": [["AuditNow"]],
+        "scopes": ["expression"]
+      },
+      "reject": {
+        "handlers": ["btnAudit_Click"]
+      }
+    },
+    {
+      "id": "orders-export-unresolved",
+      "kind": "behavior",
+      "question": "Which dynamic/unresolved cases cannot be answered statically?",
+      "source": "Form_Orders.form.txt:19 btnExport -> Form_Orders.cls:18 btnExport_Click, which calls Application.Run on a runtime-valued name and ExportOrdersToExcel, declared nowhere",
+      "target": { "name": "btnExport", "layout": "Form_Orders" },
+      "expect": {
+        "handlers": ["btnExport_Click"],
+        "callPaths": [["btnExport_Click"]],
+        "unresolved": ["ExportOrdersToExcel"],
+        "tables": [],
+        "effects": []
+      },
+      "reject": {
+        "callPathMembers": ["SaveOrderTotals", "ExportOrdersToExcel"]
+      }
+    },
+    {
+      "id": "unbound-control",
+      "kind": "behavior",
+      "question": "Is a control with no code-behind reported as unbound instead of matched to something else?",
+      "source": "Form_Orders.form.txt:27 cboCustomer — bound to tblCustomers by RowSource, with no handler procedure anywhere",
+      "target": { "name": "cboCustomer", "layout": "Form_Orders" },
+      "expect": { "notes": ["NO_HANDLER_BOUND"], "handlers": [] },
+      "reject": { "handlers": ["btnSave_Click", "cboCustomer_AfterUpdate"] }
+    },
+    {
+      "id": "duplicate-control-name",
+      "kind": "ambiguity",
+      "question": "Does an unscoped duplicate control name refuse to answer?",
+      "source": "btnSave exists at Form_Orders.form.txt:11 and Form_Invoices.form.txt:11",
+      "target": { "name": "btnSave" },
+      "expect": { "ambiguousLayouts": ["Form_Invoices", "Form_Orders"], "notes": ["AMBIGUOUS_TARGET"] },
+      "reject": { "handlers": ["btnSave_Click"] }
+    },
+    {
+      "id": "query-to-owning-form",
+      "kind": "impact",
+      "question": "Which form is affected by a query when no direct RecordSource/RowSource binding exists?",
+      "source": "queries/qryOrderTotals.sql is named only at modOrders.bas:9, inside SaveOrderTotals, which is reached from Form_Orders.cls:14 btnSave_Click. No layout binds it.",
+      "target": { "query": "qryOrderTotals" },
+      "expect": { "forms": ["Form_Orders"], "vbaCallers": ["modOrders.bas", "Form_Orders.cls"], "formBindings": [] },
+      "reject": { "forms": ["Form_Invoices", "Form_Admin", "Report_Sales"] }
+    },
+    {
+      "id": "report-query-to-owning-report",
+      "kind": "impact",
+      "question": "Does a report-owned query name its report?",
+      "source": "queries/qrySalesTotals.sql is named only at modSales.bas:7, inside LoadSalesTotals, reached from Report_Sales.cls:13 Report_Open",
+      "target": { "query": "qrySalesTotals" },
+      "expect": { "forms": ["Report_Sales"], "formBindings": [] },
+      "reject": { "forms": ["Form_Orders", "Form_Invoices"] }
+    },
+    {
+      "id": "layout-files-emit-no-procedures",
+      "kind": "layout",
+      "question": "Is duplicate embedded .form.txt code excluded, leaving .cls canonical?",
+      "source": "Form_Orders.form.txt and Report_Sales.report.txt carry only UI text; all procedures live in the sibling .cls. The only `class` nodes attributed to a layout file are synthetic placeholders for the tables it binds (tblOrderHeaders, tblCustomers, tblSalesHeaders) — never the form's own code.",
+      "target": { "files": ["Form_Orders.form.txt", "Report_Sales.report.txt"] },
+      "expect": { "kinds": ["form-layout", "report-layout", "form-instance-control"] },
+      "reject": { "kinds": ["function", "method", "module"] }
+    }
+  ]
+}

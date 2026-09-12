@@ -315,12 +315,41 @@ export function buildBehaviorEvidence(
     },
   };
 
-  const owningLayout = (node: Node): string | null => {
-    if (LAYOUT_NODE_KINDS.has(node.kind)) return node.name;
-    for (const edge of queries.getIncomingEdges(node.id, ['contains'])) {
-      const owner = queries.getNodeById(edge.source);
-      if (owner && LAYOUT_NODE_KINDS.has(owner.kind)) return owner.name;
+  const indexedLayouts = (node: Node): Node[] => {
+    const layouts = new Map<string, Node>();
+    const collect = (bound: Node): void => {
+      if (LAYOUT_NODE_KINDS.has(bound.kind)) layouts.set(bound.id, bound);
+      // Synthesized report section controls can lack a contains edge. Their
+      // indexed layout file still identifies the owner without guessing from .cls.
+      if (bound.kind === 'form-instance-control') {
+        for (const owner of queries.getNodesByFile(bound.filePath)) {
+          if (LAYOUT_NODE_KINDS.has(owner.kind)) layouts.set(owner.id, owner);
+        }
+      }
+      for (const edge of queries.getIncomingEdges(bound.id, ['contains'])) {
+        const owner = queries.getNodeById(edge.source);
+        if (owner && LAYOUT_NODE_KINDS.has(owner.kind)) layouts.set(owner.id, owner);
+      }
+    };
+    collect(node);
+    if (PROCEDURE_KINDS.has(node.kind)) {
+      for (const edge of queries.getOutgoingEdges(node.id, ['event-handler'])) {
+        const bound = queries.getNodeById(edge.target);
+        if (bound) collect(bound);
+      }
     }
+    return [...layouts.values()];
+  };
+  const matchesLayout = (node: Node, wanted: string): boolean =>
+    node.name.toLowerCase() === wanted ||
+    path.basename(node.filePath ?? '').toLowerCase() === wanted;
+  const owningLayout = (node: Node): string | null => {
+    const layouts = indexedLayouts(node);
+    const scoped = request.layout
+      ? layouts.filter(layout => matchesLayout(layout, request.layout!.toLowerCase()))
+      : layouts;
+    if (scoped.length === 1) return scoped[0]!.name;
+    if (layouts.length > 0) return null; // Never invent one owner for shared expressions.
     const base = path.basename(node.filePath ?? '');
     const stripped = base.replace(/\.(form|report)\.txt$/i, '');
     return stripped === base ? null : stripped;
@@ -339,9 +368,11 @@ export function buildBehaviorEvidence(
       .filter((node) => UI_NODE_KINDS.has(node.kind) || PROCEDURE_KINDS.has(node.kind));
     const scoped = request.layout
       ? candidates.filter((node) => {
+          const wantedLayout = request.layout!.toLowerCase();
+          const layouts = indexedLayouts(node);
+          if (layouts.length > 0) return layouts.some(layout => matchesLayout(layout, wantedLayout));
           const layoutName = owningLayout(node);
           const base = path.basename(node.filePath ?? '');
-          const wantedLayout = request.layout!.toLowerCase();
           return (
             layoutName?.toLowerCase() === wantedLayout ||
             base.toLowerCase() === wantedLayout ||
@@ -422,6 +453,12 @@ export function buildBehaviorEvidence(
     // if any, instead of pretending it was reached through a control.
     const binding = queries
       .getOutgoingEdges(target.id, ['event-handler'])
+      .filter(edge => {
+        if (!request.layout) return true;
+        const bound = queries.getNodeById(edge.target);
+        return bound !== null && bound !== undefined && indexedLayouts(bound)
+          .some(layout => matchesLayout(layout, request.layout!.toLowerCase()));
+      })
       .sort((a, b) => a.target.localeCompare(b.target))[0];
     const wiredBy = binding ? metadataString(binding, 'synthesizedBy') : null;
     handlers.push({

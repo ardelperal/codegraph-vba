@@ -114,6 +114,28 @@ format):
   production symbol reaches its covering test atoms with the manifest and tags
   to run.
   Pass \`projectPath\` to a codegraph index that includes VBA files.
+- **Saved Access queries are first-class nodes — do not grep the \`.sql\`.** A
+  Dysflow-exported \`queries/<Name>.sql\` whose directory also carries a
+  \`queries.json\` manifest becomes a \`query\` node (language \`sql\`, named after
+  the file) with a \`references\` edge to every table its \`FROM\` / \`JOIN\` /
+  \`INTO\` / \`UPDATE\` names, tagged \`sql-query-table\`; a table that resolves to
+  another backend file is tagged \`vba-external-backend\` instead. A \`.sql\` with
+  no sibling \`queries.json\` is deliberately NOT indexed, so an ordinary SQL
+  migration in a non-Access repo stays out of the graph.
+- **Dysflow test sequences sit beside the manifests.** A \`sequences/*.json\`
+  emits a \`file\` node and one \`references\` edge per \`procedures[]\` entry to
+  that \`Test_*\` procedure, tagged \`vba-test-sequence\` and carrying
+  \`runnerPolicy\`, \`sequenceFile\` and \`procedureIndex\`. So \`getCallers\` of a
+  test atom reaches both the manifest that registers it (\`vba-test-manifest\`)
+  and the sequence that orders it, with the runner policy to honour.
+- **Table structure comes from the Access ERD export.** An \`ERD/*.md\` produced
+  by the Access structure generator emits one \`class\` node per table (tagged
+  \`access-erd-table\`), one \`type_member\` per field joined by \`contains\`, and a
+  \`references\` edge from a linked table to the backend it really lives in
+  (tagged \`vba-linked-table\`). This is the cheapest answer to "what columns
+  does this table have" and to "which backend owns it" — ask codegraph before
+  reading the export. The extractor requires the generated header, so a
+  hand-written diagram in an \`ERD/\` folder contributes nothing.
 - **VBA unresolved refs carry syntactic shape** (v1.7+). \`unresolved_refs.reference_kind\` is no longer the literal string \`"references"\` — it reports what the syntactic shape actually was. Values: \`call\` (paren-form or statement-form call site), \`qualified-call\` (\`obj.Foo(...)\` with runtime receiver), \`property-get\` / \`property-set\` (\`Me.Name\`, \`obj.Prop = value\`), \`bang-get\` / \`bang-set\` (\`Me!SubCtl\`, \`obj!Field = value\`), \`unqualified-ident\` (bare identifier like \`HayErrorEnRiesgo\` in an \`If\` condition), \`member-with\` (\`.Member\` inside a \`With\` block), \`dao-query\` (\`DoCmd.OpenQuery "X"\` argument). The legacy value \`references\` is retained on any path the round did not reclassify, so older SQL filters that key on it keep working. To find real missing callees, filter \`WHERE reference_kind IN ('call','qualified-call','unqualified-ident','member-with','bang-get')\` — that set has <10% false positives (DAO-field accesses, form-property reads, and bang refs no longer pollute the bucket).
 - **Post-extraction stub resolver** (v1.7+). Edges with \`metadata.synthesizedBy='vba-name-resolution'\` start life pointing at a synthetic function node; the resolver at \`src/resolution/index.ts:resolveVbaCallStubs\` (invoked from \`indexAll\` and \`sync\`) walks them and repoints each \`target\` to the real \`nodes.id\` when one exists. Runtime-object calls (\`DAO.*\`, \`fso.*\`, \`ListBox.*\`, \`Collection.*\`, \`err.*\`, \`VBA.*\`, \`Application.*\`, \`Screen.*\`, \`DoCmd.*\`, \`CurrentDb.*\`, \`Forms\`, \`Reports\`, \`Debug\`, \`Modules\`, \`References\`, \`CommandBars\`, \`SysCmd\`, \`CreateObject\`, \`GetObject\`, \`Fields\`) are explicitly declined — they remain \`stub:true\` because they can never link to user code. Shadow user classes (e.g. a user class actually named \`DAO\` with an \`Execute\` method) are preserved and linked normally. Every stub edge carries \`metadata.repointDecision\` with one of \`reponted-to-real\` (linked to a real \`nodes.id\`), \`declined-runtime\` (runtime object — never user code, filter OUT), \`declined-ambiguous\` (multiple real candidates — investigate), or \`declined-not-found\` (genuinely missing callee — this is the actionable signal). Consumers detecting "missing callees" MUST filter on \`repointDecision='declined-not-found'\`, NOT on the raw \`stub=true\` count — the raw count is dominated by runtime-object noise. See \`docs/vba-stub-repoint-decision.md\` for the full contract.
 `;

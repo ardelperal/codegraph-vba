@@ -15,6 +15,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Dysflow exports are no longer read twice. Every form and report layout, test manifest and test sequence was being parsed once by the VBA dispatcher and again by the Dysflow framework hook, which made a full index do double the work on those files and left duplicate pending references behind. Turning Dysflow expansion off with `vba.dysflowExport: false` is also honoured again in every case. (#314)
 - A test manifest or test sequence saved with a UTF-8 byte-order mark is read correctly again. Until now such a file was rejected outright, so every test it registered quietly vanished from the graph with nothing but a warning to show for it — and on Windows that mark is what PowerShell writes by default. (#316)
 - Saved Access queries now appear in the graph no matter what order Dysflow writes them. The `queries.json` manifest is what marks the `.sql` files beside it as saved queries, and a manifest arriving after its queries left them unindexed until the next manual sync. Editing only the manifest — renaming a query, adding an entry — now re-indexes too. (#318)
+- Agents are now told about three Access surfaces the index already carried but never advertised: saved queries and the tables they touch, Dysflow test sequences alongside the manifests, and the table-and-column structure from the Access ERD export. An agent that was not told these exist fell back to reading the files by hand. (#320)
 
 ## [1.17.1] - 2026-09-12
 

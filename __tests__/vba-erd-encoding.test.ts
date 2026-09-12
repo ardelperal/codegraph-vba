@@ -19,6 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { readVbaSource } from '../src/extraction/vba-source';
+import { usesAccessEncoding } from '../src/extraction';
 import CodeGraph from '../src/index';
 
 /** The generated export's real byte shape: BOM, CRLF, `# Estructura de Datos:`. */
@@ -57,6 +58,29 @@ afterEach(async () => {
 });
 
 describe('Access ERD export — encoding (#322)', () => {
+  it('routes the ERD export by path shape, and nothing else markdown', () => {
+    // `.md` must never become a family EXTENSION — that would pull every
+    // markdown file in every repo through the CP1252 fallback. Only a document
+    // directly inside an `ERD/` directory qualifies.
+    for (const p of [
+      'ERD/Estructura_Datos.md',
+      'src/backend/erd/Estructura_Datos.md',
+      'C:\\proj\\ERD\\Estructura_Datos.md',
+    ]) {
+      expect(usesAccessEncoding(p), p).toBe(true);
+    }
+    for (const p of [
+      'docs/architecture.md',
+      'README.md',
+      'ERD/notes/deep.md',
+      'index.ts',
+    ]) {
+      expect(usesAccessEncoding(p), p).toBe(false);
+    }
+    // The extension half still routes on its own.
+    expect(usesAccessEncoding('src/modules/constantes.bas')).toBe(true);
+  });
+
   it('decodes a CP1252 export to the same names as its UTF-8 twin', () => {
     const asUtf8 = readVbaSource('ERD/Estructura_Datos.md', {
       readFile: () => utf8(ERD_DOC),

@@ -56,7 +56,12 @@ vi.mock('../src/project-config', () => ({
 vi.mock('../src/resolution/frameworks', () => ({ detectFrameworks: () => [] }));
 vi.mock('../src/extraction/tree-sitter', () => ({ extractFromSource: vi.fn() }));
 
-vi.mock('../src/extraction/grammars', () => ({
+// Spread the real module and override only what this test needs to control.
+// A from-scratch object silently returns `undefined` for every grammars helper
+// it forgot, so the orchestrator importing one more of them (e.g.
+// `isAccessErdFile`, #322) failed here as an unrelated-looking index error.
+vi.mock('../src/extraction/grammars', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/extraction/grammars')>()),
   detectLanguage: () => 'typescript',
   isSourceFile: (file: string) => file.endsWith('.ts'),
   isLanguageSupported: () => true,

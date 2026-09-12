@@ -13,11 +13,13 @@
  * `Attribute VB_Name` detection → wrong module name).
  *
  * Scope (do NOT change decoding for tree-sitter languages): only
- * `.bas`/`.cls`/`.frm`/`.dsr`/`.form.txt`/`.report.txt`/`.sql` files get
- * the BOM strip + CP1252 fallback; everything else stays byte-identical to
- * the existing `fs.readFile(path, 'utf-8')` path.
+ * `.bas`/`.cls`/`.frm`/`.dsr`/`.form.txt`/`.report.txt`/`.sql` files and the
+ * Access structure export (`ERD/*.md`, matched by path shape) get the BOM
+ * strip + CP1252 fallback; everything else stays byte-identical to the
+ * existing `fs.readFile(path, 'utf-8')` path.
  */
 import * as fs from 'fs';
+import { isAccessErdFile } from './grammars';
 
 /**
  * Family of extensions routed through Dysflow's VBA pipeline (or the
@@ -28,7 +30,17 @@ import * as fs from 'fs';
 const VBA_FAMILY_RE = /\.(?:bas|cls|frm|dsr|form\.txt|report\.txt|sql)$/i;
 
 export function isVbaFamilyFile(filePath: string): boolean {
-  return VBA_FAMILY_RE.test(filePath);
+  // The Access structure export (`ERD/*.md`) comes out of the same Access
+  // tooling as everything else here and carries the same encoding, but it is
+  // matched by path shape rather than extension — `.md` on its own must NOT
+  // pull every markdown file in a repo through the CP1252 fallback. The shape
+  // itself is owned by `grammars.ts`, so the two stay in step (issue #322).
+  //
+  // Without this, an ERD naming a table with accents decoded to replacement
+  // characters while the `.sql` and `.bas` referencing that same table decoded
+  // it correctly, so the ERD declaration never joined the placeholder those
+  // scanners emit and the table's field list hung off an orphan node.
+  return VBA_FAMILY_RE.test(filePath) || isAccessErdFile(filePath);
 }
 
 /**

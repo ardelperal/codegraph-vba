@@ -120,6 +120,11 @@ describe('isVbaFamilyFile - extension routing (Issue #53)', () => {
       'MiClase.CLS',
       'Form_Login.FORM.TXT',
       'qryGetRiesgos.SQL',
+      // The Access structure export is matched by path shape, not extension
+      // (#322) — it carries the same encoding as the rest of the export.
+      'ERD/Estructura_Datos.md',
+      'src/backend/erd/Estructura_Datos.md',
+      'C:\\proj\\ERD\\Estructura_Datos.md',
     ]) {
       expect(isVbaFamilyFile(p)).toBe(true);
     }
@@ -134,6 +139,10 @@ describe('isVbaFamilyFile - extension routing (Issue #53)', () => {
       'Weird.clsss',
       'MyModule.txt', // NOT `.form.txt` / `.report.txt`
       'notes.form.md',
+      // `.md` alone must never route markdown through the CP1252 fallback;
+      // only a document directly inside an `ERD/` directory qualifies (#322).
+      'docs/architecture.md',
+      'ERD/notes/deep.md',
     ]) {
       expect(isVbaFamilyFile(p)).toBe(false);
     }

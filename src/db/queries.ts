@@ -228,6 +228,7 @@ export class QueryBuilder {
     insertUnresolved?: SqliteStatement;
     deleteUnresolvedByNode?: SqliteStatement;
     getUnresolvedByName?: SqliteStatement;
+    getUnresolvedByFile?: SqliteStatement;
     getNodesByName?: SqliteStatement;
     getNodesByNamePrefix?: SqliteStatement;
     getNodesByQualifiedNameExact?: SqliteStatement;
@@ -2090,6 +2091,36 @@ export class QueryBuilder {
       );
     }
     const rows = this.stmts.getUnresolvedByName.all(name) as UnresolvedRefRow[];
+    return rows.map((row) => ({
+      fromNodeId: row.from_node_id,
+      referenceName: row.reference_name,
+      referenceKind: row.reference_kind as EdgeKind,
+      line: row.line,
+      column: row.col,
+      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
+      filePath: row.file_path,
+      language: row.language as Language,
+      metadata: row.metadata ? safeJsonParse(row.metadata, undefined) : undefined,
+    }));
+  }
+
+  /**
+   * Get the unresolved references recorded for one file, ordered by position.
+   *
+   * Scoped read for consumers that report what could NOT be answered about a
+   * specific procedure (issue #299): loading every row to filter in memory
+   * would scale with the whole project instead of the file being explained.
+   * Both pending and failed rows are returned — for this purpose "the
+   * resolver never matched it" and "the resolver has not tried yet" are the
+   * same honest answer: the index cannot say.
+   */
+  getUnresolvedReferencesForFile(filePath: string): UnresolvedReference[] {
+    if (!this.stmts.getUnresolvedByFile) {
+      this.stmts.getUnresolvedByFile = this.db.prepare(
+        'SELECT * FROM unresolved_refs WHERE file_path = ? ORDER BY line, col'
+      );
+    }
+    const rows = this.stmts.getUnresolvedByFile.all(filePath) as UnresolvedRefRow[];
     return rows.map((row) => ({
       fromNodeId: row.from_node_id,
       referenceName: row.reference_name,

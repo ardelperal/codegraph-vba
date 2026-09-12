@@ -22,6 +22,7 @@ import {
 } from '../sync/worktree';
 import type { PendingFile } from '../sync';
 import type { Node, Edge, SearchResult, Subgraph, NodeKind } from '../types';
+import type { BehaviorEvidenceRequest } from '../graph/behavior-evidence';
 import { isTestFile, normalizeNameToken } from '../search/query-utils';
 import {
   existsSync,
@@ -831,6 +832,40 @@ export const tools: ToolDefinition[] = [
         projectPath: projectPathProperty,
       },
       required: ['query'],
+    },
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: 'codegraph_behavior_evidence',
+    description: 'ACCESS/VBA ONLY — what does this control actually DO? Returns a typed, bounded behavior payload for one Access control, form/report layout or handler: the event binding, the call paths under it, and the tables and effects those procedures reach, assembled from indexed facts in one read. Identify the target by `nodeId` when you have one; a `name` needs `layout` as soon as it is not unique — an ambiguous name is REFUSED with the candidates listed, never narrowed to an arbitrary match. The answer is static evidence from exported source: an empty tables/effects list means the index holds no such fact, NOT that the code has no runtime effect — what could not be answered is reported in `context.unresolved` and `context.truncated`. For a human-readable trace use codegraph_explore instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        nodeId: {
+          type: 'string',
+          description: 'Stable node id of the control, layout or handler. The unambiguous form — prefer it whenever a previous call gave you one.',
+        },
+        name: {
+          type: 'string',
+          description: 'Control, layout or handler name (e.g. "btnSave", "Form_Orders", "btnSave_Click"). Pass `layout` with it unless the name is unique across the project.',
+        },
+        layout: {
+          type: 'string',
+          description: 'Form or report that scopes `name` — its name ("Form_Orders") or its layout file ("Form_Orders.form.txt"). Required in practice: the same control name usually exists on several forms.',
+        },
+        maxCallDepth: {
+          type: 'number',
+          description: 'Call-path depth budget (default: 5, clamped to 1..20). A path cut short sets context.truncated.callDepth.',
+          default: 5,
+        },
+        maxResults: {
+          type: 'number',
+          description: 'Maximum evidence entries (default: 50, clamped to 1..500). Dropped entries set context.truncated.results.',
+          default: 50,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: [],
     },
     annotations: READ_ONLY_ANNOTATIONS,
   },
@@ -1886,8 +1921,37 @@ export class ToolHandler {
       case 'codegraph_explore': return await this.handleExplore(args);
       case 'codegraph_node': return await this.handleNode(args);
       case 'codegraph_files': return await this.handleFiles(args);
+      case 'codegraph_behavior_evidence': return await this.handleBehaviorEvidence(args);
       default: return this.errorResult(`Unknown tool: ${toolName}`);
     }
+  }
+
+  /**
+   * Access/VBA behavior evidence (issue #299) — a thin adapter over
+   * {@link CodeGraph.getBehaviorEvidence}. The assembly lives in
+   * `src/graph/behavior-evidence.ts`; this only validates argument shapes and
+   * serializes the typed result, so the MCP surface and a library consumer
+   * can never drift into two different answers.
+   *
+   * A request with no selector is NOT an error: the payload comes back with
+   * `MISSING_TARGET_SELECTOR` in `context.notes`, the same success-shaped
+   * guidance every other recoverable condition uses here.
+   */
+  private async handleBehaviorEvidence(args: Record<string, unknown>): Promise<ToolResult> {
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+
+    const request: BehaviorEvidenceRequest = {};
+    if (typeof args.nodeId === 'string' && args.nodeId.trim()) request.nodeId = args.nodeId.trim();
+    if (typeof args.name === 'string' && args.name.trim()) request.name = args.name.trim();
+    if (typeof args.layout === 'string' && args.layout.trim()) request.layout = args.layout.trim();
+    if (args.maxCallDepth !== undefined && Number.isFinite(Number(args.maxCallDepth))) {
+      request.maxCallDepth = Number(args.maxCallDepth);
+    }
+    if (args.maxResults !== undefined && Number.isFinite(Number(args.maxResults))) {
+      request.maxResults = Number(args.maxResults);
+    }
+
+    return this.textResult(JSON.stringify(cg.getBehaviorEvidence(request), null, 2));
   }
 
   /** Run the CLI-only query command and preserve its JSON stdout verbatim. */

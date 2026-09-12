@@ -13,7 +13,12 @@
  * Ground truth (source-reviewed, see the fixture headers):
  *   Form_Orders.btnSave   -> btnSave_Click   -> SaveOrderTotals  -> qryOrderTotals
  *   Form_Orders (form)    -> Form_Load       -> RefreshOrders    -> tblOrderHeaders
- *   Form_Orders.btnExport -> btnExport_Click -> dynamic dispatch (unresolved)
+ *   Form_Orders.btnExport -> btnExport_Click -> dynamic dispatch + a call to
+ *                            ExportOrdersToExcel, which nothing declares
+ *                            (deliberately unresolved)
+ *   Form_Admin.btnPurge   -> btnPurge_Click  -> PurgeOrderLines  -> writes
+ *                            tblAuditLog and opens Form_Invoices
+ *   Form_Admin.btnAudit   -> wired by expression (=AuditNow()), reads tblAuditLog
  *   Form_Invoices.btnSave -> btnSave_Click   -> SaveInvoiceTotals-> qryInvoiceTotals
  *   Report_Sales.Detalle  -> Detalle_Format  -> FormatSalesRow
  *   Report_Sales (report) -> Report_Open     -> LoadSalesTotals  -> qrySalesTotals

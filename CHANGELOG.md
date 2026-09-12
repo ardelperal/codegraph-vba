@@ -9,6 +9,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- Access projects can now ask what a single control actually does and get a structured answer back: which procedure runs on the event, the call paths under it, and the tables it reads or writes along the way — assembled in one read instead of joined together by hand. Available from the library as `getBehaviorEvidence` and over MCP as `codegraph_behavior_evidence`. (#299)
+- That answer is deliberately careful about what it does not know. A control name that exists on more than one form is refused with the candidates listed rather than answered for the wrong form, branches are kept apart instead of being strung into one sequence, and anything the index could not resolve — or a budget that cut the answer short — is reported alongside it. An empty list of tables means nothing is recorded, never that the code is harmless. (#299)
+
 ### Fixes
 
 - Tracing an Access form control now reaches its event handler and everything that handler calls. Starting a trace at a button used to come back empty, because the trace followed the wiring between a control and its handler in the wrong direction, and because the common way of calling a procedure in VBA — writing its name on a line by itself — was not being counted as a call at all. (#298)

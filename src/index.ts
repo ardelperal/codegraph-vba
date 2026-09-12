@@ -27,6 +27,11 @@ import { DatabaseConnection, getDatabasePath, removeDatabaseFiles } from './db';
 import { WalCheckpointValve } from './db/wal-valve';
 import { QueryBuilder } from './db/queries';
 import {
+  buildBehaviorEvidence,
+  BehaviorEvidenceRequest,
+  BehaviorEvidenceResult,
+} from './graph/behavior-evidence';
+import {
   isInitialized,
   createDirectory,
   removeDirectory,
@@ -88,6 +93,20 @@ export {
   silentLogger,
   defaultLogger,
 } from './errors';
+export {
+  buildBehaviorEvidence,
+  BEHAVIOR_EFFECT_VOCABULARY,
+  BEHAVIOR_EVIDENCE_NOTES,
+  CodeGraphBehaviorEvidence,
+  BehaviorEvidenceRequest,
+  BehaviorEvidenceResult,
+  BehaviorEvidenceTarget,
+  BehaviorHandlerContext,
+  BehaviorDataEvidence,
+  BehaviorAmbiguity,
+  BehaviorUnresolvedReference,
+  BehaviorBindingScope,
+} from './graph/behavior-evidence';
 export { Mutex, FileLock, processInBatches, debounce, throttle, MemoryMonitor } from './utils';
 export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
 export { MCPServer } from './mcp';
@@ -1512,6 +1531,29 @@ export class CodeGraph {
    */
   getImpactRadius(nodeId: string, maxDepth: number = 3): Subgraph {
     return this.traverser.getImpactRadius(nodeId, maxDepth);
+  }
+
+  /**
+   * Assemble bounded behavior evidence for an Access control, layout or
+   * handler (issue #299).
+   *
+   * Read-only: it joins facts that are already indexed — the event binding,
+   * the call paths under it, and the tables/effects those procedures reach —
+   * into one typed payload, so a consumer does not re-implement the graph
+   * semantics for itself. It never parses source, opens Access, or writes to
+   * the index.
+   *
+   * Identify the target by `nodeId` whenever you have one. A `name` needs a
+   * `layout` as soon as it is not unique: an ambiguous name is REFUSED with
+   * the candidates listed, never narrowed to an arbitrary first match.
+   *
+   * The answer is static evidence from exported source. An empty `tables` or
+   * `effects` list means the index holds no such fact — not that the code has
+   * no runtime effect. See {@link BehaviorEvidenceResult.context} for what
+   * could not be answered.
+   */
+  getBehaviorEvidence(request: BehaviorEvidenceRequest): BehaviorEvidenceResult {
+    return buildBehaviorEvidence(this.queries, request);
   }
 
   /**

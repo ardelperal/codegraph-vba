@@ -1,0 +1,26 @@
+Version =21
+VersionRequired =20
+PublishOption =1
+Checksum =-4444444444
+Begin Form
+    Caption ="Admin"
+    Width =8000
+    Height =4000
+    Begin CommandButton
+        Name ="btnPurge"
+        Caption ="Purge"
+        Left =1000
+        Top =1000
+        Width =1500
+        Height =400
+    End
+    Begin CommandButton
+        Name ="btnAudit"
+        Caption ="Audit"
+        OnClick ="=AuditNow()"
+        Left =2600
+        Top =1000
+        Width =1500
+        Height =400
+    End
+End

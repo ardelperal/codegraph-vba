@@ -12,6 +12,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixes
 
 - Fork documentation now describes v1.17.1 capabilities and pins the integrated upstream v1.4.1 lineage, replacing stale version, feature-parity, and implementation-plan claims. (#312)
+- Dysflow exports are no longer read twice. Every form and report layout, test manifest and test sequence was being parsed once by the VBA dispatcher and again by the Dysflow framework hook, which made a full index do double the work on those files and left duplicate pending references behind. Turning Dysflow expansion off with `vba.dysflowExport: false` is also honoured again in every case. (#314)
 
 ## [1.17.1] - 2026-09-12
 

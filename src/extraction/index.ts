@@ -24,7 +24,7 @@ import { extractFromSource } from './tree-sitter';
 import type { VbaExtractionOptions } from './vba/options';
 import { readVbaSource, isVbaFamilyFile } from './vba-source';
 import { ParseWorkerPool, resolveParsePoolSize, resolveParseTimeoutMs } from './parse-pool';
-import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes } from './grammars';
+import { detectLanguage, isSourceFile, isLanguageSupported, isFileLevelOnlyLanguage, initGrammars, loadGrammarsForLanguages, readGrammarWasmBytes, isAccessErdFile } from './grammars';
 import { loadExtensionOverrides, loadIncludeIgnoredPatterns, loadExcludePatterns, loadVbaConfig, loadIncludePatterns, loadDysflowExportConfig } from '../project-config';
 import { isCodeGraphDataDir } from '../directory';
 import { logDebug, logWarn } from '../errors';
@@ -130,15 +130,38 @@ export function hashContent(content: string): string {
  * change-detection hashing so a BOM-carrying or CP1252 VBA file doesn't hash
  * differently at detect-time than what was stored (perpetual "modified").
  */
+/**
+ * Files that must be decoded with Access encoding rules (BOM strip + CP1252
+ * fallback) rather than as plain UTF-8.
+ *
+ * Two predicates because the family is matched two ways. `isVbaFamilyFile`
+ * owns the extensions (`.bas`, `.cls`, `.form.txt`, `.sql`, …). The Access
+ * structure export is `ERD/*.md`, so it is matched by PATH SHAPE — `.md`
+ * alone must never route every markdown file in a repo through the CP1252
+ * fallback — and that shape is owned by `grammars.ts` (issue #322).
+ *
+ * Combining them here rather than inside `isVbaFamilyFile` keeps
+ * `vba-source.ts` a leaf module: this is the only place that needs both.
+ *
+ * Without the ERD half, an export naming a table with accents decoded to
+ * replacement characters while the `.sql` and `.bas` referencing that same
+ * table decoded it correctly, so the ERD declaration never joined the
+ * placeholder those scanners emit and the table's field list hung off an
+ * orphan node.
+ */
+export function usesAccessEncoding(filePath: string): boolean {
+  return isVbaFamilyFile(filePath) || isAccessErdFile(filePath);
+}
+
 async function readForExtraction(fullPath: string): Promise<string> {
-  return isVbaFamilyFile(fullPath)
+  return usesAccessEncoding(fullPath)
     ? readVbaSource(fullPath).text
     : await fsp.readFile(fullPath, 'utf-8');
 }
 
 /** Synchronous counterpart of {@link readForExtraction} for the sync read sites. */
 function readForExtractionSync(fullPath: string): string {
-  return isVbaFamilyFile(fullPath)
+  return usesAccessEncoding(fullPath)
     ? readVbaSource(fullPath).text
     : fs.readFileSync(fullPath, 'utf-8');
 }

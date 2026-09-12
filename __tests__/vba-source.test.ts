@@ -134,6 +134,11 @@ describe('isVbaFamilyFile - extension routing (Issue #53)', () => {
       'Weird.clsss',
       'MyModule.txt', // NOT `.form.txt` / `.report.txt`
       'notes.form.md',
+      // `.md` is never a family EXTENSION. The Access structure export shares
+      // the decoding but is matched by path shape at the read site instead —
+      // see `usesAccessEncoding` and its tests (#322).
+      'ERD/Estructura_Datos.md',
+      'docs/architecture.md',
     ]) {
       expect(isVbaFamilyFile(p)).toBe(false);
     }

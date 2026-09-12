@@ -15,7 +15,10 @@
  * Scope (do NOT change decoding for tree-sitter languages): only
  * `.bas`/`.cls`/`.frm`/`.dsr`/`.form.txt`/`.report.txt`/`.sql` files get
  * the BOM strip + CP1252 fallback; everything else stays byte-identical to
- * the existing `fs.readFile(path, 'utf-8')` path.
+ * the existing `fs.readFile(path, 'utf-8')` path. The Access structure export
+ * (`ERD/*.md`) shares that decoding but is matched by path shape, so the
+ * combined predicate lives at the read site — see `usesAccessEncoding` in
+ * `./index.ts` (issue #322).
  */
 import * as fs from 'fs';
 

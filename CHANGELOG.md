@@ -9,12 +9,14 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [1.17.1] - 2026-09-12
+
 ### Fixes
 
 - Behavior evidence now bounds traversal work as well as returned results, preventing branched call graphs and duplicate paths from exhausting the request budget. Incomplete traversal is reported explicitly. (#309)
 - Handlers can now be selected by form or report layout filename as well as layout name, including expression functions in separate modules. Ambiguous matches remain explicit. (#310)
 - Publishing a release no longer reports failure for a release that shipped correctly. The final check that each package reached the npm registry gave up after a little over three minutes and threw away its own last wait, while a package of this size can take longer than that to become available — so a perfectly good release was marked red. It now waits proportionately and checks once more at the end, while a package that genuinely never arrives still fails the release. (#307)
-
 
 ## [1.17.0] - 2026-09-12
 
@@ -233,3 +235,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.15.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.15.0
 [1.16.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.16.0
 [1.17.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.17.0
+[1.17.1]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.17.1

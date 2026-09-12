@@ -107,6 +107,16 @@ describe('issue #300 — documented Access guidance', () => {
     for (const file of ['Form_Orders.form.txt', 'Report_Sales.report.txt']) {
       expect([...kindsIn(file)].filter((k) => ['function', 'method'].includes(k))).toEqual([]);
     }
+
+    // It DOES emit a placeholder for each table the layout binds — documented
+    // because it is the one node kind on a layout file that is easy to mistake
+    // for the form's own code.
+    const placeholders = (
+      corpus!.db
+        .prepare("SELECT name FROM nodes WHERE file_path = ? AND kind = 'class'")
+        .all('Form_Orders.form.txt') as Array<{ name: string }>
+    ).map((row) => row.name);
+    expect(placeholders.sort()).toEqual(['tblCustomers', 'tblOrderHeaders']);
   });
 
   it('documented lifecycle and expression bindings carry their stated markers', async () => {

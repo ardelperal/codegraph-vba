@@ -83,11 +83,12 @@ format):
   \`Dim As\`, \`WithEvents\`, and SQL table references inside string literals
   emit synthesized edges tagged \`metadata.synthesizedBy\` (\`vba-name-resolution\`,
   \`vba-withevents\`, \`vba-sql-table\`). A \`.form.txt\` / \`.report.txt\` emits a
-  \`form-layout\` / \`report-layout\` container plus one
-  \`form-instance-control\` per named control (and a \`property\` node per
-  control type) - **no** \`function\`/\`sub\`/\`class\` nodes come from layout
-  files; the canonical code lives in the sibling \`.cls\`, parsed by the same
-  extractor on that file.
+  \`form-layout\` / \`report-layout\` container, one
+  \`form-instance-control\` per named control, a \`property\` node per control
+  type, and a placeholder node per table/query it binds - but **no
+  procedures**: no \`function\`/\`sub\` node, and no class node for the form's
+  own code, comes from a layout file. The canonical code lives in the sibling
+  \`.cls\`, parsed by the same extractor on that file.
 - **Access event wiring has ONE direction: handler -> control/layout.** The
   \`event-handler\` edge is stored from the handler procedure to the
   \`form-instance-control\` it is named for (\`btnSave_Click\` -> \`btnSave\`), or

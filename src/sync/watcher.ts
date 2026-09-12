@@ -559,6 +559,23 @@ export class FileWatcher {
   }
 
   /**
+   * True when `rel` is a Dysflow saved-query manifest (`queries.json`).
+   *
+   * The manifest is not itself indexable, but it is the gate that decides
+   * whether the `.sql` files beside it are Access saved queries at all — both
+   * here and in the indexer's directory discovery. Without this check a
+   * manifest write schedules nothing (#318): a first export that writes its
+   * `.sql` files before the manifest leaves every query out of the graph,
+   * because those `.sql` events were dropped for having no manifest yet and
+   * the manifest that would have made them indexable is not a source file.
+   * Treating the manifest as a change closes the race from both directions —
+   * the sync it schedules picks up every `.sql` in that directory.
+   */
+  private isDysflowQueriesManifest(rel: string): boolean {
+    return path.basename(rel).toLowerCase() === 'queries.json';
+  }
+
+  /**
    * Shared change handler for both watch strategies. `rel` is a
    * project-relative POSIX path. Applies the ignore + source-file filters and,
    * for a real source change, records it as pending (#403) and schedules a
@@ -572,7 +589,13 @@ export class FileWatcher {
     if (!rel || rel === '.' || rel.startsWith('..')) return;
     if (this.isAlwaysIgnored(rel)) return;
     if (this.ignoreMatcher && this.ignoreMatcher.ignores(rel)) return;
-    if (!isSourceFile(rel, loadExtensionOverrides(this.projectRoot)) && !this.isDysflowQuerySql(rel)) return;
+    if (
+      !isSourceFile(rel, loadExtensionOverrides(this.projectRoot)) &&
+      !this.isDysflowQuerySql(rel) &&
+      !this.isDysflowQueriesManifest(rel)
+    ) {
+      return;
+    }
 
     logDebug('File change detected', { file: rel });
     if (this.ready) {

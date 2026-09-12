@@ -17,6 +17,7 @@ End Sub
 
 Private Sub btnExport_Click()
     Application.Run gExportProcedureName
+    ExportOrdersToExcel
 End Sub
 
 Private Sub Form_Load()

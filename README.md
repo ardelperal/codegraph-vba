@@ -414,6 +414,46 @@ The two are **sibling tools**: Dysflow owns the Access binary round-trip (sync, 
 
 **Scope:** Dysflow-managed projects only (Dysflow's `.form.txt` / `.report.txt` SaveAsText format). Legacy `.frm` / `.dsr` Access binary formats are not in scope.
 
+### Behavior evidence for one control
+
+`getBehaviorEvidence` answers "what does this control actually do?" in one
+read, for a consumer that wants data rather than prose: the event binding, the
+call paths under it, and the tables and effects those procedures reach.
+
+```typescript
+const evidence = cg.getBehaviorEvidence({ name: 'btnSave', layout: 'Form_Orders' });
+
+evidence.evidence;
+// [{ handler: 'btnSave_Click',
+//    callPath: ['btnSave_Click', 'SaveOrderTotals'],
+//    tables: ['tblOrderLines', 'tblProducts'],
+//    effects: ['data-access:qryOrderTotals', 'data-access:tblOrderLines', 'data-access:tblProducts'] }]
+```
+
+- **Identify the target by `nodeId`** whenever you have one. A `name` needs a
+  `layout` as soon as it is not unique — the same control name usually exists on
+  several forms, and an ambiguous name is **refused** with the candidates listed
+  in `context.ambiguous`, never narrowed to an arbitrary match.
+- **`callPath` is one root-to-leaf path**, handler first. Distinct branches are
+  separate entries, never concatenated into a sequence the runtime would not
+  take; a path that re-enters a procedure ends there.
+- **`effects` uses a closed vocabulary**: `read:<name>`, `write:<name>`,
+  `data-access:<name>` (direction unknown — neither a read nor a write),
+  `opens-form:<Name>`, `opens-report:<Name>`, `raises-event:<Name>`.
+- **`context` carries everything that is not the payload**: node identities and
+  source locations, how each handler is wired (`control`, `form` lifecycle,
+  `expression`), what could not be resolved, and whether a depth or result
+  budget cut the answer short (`maxCallDepth` defaults to 5, `maxResults` to 50).
+- **It is static evidence from exported source.** An empty `tables` or `effects`
+  list means the index holds no such fact — **not** that the code has no runtime
+  effect. It also says nothing about whether the `.accdb` binary matches the
+  export.
+
+The same assembler is available over MCP as `codegraph_behavior_evidence`
+(unlisted by default like the other narrow tools — enable it with
+`CODEGRAPH_MCP_TOOLS=explore,behavior_evidence`), returning the identical
+payload as JSON.
+
 ---
 
 ## Quick Start
@@ -616,7 +656,7 @@ When running as an MCP server, CodeGraph exposes a **single tool** — `codegrap
 |------|---------|
 | `codegraph_explore` | Answer almost any question in one call — "how does X work", a flow ("how does X reach Y"), or surveying an area — returning the relevant symbols' verbatim source grouped by file, plus the call paths between them and a blast-radius summary. Surfaces dynamic-dispatch hops (callbacks, React re-render, interface→impl) grep can't follow. Name a file or symbol in the query to read its current line-numbered source, the same shape the Read tool gives you. |
 
-The other tools (`codegraph_node`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph-vba node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
+The other tools (`codegraph_node`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`, and the Access-specific `codegraph_behavior_evidence`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph-vba node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
 
 Even when the server's own root has no `.codegraph-vba/` index, the tools stay available: pass `projectPath` to query any indexed project — a sub-service in a monorepo, or a second repo — in the same session. A path that has no index returns clean guidance to use built-in tools instead, so nothing fails loudly, and indexing stays your decision.
 
@@ -644,6 +684,8 @@ const results = cg.searchNodes('UserService');
 const callers = cg.getCallers(results[0].node.id);
 const context = await cg.buildContext('fix login bug', { maxNodes: 20, includeCode: true, format: 'markdown' });
 const impact = cg.getImpactRadius(results[0].node.id, 2);
+// Access/VBA only — see "Behavior evidence for one control" above:
+const behavior = cg.getBehaviorEvidence({ name: 'btnSave', layout: 'Form_Orders' });
 
 cg.watch();   // auto-sync on file changes
 cg.unwatch(); // stop watching

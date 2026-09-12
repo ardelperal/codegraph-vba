@@ -382,7 +382,10 @@ The two are **sibling tools**: Dysflow owns the Access binary round-trip (sync, 
 
 | Pattern | `.bas` / `.cls` side | `.form.txt` / `.report.txt` side | How |
 |---|---|---|---|
-| **Form code ↔ UI binding** | `.cls` class node (canonical form code) | `.form.txt` module node + `property` nodes per control | `UnresolvedReference` with `synthesizedBy: 'vba-form-binding'`; resolver wires form module → sibling `.cls` class at index time |
+| **Form code ↔ UI binding** | `.cls` class node (canonical form code) | `form-layout` / `report-layout` node + one `form-instance-control` per named control (and a `property` node per control *type*) | `UnresolvedReference` with `synthesizedBy: 'vba-form-binding'`; resolver wires the layout → sibling `.cls` class at index time |
+| **Control event handler** (`btnSave_Click`) | `.cls` handler procedure | `form-instance-control` node for `btnSave` | `event-handler` edge stored **handler → control**. To go the other way — from a control to what runs on it — follow that edge *backwards* |
+| **Form / report lifecycle event** (`Form_Load`, `Report_Open`) | `.cls` handler procedure | `form-layout` / `report-layout` node | `event-handler` edge **handler → layout**, carrying `metadata.scope: 'form'` so it is distinguishable from a control handler |
+| **Expression-wired event** (`OnClick ="=AuditNow()"`) | `.bas`/`.cls` procedure named in the expression | `form-instance-control` / layout node carrying the property | Resolves to the **same** `event-handler` direction (handler → control), tagged `synthesizedBy: 'vba-expression-handler'`. A bare macro name or `[Event Procedure]` emits nothing rather than inventing a procedure |
 | **`Implements IFoo`** | `.cls` declares `Implements IFoo` | — | Emits an `implements` edge from the class to `IFoo` |
 | **`Dim x As Foo.Bar`** | `.bas`/`.cls` qualified type reference | — | `references` edge to `Foo` with `synthesizedBy: 'vba-name-resolution'`; silent when unresolvable |
 | **`WithEvents m_X As Form_Foo`** | `.cls` listener declaration | — | `references` edge to `Form_Foo` with `synthesizedBy: 'vba-withevents'` — closes the event-driven form flow |
@@ -396,7 +399,11 @@ The two are **sibling tools**: Dysflow owns the Access binary round-trip (sync, 
 
 **Hard invariants** enforced by the extractor and verified by tests:
 
-- **`.cls` is the canonical source for form code.** `.form.txt` emits **zero** `function` / `sub` / `class` nodes — only the form-level `module` node and `property` nodes per control. Dysflow overwrites `.form.txt`'s embedded code on the next import, so emitting code from there would be both wrong and ephemeral.
+- **`.cls` is the canonical source for form code.** `.form.txt` / `.report.txt` emit **zero procedures** — no `function` / `sub` node, and no class node for the form's own code, ever comes from a layout file. What they do emit is the `form-layout` / `report-layout` container, one `form-instance-control` per named control, a `property` node per control *type*, and a synthetic placeholder node for each table or query the layout binds through `RecordSource` / `RowSource` / `ControlSource`. Dysflow overwrites the layout file's embedded code on the next import, so emitting procedures from there would be both wrong and ephemeral.
+- **An event binding is stored in one direction: handler → control/layout.** There is no reverse edge and no bidirectional edge. Reaching a handler from its control means following the `event-handler` edge backwards; that is what `traverseGraph` and `getBehaviorEvidence` do for you.
+- **A control belongs to the layout that `contains` it**, not to whatever file its name appears in. The same control name (`btnSave`) routinely exists on several forms, so any lookup by name must be scoped by layout — an unscoped name is ambiguous, not a match.
+- **A call is not always a `calls` edge.** VBA's statement-form Sub call (`SaveRecord` alone on a line) could also be a `Const` read, so the extractor keeps it as an ambiguous identifier and it resolves to a `references` edge onto the procedure. Consumers that follow only `calls` lose the dominant call style in Access code-behind.
+- **CodeGraph indexes the exported source tree, not the live `.accdb`.** Everything here is static evidence: it does not prove a handler ran, and it says nothing about whether the binary matches the export — Dysflow owns that round-trip. Edges tagged `provenance: 'heuristic'` are inferred from naming and string contents; absence of an edge is missing evidence, never proof of no runtime effect.
 - **Option-only files stay silent.** A `.bas` containing only `Option ...` directives emits zero symbol nodes; a `.bas` with only `Enum`, `Const`, `Event`, `Type`, or `Declare` declarations DOES emit its module node because those declarations are real graph symbols.
 
 **VBA / Access node kinds added by the fork:**
@@ -413,6 +420,53 @@ The two are **sibling tools**: Dysflow owns the Access binary round-trip (sync, 
 | `form-instance-control` | Access control instance from form/report UI text |
 
 **Scope:** Dysflow-managed projects only (Dysflow's `.form.txt` / `.report.txt` SaveAsText format). Legacy `.frm` / `.dsr` Access binary formats are not in scope.
+
+### Worked example: from a control to the tables it touches
+
+Runnable against any indexed Dysflow export. It is also executed as a test —
+`documented Access traversal example matches indexed fixture` in
+`__tests__/vba-documented-example.test.ts` — against the checked-in
+`__tests__/fixtures/vba-consumer-semantics/` corpus, so these values are
+asserted, not illustrative.
+
+```typescript
+import CodeGraph from 'codegraph-vba';
+
+const cg = await CodeGraph.open('/path/to/dysflow-export');
+
+// 1. Resolve the control WITH its layout. `btnSave` exists on several forms,
+//    so the layout file is what makes the answer unambiguous. A bare name is
+//    ambiguous, not a match.
+const btnSave = cg
+  .searchNodes('btnSave', { kinds: ['form-instance-control'], languages: ['vba'] })
+  .map(({ node }) => node)
+  .find((node) => node.filePath.endsWith('Form_Orders.form.txt'))!;
+
+// 2. The binding is stored handler -> control, so the handler is found by
+//    following it BACKWARDS.
+const binding = cg
+  .getIncomingEdges(btnSave.id)
+  .filter((edge) => edge.kind === 'event-handler');
+// binding[0].metadata.eventName === 'Click'
+// binding[0].source            === the btnSave_Click node's id
+
+// 3. What runs, and what it reaches. One read, already scoped by step 1.
+const behavior = cg.getBehaviorEvidence({ nodeId: btnSave.id });
+// behavior.evidence[0].handler  === 'btnSave_Click'
+// behavior.evidence[0].callPath === ['btnSave_Click', 'SaveOrderTotals']
+// behavior.evidence[0].tables   === ['tblOrderLines', 'tblProducts']
+
+// 4. The tables are reached THROUGH the saved query — the context says which,
+//    instead of leaving you to match names yourself.
+behavior.context.data.find((d) => d.name === 'tblOrderLines')!.throughQuery;
+// 'qryOrderTotals'
+```
+
+Same control name on a different form, same call, different answer:
+`{ name: 'btnSave', layout: 'Form_Invoices' }` returns
+`['btnSave_Click', 'SaveInvoiceTotals']` — and `{ name: 'btnSave' }` with no
+layout returns no evidence at all, listing both candidates in
+`context.ambiguous`.
 
 ### Behavior evidence for one control
 

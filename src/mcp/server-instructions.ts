@@ -82,10 +82,32 @@ format):
   (procedural-level; regex-based, not full AST). Cross-module calls, qualified
   \`Dim As\`, \`WithEvents\`, and SQL table references inside string literals
   emit synthesized edges tagged \`metadata.synthesizedBy\` (\`vba-name-resolution\`,
-  \`vba-withevents\`, \`vba-sql-table\`). \`.form.txt\` and \`.report.txt\` are
-  extracted as a \`module\` plus one \`property\` per Access control - **no**
-  \`function\`/\`sub\`/\`class\` nodes come from form files; the canonical code
-  lives in the sibling \`.cls\`, parsed by the same extractor on that file.
+  \`vba-withevents\`, \`vba-sql-table\`). A \`.form.txt\` / \`.report.txt\` emits a
+  \`form-layout\` / \`report-layout\` container, one
+  \`form-instance-control\` per named control, a \`property\` node per control
+  type, and a placeholder node per table/query it binds - but **no
+  procedures**: no \`function\`/\`sub\` node, and no class node for the form's
+  own code, comes from a layout file. The canonical code lives in the sibling
+  \`.cls\`, parsed by the same extractor on that file.
+- **Access event wiring has ONE direction: handler -> control/layout.** The
+  \`event-handler\` edge is stored from the handler procedure to the
+  \`form-instance-control\` it is named for (\`btnSave_Click\` -> \`btnSave\`), or
+  to the sibling layout node for a form/report lifecycle event
+  (\`Form_Load\` -> \`Form_Orders\`, carrying \`metadata.scope: 'form'\`). An
+  \`=Expression()\` event property resolves to the same direction, tagged
+  \`vba-expression-handler\`. There is no reverse edge: to answer "what runs on
+  this control", follow the edge BACKWARDS from the control. Scope every
+  control lookup by its layout - the same control name usually exists on
+  several forms, and a layout owns its controls through \`contains\`.
+- **A VBA call is not always a \`calls\` edge.** \`Call Foo\` and \`Foo 1, 2\` are
+  \`calls\`; a bare \`Foo\` on its own line could also be a \`Const\` read, so it
+  stays an ambiguous identifier and resolves to a \`references\` edge onto the
+  procedure. That bare form is the dominant call style in Access code-behind,
+  so a trace that follows only \`calls\` stops at the handler.
+- **Codegraph indexes the exported source tree, not the live \`.accdb\`.** It is
+  static evidence: it never proves a handler ran, and it says nothing about
+  whether the binary matches the export (Dysflow owns that round-trip). A
+  missing edge is missing evidence, not proof of no runtime effect.
   Dysflow test manifests (\`tests.*.json\`) link each registered \`Test_*\`
   procedure to its manifest with a \`references\` edge tagged
   \`vba-test-manifest\` carrying the test name + tags, so \`getCallers\` of a

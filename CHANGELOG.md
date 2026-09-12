@@ -16,6 +16,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixes
 
+- The Access guidance agents actually receive — the README and the instructions the MCP server sends on connect — now describes the form and report model the indexer really produces, instead of the older one it outgrew. It also states the parts that were never written down: an event binding is stored in one direction only, a control belongs to the form that contains it (so the same button name on two forms is two different answers), and the most common way of calling a procedure in VBA does not look like a call. (#300)
+- The Access documentation now says plainly that CodeGraph reads the exported source tree, not the live Access file: nothing here proves a handler ran, and a missing relationship is missing evidence rather than proof that nothing happens. The worked example in the README is executed as a test against a checked-in fixture, so following it cannot silently stop working. (#300)
+- The event-tracing guidance now separates custom VBA events from Access control events, which are wired differently and were easy to confuse. (#300)
+
 - Tracing an Access form control now reaches its event handler and everything that handler calls. Starting a trace at a button used to come back empty, because the trace followed the wiring between a control and its handler in the wrong direction, and because the common way of calling a procedure in VBA — writing its name on a line by itself — was not being counted as a call at all. (#298)
 - Impact analysis for a saved query now names the forms and reports affected by it even when nothing binds the query to the screen directly, so a query reached only through code no longer looks harmless. Ownership of a control is taken from the form that contains it, so two forms with a button of the same name no longer answer for each other. (#298)
 - A trace no longer pads its answer with relationships that are not steps in the code's execution, such as what contains a procedure or which table it reads, and an unknown starting point now says so instead of returning an empty result that reads like "nothing calls this". (#298)

@@ -10,6 +10,14 @@ This skill enables the agent to trace a custom VBA event, locate its declaration
 ## Triggering Context
 This skill is triggered when the user requests to trace or explore a VBA event (e.g., "Trace VBA event PedidoGuardado", "Find event handlers for DataChanged").
 
+**Scope — two different things are called "events" in Access.** This skill
+covers CUSTOM VBA events: `Public Event Foo(...)` declarations, their
+`RaiseEvent` sites, and `WithEvents` subscribers (`raises-event` /
+`subscribes-event` edges). It does NOT cover Access CONTROL events
+(`btnSave_Click`, `Form_Load`, `OnClick ="=AuditNow()"`), which are wired with
+an `event-handler` edge stored **handler -> control/layout** — use
+`vba-handler-backtrace` for those.
+
 ## Step-by-Step Execution Guide
 
 ### Step 1: Run codegraph_explore Query

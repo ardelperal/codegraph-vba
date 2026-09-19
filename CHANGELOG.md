@@ -9,6 +9,10 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### New Features
+
+- CodeGraph-VBA now installs and upgrades entirely from GitHub Releases, with no npm needed: the one-line installers put both `codegraph` and `codegraph-vba` on your PATH, and `codegraph-vba install` sets up the CLI the same way. (#326)
+
 
 ## [2.0.0] - 2026-09-19
 

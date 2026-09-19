@@ -10,13 +10,17 @@ name: Release
 #      native compilation, so cross-packaging is fine),
 #   4. creates the GitHub Release (tag v<version>) with all archives, using the
 #      release notes from CHANGELOG.md,
-#   5. publishes the npm thin-installer (shim + per-platform packages).
+#   5. publishes the npm thin-installer (shim + per-platform packages) — OPTIONAL.
 #
 # Before triggering: bump package.json on the default branch, and dispatch this
 # workflow from that branch — a guard step rejects anything else, because step 2
 # pushes its commit to whichever branch triggered the run. CHANGELOG.md entries
 # can live under `## [Unreleased]`; step 2 moves them. Never pre-create a
-# `## [<version>]` block. Set the NPM_TOKEN secret.
+# `## [<version>]` block.
+#
+# GitHub Releases is the required channel: install.sh / install.ps1 and
+# `codegraph-vba upgrade` only need the release assets. Step 5 runs only when the
+# NPM_TOKEN secret is set, and an npm failure never fails the release (#326).
 on:
   workflow_dispatch: {}
 
@@ -154,7 +158,25 @@ jobs:
             gh release create "$TAG" release/codegraph-vba-* release/SHA256SUMS --title "$TITLE" --notes-file notes.md
           fi
 
+      - name: Check npm credentials
+        # Secrets can't be read in `if:`, so expose only whether one is set.
+        id: npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::NPM_TOKEN is not set — skipping npm publish. The GitHub Release is complete."
+          fi
+
       - name: Publish to npm
+        # Optional channel (#326): a dead or revoked token must not turn a
+        # release red after its GitHub Release already shipped.
+        id: publish
+        if: steps.npm.outputs.enabled == 'true'
+        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -178,6 +200,8 @@ jobs:
           done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/bin/*' -exec dirname {} \; | sort -u)
 
       - name: Verify every package is actually on the registry
+        if: steps.publish.outcome == 'success'
+        continue-on-error: true
         env:
           # Per-package patience. Each per-platform package bundles a Node
           # runtime and unpacks to ~200 MB over ~1,000 files, and npm's
@@ -211,6 +235,7 @@ jobs:
           done < <(find release/npm -name 'package.json' -not -path '*/node_modules/*' -not -path '*/lib/*' -not -path '*/bin/*' -exec dirname {} \; | sort -u)
 
       - name: Sync packages to npmmirror
+        if: steps.publish.outcome == 'success'
         # npmmirror/cnpm mirror lazily and frequently never pull the per-platform
         # optionalDependencies on their own, so `npm i` there fails with
         # "no prebuilt bundle" (issue #303). Nudge a sync now so mirror users get

@@ -101,10 +101,16 @@ rm -f "$STAGE/lib/package-lock.json" "$STAGE/lib/pnpm-lock.yaml"
 # it. See issues #293/#298 and src/extraction/wasm-runtime-flags.ts. (The CLI
 # also self-relaunches with this flag when launched without it, so non-bundled
 # runs are covered too; passing it here avoids that extra spawn.)
+#
+# Two launcher names, same program: `codegraph` and `codegraph-vba`. Agent MCP
+# configs and Dysflow launch `codegraph-vba`, so a GitHub-only install must put
+# that name on PATH too (issue #326).
+# >>> CODEGRAPH_LAUNCHERS
 if [ "$OSFAM" = "win32" ]; then
   cp "$NODE_BIN" "$STAGE/node.exe"
   printf '@"%%~dp0..\\node.exe" --liftoff-only "%%~dp0..\\lib\\dist\\bin\\codegraph.js" %%*\r\n' \
     > "$STAGE/bin/codegraph.cmd"
+  cp "$STAGE/bin/codegraph.cmd" "$STAGE/bin/codegraph-vba.cmd"
 else
   cp "$NODE_BIN" "$STAGE/node"
   cat > "$STAGE/bin/codegraph" <<'LAUNCH'
@@ -129,7 +135,10 @@ export CODEGRAPH_HOST_PPID
 exec "$DIR/node" --liftoff-only "$DIR/lib/dist/bin/codegraph.js" "$@"
 LAUNCH
   chmod +x "$STAGE/bin/codegraph"
+  cp "$STAGE/bin/codegraph" "$STAGE/bin/codegraph-vba"
+  chmod +x "$STAGE/bin/codegraph-vba"
 fi
+# <<< CODEGRAPH_LAUNCHERS
 
 # 5. Archive (.zip for Windows, .tar.gz otherwise).
 mkdir -p "$OUT"

@@ -22,9 +22,9 @@ INSTALL_DIR="${CODEGRAPH_INSTALL_DIR:-$HOME/.codegraph}"
 BIN_DIR="${CODEGRAPH_BIN_DIR:-$HOME/.local/bin}"
 
 if [ "${1:-}" = "--uninstall" ]; then
-  rm -f "$BIN_DIR/codegraph"
+  rm -f "$BIN_DIR/codegraph" "$BIN_DIR/codegraph-vba"
   rm -rf "$INSTALL_DIR"
-  echo "CodeGraph uninstalled (removed $INSTALL_DIR and $BIN_DIR/codegraph)."
+  echo "CodeGraph uninstalled (removed $INSTALL_DIR, $BIN_DIR/codegraph and $BIN_DIR/codegraph-vba)."
   exit 0
 fi
 
@@ -76,13 +76,21 @@ mkdir -p "$dest"
 # Archives contain a top-level codegraph-<target>/ dir; strip it.
 tar -xzf "$tmp/cg.tar.gz" -C "$dest" --strip-components=1
 
-# 4. Symlink the launcher onto PATH and mark the current version.
+# 4. Symlink the launchers onto PATH and mark the current version.
+# >>> CODEGRAPH_LINK_LAUNCHERS
 mkdir -p "$BIN_DIR"
 ln -sf "$dest/bin/codegraph" "$BIN_DIR/codegraph"
+echo "Linked     $BIN_DIR/codegraph"
+# Agent MCP configs and Dysflow launch `codegraph-vba` (issue #326). Bundles
+# older than the release that added it only ship `codegraph`.
+if [ -f "$dest/bin/codegraph-vba" ]; then
+  ln -sf "$dest/bin/codegraph-vba" "$BIN_DIR/codegraph-vba"
+  echo "Linked     $BIN_DIR/codegraph-vba"
+fi
+# <<< CODEGRAPH_LINK_LAUNCHERS
 ln -sfn "$dest" "$INSTALL_DIR/current"
 
 echo "Installed to $dest"
-echo "Linked     $BIN_DIR/codegraph"
 
 # 5. Prune older bundles so they don't pile up across upgrades (issue #1074).
 # Each release lives in its own versions/<v> dir (~50 MB with the vendored Node

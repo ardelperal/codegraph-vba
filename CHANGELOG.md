@@ -9,10 +9,12 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+
+## [2.1.1] - 2026-09-19
+
 ### Fixes
 
 - `codegraph-vba install` now writes the same MCP server entry as upstream CodeGraph (`codegraph serve --mcp`, under the `codegraph` key), so tools that manage CodeGraph for you, such as gentle-ai, recognise this fork as CodeGraph. Entries left under the old `codegraph-vba` key in opencode and Hermes are migrated, and any extra settings you added to the opencode entry are kept. (#328)
-
 
 ## [2.1.0] - 2026-09-19
 
@@ -266,3 +268,4 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 [1.17.2]: https://github.com/ardelperal/codegraph-vba/releases/tag/v1.17.2
 [2.0.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v2.0.0
 [2.1.0]: https://github.com/ardelperal/codegraph-vba/releases/tag/v2.1.0
+[2.1.1]: https://github.com/ardelperal/codegraph-vba/releases/tag/v2.1.1

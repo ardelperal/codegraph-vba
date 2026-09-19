@@ -83,7 +83,7 @@ describe('VBA targets config loader', () => {
 
   it('merges local and root project config where root overrides local', () => {
     // Write local config
-    const localDir = path.join(dir, '.codegraph-vba');
+    const localDir = path.join(dir, '.codegraph');
     fs.mkdirSync(localDir, { recursive: true });
     fs.writeFileSync(
       path.join(localDir, 'config.json'),
@@ -186,7 +186,7 @@ describe('VBA targets config end-to-end integration', () => {
     expect(qualifiedNames1).not.toContain('MyClass.ActiveWin64Sub');
 
     await cg1.destroy();
-    fs.rmSync(path.join(dir, '.codegraph-vba'), { recursive: true, force: true });
+    fs.rmSync(path.join(dir, '.codegraph'), { recursive: true, force: true });
     clearProjectConfigCache();
 
     // 2. Run with Win64: true in codegraph.json

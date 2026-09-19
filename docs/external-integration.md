@@ -122,7 +122,7 @@ Shape (top-level keys; values elided):
   "initialized": true,
   "version": "1.13.0",                // npm package version (string)
   "projectPath": "C:\\...\\my-project",
-  "indexPath": "C:\\...\\my-project\\.codegraph-vba",
+  "indexPath": "C:\\...\\my-project\\.codegraph",
   "lastIndexed": "2026-07-20T13:45:22.512Z",  // ISO-8601, null before first index
   "fileCount": 643,
   "nodeCount": 9289,
@@ -234,7 +234,7 @@ without changes for the lifetime of the v1.x line".
 | The set of top-level subcommands listed in `codegraph --help` | Subcommands are ADDITIVE — new commands may appear, but existing ones will not be removed without a major version bump. A removed subcommand is a breaking change. |
 | The `--json` flag on every read-only subcommand | Stable. The JSON top-level keys listed in §3 are stable; existing keys are never removed, only added. |
 | The spawn snippet in §2 (Node `child_process.spawn` + platform branch) | Stable — this is the exact pattern the maintainer team uses internally. |
-| The presence of `.codegraph-vba/codegraph.db` after `codegraph init` | Stable — the directory + file name are part of the contract. |
+| The presence of `.codegraph/codegraph.db` after `codegraph init` | Stable — the directory + file name are part of the contract. |
 | The published schema in [`docs/index-schema.md`](index-schema.md) | **Stable columns** (tagged in the doc) are stable. **Implementation-detail columns** may change between minor releases. |
 
 ### Implementation detail (NOT stable)

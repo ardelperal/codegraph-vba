@@ -1,7 +1,7 @@
 /**
  * scripts/dump-index-schema.ts
  *
- * Emits the live `.codegraph-vba/codegraph.db` schema as a markdown file
+ * Emits the live `.codegraph/codegraph.db` schema as a markdown file
  * (`docs/index-schema.md`). This is Deliverable 2 of issue #200.
  *
  * Why this script exists
@@ -119,7 +119,7 @@ const FTS_SHADOW_PREFIX = 'nodes_fts';
 /**
  * Open a fresh temp `node:sqlite` database, apply the canonical schema, and
  * return the live table/column/index metadata. Hermetic — never reads or
- * mutates the user's real `.codegraph-vba/codegraph.db`.
+ * mutates the user's real `.codegraph/codegraph.db`.
  */
 function readLiveSchema(): {
   tables: Map<string, ColumnInfo[]>;
@@ -290,7 +290,7 @@ function buildDoc(tables: Map<string, ColumnInfo[]>, indexes: Map<string, IndexI
   parts.push('# codegraph-vba index — SQL schema reference');
   parts.push('');
   parts.push(
-    `This document is the published SQL contract for the \`.codegraph-vba/codegraph.db\` index. It is **auto-generated** by \`scripts/dump-index-schema.ts\` from the canonical schema in \`src/db/schema.sql\` (issue #200, Deliverable 2).`,
+    `This document is the published SQL contract for the \`.codegraph/codegraph.db\` index. It is **auto-generated** by \`scripts/dump-index-schema.ts\` from the canonical schema in \`src/db/schema.sql\` (issue #200, Deliverable 2).`,
   );
   parts.push('');
   parts.push('Regenerate with `npm run schema:dump` after any schema change.');

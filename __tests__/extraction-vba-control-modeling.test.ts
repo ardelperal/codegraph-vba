@@ -27,7 +27,7 @@
  *   - Tests are RED, no GREEN code is written here.
  *   - No src/extraction/* files are modified.
  *   - The CodeGraph index for hueco 5 is created under the fixture dir and
- *     cleaned up in afterAll so this test leaves no stale `.codegraph-vba/`
+ *     cleaned up in afterAll so this test leaves no stale `.codegraph/`
  *     behind in the repo.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -258,7 +258,7 @@ describe('hueco-4: .form.txt emits kind=form-layout, NOT kind=module', () => {
 // =============================================================================
 describe('huecos 3 & 5: VBA event-handler and Form_Load integration', () => {
   let cg: CodeGraph | null = null;
-  const codeGraphDir = path.join(FIXTURE_DIR, '.codegraph-vba');
+  const codeGraphDir = path.join(FIXTURE_DIR, '.codegraph');
   let initialized = false;
 
   beforeAll(async () => {

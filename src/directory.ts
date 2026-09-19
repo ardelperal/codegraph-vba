@@ -9,7 +9,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 /** The default per-project data directory name. */
-const DEFAULT_CODEGRAPH_DIR = '.codegraph-vba';
+const DEFAULT_CODEGRAPH_DIR = '.codegraph';
 
 let warnedBadDirName = false;
 
@@ -69,15 +69,15 @@ export const CODEGRAPH_DIR = codeGraphDirName();
  * default `.codegraph`, the active `CODEGRAPH_DIR` override, and any
  * `.codegraph-*` sibling. File-watching and the indexer skip ALL of these, so
  * when two environments share one working tree (Windows + WSL, issue #636)
- * neither indexes or watches the other's index directory.
+ * neither indexes or watches the other's index directory. The prefix match
+ * also covers the legacy `.codegraph-vba/` directory older releases of this
+ * fork wrote, so a stale one left in a consumer repo is never indexed.
  */
 export function isCodeGraphDataDir(name: string): boolean {
   return (
     name === DEFAULT_CODEGRAPH_DIR ||
-    name === '.codegraph' ||
     name === codeGraphDirName() ||
-    name.startsWith(DEFAULT_CODEGRAPH_DIR + '-') ||
-    name.startsWith('.codegraph-')
+    name.startsWith(DEFAULT_CODEGRAPH_DIR + '-')
   );
 }
 
@@ -593,7 +593,7 @@ export function planFrontload(cwd: string, prompt: string): FrontloadPlan {
  * runtime files were silently committed.
  */
 const GITIGNORE_CONTENT = `# CodeGraph-VBA data files — local to each machine, not for committing.
-# Ignore everything in .codegraph-vba/ except this file itself, so transient
+# Ignore everything in .codegraph/ except this file itself, so transient
 # files (the database, daemon.pid, sockets, logs) never show up in git.
 *
 !.gitignore
@@ -660,7 +660,7 @@ export function createDirectory(projectRoot: string): void {
   // pre-wildcard default left by an older version — issue #788).
   ensureGitignore(path.join(codegraphDir, '.gitignore'));
 
-  // Write default config.json inside .codegraph-vba/ (chore(config): default excludePatterns)
+  // Write default config.json inside .codegraph/ (chore(config): default excludePatterns)
   const configPath = path.join(codegraphDir, 'config.json');
   if (!fs.existsSync(configPath)) {
     const defaultConfig = {

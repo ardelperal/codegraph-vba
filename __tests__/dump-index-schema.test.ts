@@ -16,7 +16,7 @@
  *      external tools.
  *
  * The dump is tested against a FRESH temp DB created from the canonical
- * `src/db/schema.sql` (NOT against the user's real `.codegraph-vba/codegraph.db`),
+ * `src/db/schema.sql` (NOT against the user's real `.codegraph/codegraph.db`),
  * so the test is hermetic — it never reads or mutates project state.
  */
 

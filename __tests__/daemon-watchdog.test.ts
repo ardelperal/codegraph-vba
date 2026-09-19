@@ -27,15 +27,14 @@ function rec(root: string, pid: number, startedAt = Date.now()): DaemonRecord {
 }
 
 function fakeProject(): string {
-  // Make a fake .codegraph-vba/ dir (note the suffix — codegraph-vba's
-  // getCodeGraphDir() uses `.codegraph-vba`, NOT `.codegraph`) so
+  // Make a fake .codegraph/ dir so
   // findNearestCodeGraphRoot() and getDaemonPidPath() both resolve correctly.
   // isInitialized() requires BOTH the dir AND a codegraph.db file, so create
   // an empty placeholder db so the project looks "initialized" to the daemon
   // logic.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-watchdog-'));
-  fs.mkdirSync(path.join(root, '.codegraph-vba'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.codegraph-vba', 'codegraph.db'), '');
+  fs.mkdirSync(path.join(root, '.codegraph'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.codegraph', 'codegraph.db'), '');
   return root;
 }
 

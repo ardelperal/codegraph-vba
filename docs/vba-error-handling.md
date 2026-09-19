@@ -2,10 +2,10 @@
 
 CodeGraph records each VBA procedure's error policy in the procedure node's
 `metadata.errorPolicy` object. Run the four queries below against the generated
-`.codegraph-vba/codegraph.db` SQLite database to find risky unprotected code,
+`.codegraph/codegraph.db` SQLite database to find risky unprotected code,
 open suppression scopes, user-facing error displays, and missing handlers.
 
-> If `CODEGRAPH_DIR` is set, use that directory instead of `.codegraph-vba`.
+> If `CODEGRAPH_DIR` is set, use that directory instead of `.codegraph`.
 > Build or refresh the index before querying so these fields reflect the current
 > source. SQLite's JSON functions (`json_extract`) are required.
 

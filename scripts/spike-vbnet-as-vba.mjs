@@ -53,7 +53,7 @@ const VBA_EXTS = new Set(['.bas', '.cls']);
 
 /**
  * Walk a directory and return every `.bas`/`.cls` file path, depth-first.
- * Skips `node_modules` and any `.codegraph-vba/` index dirs.
+ * Skips `node_modules` and any `.codegraph/` index dirs.
  */
 function walkVbaFiles(root) {
   const out = [];

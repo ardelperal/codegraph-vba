@@ -118,9 +118,9 @@ function preferredMcpConfigPath(): string {
  * nvm-managed tools like ours.
  */
 function resolveCodegraphCommand(): string {
-  if (process.platform !== 'darwin') return 'codegraph-vba';
+  if (process.platform !== 'darwin') return 'codegraph';
   try {
-    const resolved = execSync('command -v codegraph-vba || which codegraph-vba', {
+    const resolved = execSync('command -v codegraph || which codegraph', {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       shell: '/bin/bash',
@@ -130,7 +130,7 @@ function resolveCodegraphCommand(): string {
   } catch {
     /* fall through to bare name */
   }
-  return 'codegraph-vba';
+  return 'codegraph';
 }
 
 /**

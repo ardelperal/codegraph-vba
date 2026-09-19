@@ -26,8 +26,8 @@ import { getStaticTools, ToolHandler } from '../src/mcp/tools';
 
 function project(parent: string, name: string): string {
   const root = path.join(parent, name);
-  fs.mkdirSync(path.join(root, '.codegraph-vba'), { recursive: true });
-  fs.writeFileSync(path.join(root, '.codegraph-vba', 'codegraph.db'), '');
+  fs.mkdirSync(path.join(root, '.codegraph'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.codegraph', 'codegraph.db'), '');
   return fs.realpathSync(root);
 }
 

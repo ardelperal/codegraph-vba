@@ -9,6 +9,9 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The per-project index now lives in `.codegraph/`, the same directory upstream CodeGraph and agent tooling look for, instead of `.codegraph-vba/`. Existing projects need a fresh `codegraph-vba init`; an old `.codegraph-vba/` folder is ignored by indexing and can be deleted. (#324)
 
 ## [1.17.2] - 2026-09-12
 

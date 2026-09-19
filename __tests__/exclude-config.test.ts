@@ -86,9 +86,9 @@ describe('exclude loader (codegraph.json)', () => {
     expect(loadExcludePatterns(dir)).toEqual([]);
   });
 
-  it('loads and merges from local .codegraph-vba/config.json', () => {
+  it('loads and merges from local .codegraph/config.json', () => {
     // Write local config.json
-    const codegraphDir = path.join(dir, '.codegraph-vba');
+    const codegraphDir = path.join(dir, '.codegraph');
     fs.mkdirSync(codegraphDir, { recursive: true });
     fs.writeFileSync(
       path.join(codegraphDir, 'config.json'),

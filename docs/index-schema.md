@@ -1,6 +1,6 @@
 # codegraph-vba index — SQL schema reference
 
-This document is the published SQL contract for the `.codegraph-vba/codegraph.db` index. It is **auto-generated** by `scripts/dump-index-schema.ts` from the canonical schema in `src/db/schema.sql` (issue #200, Deliverable 2).
+This document is the published SQL contract for the `.codegraph/codegraph.db` index. It is **auto-generated** by `scripts/dump-index-schema.ts` from the canonical schema in `src/db/schema.sql` (issue #200, Deliverable 2).
 
 Regenerate with `npm run schema:dump` after any schema change.
 

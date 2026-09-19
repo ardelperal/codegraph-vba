@@ -49,7 +49,7 @@ import { getCodeGraphDir } from '../src/directory';
 // ---------------------------------------------------------------------------
 // Fixture gate: every test builds its OWN isolated temp project so config and
 // state never bleed. We do NOT use the `__tests__/fixtures/vba/` real-fixture
-// directory ÔÇö that one carries a `.codegraph-vba/` produced by earlier tests
+// directory ÔÇö that one carries a `.codegraph/` produced by earlier tests
 // and a strict `codegraph.json` could be left over from a previous run,
 // hiding a regression in our own loader.
 // ---------------------------------------------------------------------------
@@ -92,7 +92,7 @@ afterEach(async () => {
       // ignore close errors
     }
     // Give Windows a beat to release the SQLite file handle ÔÇö the
-    // `.codegraph-vba/index.sqlite` lingers under an exclusive lock for
+    // `.codegraph/index.sqlite` lingers under an exclusive lock for
     // a few ms after `close()` returns, and `rmSync` would otherwise
     // hit EPERM.
     await new Promise((resolve) => setTimeout(resolve, 50));

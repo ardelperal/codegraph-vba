@@ -55,6 +55,7 @@ docs/business/
 
 # CodeGraph data directories (in test projects)
 .codegraph/
+# Legacy data directory written by releases before #324
 .codegraph-vba/
 
 # Test-local fixture copy (issue #281). `extraction-vba-event-synth.test.ts`

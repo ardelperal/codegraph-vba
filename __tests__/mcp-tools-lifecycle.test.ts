@@ -97,7 +97,7 @@ describe('MCP lifecycle tools — codegraph_init', () => {
     const handler = new ToolHandler(null);
     const success = await handler.execute('codegraph_init', { path: projectDir });
     expect(success.isError).toBe(false);
-    expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, '.codegraph'))).toBe(true);
 
     const fileTarget = path.join(projectDir, 'not-a-directory');
     fs.writeFileSync(fileTarget, 'file');
@@ -112,12 +112,12 @@ describe('MCP lifecycle tools — codegraph_init', () => {
     process.env.CODEGRAPH_MCP_ALLOWLIST = path.join(os.tmpdir(), 'different-root');
     const denied = await handler.execute('codegraph_init', { path: projectDir });
     expect(denied.isError).toBe(true);
-    expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, '.codegraph'))).toBe(false);
 
     process.env.CODEGRAPH_MCP_ALLOWLIST = '*';
     const allowed = await handler.execute('codegraph_init', { path: projectDir });
     expect(allowed.isError).toBe(false);
-    expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, '.codegraph'))).toBe(true);
   });
 
   it('rejects a junction that escapes the canonical allowlist root', async () => {
@@ -131,7 +131,7 @@ describe('MCP lifecycle tools — codegraph_init', () => {
     try {
       const result = await new ToolHandler(null).execute('codegraph_init', { path: escape });
       expect(result.isError).toBe(true);
-      expect(fs.existsSync(path.join(outsideRoot, '.codegraph-vba'))).toBe(false);
+      expect(fs.existsSync(path.join(outsideRoot, '.codegraph'))).toBe(false);
     } finally {
       cleanup(outsideRoot);
     }
@@ -148,8 +148,8 @@ describe('MCP lifecycle tools — codegraph_uninit', () => {
   });
   afterEach(() => cleanup(projectDir));
 
-  it('removes .codegraph-vba/ from a previously-initialized project', async () => {
-    expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(true);
+  it('removes .codegraph/ from a previously-initialized project', async () => {
+    expect(fs.existsSync(path.join(projectDir, '.codegraph'))).toBe(true);
 
     process.env.CODEGRAPH_MCP_TOOLS = 'explore,uninit';
     const result = await new ToolHandler(null).execute('codegraph_uninit', {
@@ -160,7 +160,7 @@ describe('MCP lifecycle tools — codegraph_uninit', () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('Removed CodeGraph');
-    expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, '.codegraph'))).toBe(false);
     const definition = tools.find((tool) => tool.name === 'codegraph_uninit');
     expect(definition?.annotations).toEqual({
       readOnlyHint: false,
@@ -174,8 +174,8 @@ describe('MCP lifecycle tools — codegraph_uninit', () => {
     delete process.env.CODEGRAPH_MCP_TOOLS;
   });
 
-  it('returns the CLI result when the project has no .codegraph-vba/', async () => {
-    fs.rmSync(path.join(projectDir, '.codegraph-vba'), { recursive: true });
+  it('returns the CLI result when the project has no .codegraph/', async () => {
+    fs.rmSync(path.join(projectDir, '.codegraph'), { recursive: true });
 
     process.env.CODEGRAPH_MCP_TOOLS = 'explore,uninit';
     const result = await new ToolHandler(null).execute('codegraph_uninit', {
@@ -520,10 +520,10 @@ describe.skip('MCP lifecycle tools — codegraph_unlock', () => {
   });
   afterEach(() => cleanup(projectDir));
 
-  it('removes a stale .codegraph-vba/.lock file', () => {
+  it('removes a stale .codegraph/.lock file', () => {
     const cg = CodeGraph.initSync(projectDir);
     cg.close();
-    const lock = path.join(projectDir, '.codegraph-vba', 'codegraph.lock');
+    const lock = path.join(projectDir, '.codegraph', 'codegraph.lock');
     fs.writeFileSync(lock, 'stale-pid');
     expect(fs.existsSync(lock)).toBe(true);
     fs.rmSync(lock);
@@ -531,9 +531,9 @@ describe.skip('MCP lifecycle tools — codegraph_unlock', () => {
     // TODO(RED): MCP tool wrapper around the same operation.
   });
 
-  it('refuses to unlock a project that has no .codegraph-vba/', () => {
+  it('refuses to unlock a project that has no .codegraph/', () => {
     // TODO(RED): MCP tool returns isError: true with code E_NOT_INDEXED.
-    expect(fs.existsSync(path.join(projectDir, '.codegraph-vba'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, '.codegraph'))).toBe(false);
   });
 });
 

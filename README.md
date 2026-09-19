@@ -128,7 +128,7 @@ cd your-project
 codegraph-vba init
 ```
 
-<sub>`codegraph-vba init` creates the local `.codegraph-vba/` directory and builds the full graph in the same step — one command, done.</sub>
+<sub>`codegraph-vba init` creates the local `.codegraph/` directory and builds the full graph in the same step — one command, done.</sub>
 
 <div align="center">
 
@@ -148,7 +148,7 @@ Changed your mind? One command removes CodeGraph from every agent it configured:
 codegraph-vba uninstall
 ```
 
-<sub>Reverses the installer — strips CodeGraph's MCP server config, instructions, and permissions from each configured agent. Your project indexes (`.codegraph-vba/`) are left untouched; remove those per-project with `codegraph-vba uninit`. Use `--target` to remove from specific agents, or `--yes` to run non-interactively.</sub>
+<sub>Reverses the installer — strips CodeGraph's MCP server config, instructions, and permissions from each configured agent. Your project indexes (`.codegraph/`) are left untouched; remove those per-project with `codegraph-vba uninit`. Use `--target` to remove from specific agents, or `--yes` to run non-interactively.</sub>
 
 ---
 
@@ -595,7 +595,7 @@ codegraph-vba init
 
 Builds the per-project knowledge graph index, which then auto-syncs on every file change. A single global `codegraph-vba install` works in every project you open — no need to re-run the installer per project.
 
-That's it — your agent will use CodeGraph tools automatically when a `.codegraph-vba/` directory exists.
+That's it — your agent will use CodeGraph tools automatically when a `.codegraph/` directory exists.
 
 <details>
 <summary><strong>Manual Setup (Alternative)</strong></summary>
@@ -641,7 +641,7 @@ CodeGraph's MCP server delivers its usage guidance to your agent **automatically
 - **Answer structural questions directly with CodeGraph** — it *is* the pre-built index, so a grep/read loop just repeats work it already did. Treat the returned source as already read.
 - **Reach for `codegraph_explore` for almost anything** — "how does X work", a flow/"how does X reach Y", or surveying an area. One call returns the relevant symbols' verbatim source grouped by file, the call paths between them (dynamic-dispatch hops included), and a blast-radius summary. Name a file or symbol in the query to read its current line-numbered source.
 - **Trust the results — don't re-verify with grep**, and check the staleness banner after edits.
-- Works **per project**: query any project that has a `.codegraph-vba/` index by passing `projectPath` — so a monorepo where only some services are indexed, or a second repo, works in one session. A path with no index returns clean guidance to use built-in tools; indexing stays your decision.
+- Works **per project**: query any project that has a `.codegraph/` index by passing `projectPath` — so a monorepo where only some services are indexed, or a second repo, works in one session. A path with no index returns clean guidance to use built-in tools; indexing stays your decision.
 
 The exact text is `src/mcp/server-instructions.ts` — the single source of truth for the main agent. Because subagents and non-MCP harnesses never see the MCP guidance, the installer also writes a short marker-fenced section into the agent's instructions file pointing at the `codegraph-vba explore` CLI equivalent.
 
@@ -674,7 +674,7 @@ The exact text is `src/mcp/server-instructions.ts` — the single source of trut
 
 1. **Extraction** — [tree-sitter](https://tree-sitter.github.io/) parses source code into ASTs. Language-specific queries extract nodes (functions, classes, methods) and edges (calls, imports, extends, implements).
 
-2. **Storage** — Everything goes into a local SQLite database (`.codegraph-vba/codegraph.db`) with FTS5 full-text search.
+2. **Storage** — Everything goes into a local SQLite database (`.codegraph/codegraph.db`) with FTS5 full-text search.
 
 3. **Resolution** — After extraction, references are resolved: function calls → definitions, imports → source files, class inheritance, and framework-specific patterns.
 
@@ -750,7 +750,7 @@ When running as an MCP server, CodeGraph exposes a **single tool** — `codegrap
 
 The other tools (`codegraph_node`, `codegraph_search`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, `codegraph_files`, `codegraph_status`, and the Access-specific `codegraph_behavior_evidence`) stay fully functional but **unlisted by default** — everything they return already arrives inline on `codegraph_explore` (its blast-radius section, the relationship map, a symbol's body as its callee list). Re-enable any of them for the MCP surface with the `CODEGRAPH_MCP_TOOLS` environment variable (e.g. `CODEGRAPH_MCP_TOOLS=explore,node,search,callers`), or use their CLI equivalents (`codegraph-vba node` / `query` / `callers` / `callees` / `impact` / `files` / `status`).
 
-Even when the server's own root has no `.codegraph-vba/` index, the tools stay available: pass `projectPath` to query any indexed project — a sub-service in a monorepo, or a second repo — in the same session. A path that has no index returns clean guidance to use built-in tools instead, so nothing fails loudly, and indexing stays your decision.
+Even when the server's own root has no `.codegraph/` index, the tools stay available: pass `projectPath` to query any indexed project — a sub-service in a monorepo, or a second repo — in the same session. A path that has no index returns clean guidance to use built-in tools instead, so nothing fails loudly, and indexing stays your decision.
 
 ---
 
@@ -973,7 +973,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 **MCP hits `database is locked`** — current builds shouldn't: CodeGraph bundles its own Node runtime and uses Node's built-in `node:sqlite` in WAL mode, where concurrent reads never block on a writer. If you still see it:
 
 - **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex` (Windows), or `npm i -g @aroman22/codegraph-vba@latest`.
-- **`codegraph-vba status` shows `Journal:` other than `wal`** — WAL couldn't be enabled on this filesystem (common on network shares and WSL2 `/mnt`), so reads can block on writes. Move the project (with its `.codegraph-vba/` folder) onto a local disk.
+- **`codegraph-vba status` shows `Journal:` other than `wal`** — WAL couldn't be enabled on this filesystem (common on network shares and WSL2 `/mnt`), so reads can block on writes. Move the project (with its `.codegraph/` folder) onto a local disk.
 
 **MCP server not connecting** — Your agent starts the server itself, so you don't launch it by hand. Make sure the project is initialized and indexed (`codegraph-vba status`) and that the path in your MCP config is correct. If it still won't connect, re-run `codegraph-vba install` to rewrite the config.
 
@@ -981,7 +981,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 **Missing symbols** — The MCP server auto-syncs on save (wait a couple seconds). Run `codegraph-vba sync` manually if needed. Check that the file's language is supported and isn't inside a `.gitignore`d or default-excluded directory (e.g. `node_modules`, `dist`).
 
-**Sharing one checkout between Windows and WSL** — Don't point both at the same `.codegraph-vba/`: the background-server lock and the SQLite index are tied to the OS that wrote them, and SQLite locking across the WSL2/Windows filesystem boundary is unreliable. Give each side its own index in the same tree by setting `CODEGRAPH_DIR` to a distinct name on one of them — e.g. `CODEGRAPH_DIR=.codegraph-win` on Windows, leaving WSL on the default `.codegraph-vba`. CodeGraph skips any sibling `.codegraph-*` directory when indexing and watching, so the two never trip over each other.
+**Sharing one checkout between Windows and WSL** — Don't point both at the same `.codegraph/`: the background-server lock and the SQLite index are tied to the OS that wrote them, and SQLite locking across the WSL2/Windows filesystem boundary is unreliable. Give each side its own index in the same tree by setting `CODEGRAPH_DIR` to a distinct name on one of them — e.g. `CODEGRAPH_DIR=.codegraph-win` on Windows, leaving WSL on the default `.codegraph`. CodeGraph skips any sibling `.codegraph-*` directory when indexing and watching, so the two never trip over each other.
 
 ## Star History
 

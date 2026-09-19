@@ -54,7 +54,7 @@ const FORM_MISMATCHED_BASENAME = 'Form_MismatchedName.cls';
 
 let cg: CodeGraph | null = null;
 let initialized = false;
-const codeGraphDir = path.join(FIXTURE_DIR, '.codegraph-vba');
+const codeGraphDir = path.join(FIXTURE_DIR, '.codegraph');
 
 beforeAll(async () => {
   if (fs.existsSync(codeGraphDir)) {
@@ -413,13 +413,13 @@ describe('issue-150 AC#5: vba-event-tracer backward compatibility', () => {
 // =============================================================================
 // AC #6 — No new false positives on the existing FORMS-* fixture suite.
 // We index a COPY of the existing vba-control-modeling fixtures (kept
-// under a test-local subdirectory so the .codegraph-vba database lives
+// under a test-local subdirectory so the .codegraph database lives
 // in OUR directory, not in the shared source fixture) and verify the
 // count of vba-event-handler edges stays at zero.
 //
 // The copy is needed because the sibling
 // `__tests__/extraction-vba-control-modeling.test.ts` test owns the
-// real `vba-control-modeling/.codegraph-vba` directory. When vitest
+// real `vba-control-modeling/.codegraph` directory. When vitest
 // runs both test files in the same worker (file parallelism), both
 // tests try to open the same SQLite file and Windows returns EBUSY on
 // the second opener's unlink/cleanup. Copying the fixtures into our
@@ -438,12 +438,12 @@ describe('issue-150 AC#6: no false positives on the FORMS-* (vba-control-modelin
     'vba-control-modeling',
   );
   // Test-local subdirectory. We copy the FORMS fixtures into here so
-  // our .codegraph-vba lives in OUR dir, not in the shared source
+  // our .codegraph lives in OUR dir, not in the shared source
   // dir. This is a subdirectory of the test workspace — kept under
   // the worktree but outside the existing vba-control-modeling
   // fixture so it doesn't conflict with sibling tests.
   const LOCAL_FORMS_DIR = path.join(FIXTURE_DIR, '.forms-copy');
-  const LOCAL_FORMS_CODEGRAPH_DIR = path.join(LOCAL_FORMS_DIR, '.codegraph-vba');
+  const LOCAL_FORMS_CODEGRAPH_DIR = path.join(LOCAL_FORMS_DIR, '.codegraph');
   let formsCg: CodeGraph | null = null;
   let formsInit = false;
 
@@ -452,12 +452,12 @@ describe('issue-150 AC#6: no false positives on the FORMS-* (vba-control-modelin
     // it. fs.cpSync with `recursive: true` is the idiomatic Node 16+
     // way to deep-copy a directory; it's idempotent (we delete
     // LOCAL_FORMS_DIR first if it exists). We also EXCLUDE any
-    // `.codegraph-vba` subdirectory the source might have — that
+    // `.codegraph` subdirectory the source might have — that
     // subdirectory is owned by the sibling test
     // (`extraction-vba-control-modeling.test.ts`) and may still
     // exist on disk while that test's `afterAll` is still running in
     // a parallel vitest worker. Copying it in would leave a stale
-    // `.codegraph-vba` in our local copy and `CodeGraph.init` would
+    // `.codegraph` in our local copy and `CodeGraph.init` would
     // then refuse with "already initialized".
     rmWithRetry(LOCAL_FORMS_DIR, { recursive: true, force: true });
     fs.cpSync(SOURCE_FORMS_DIR, LOCAL_FORMS_DIR, {

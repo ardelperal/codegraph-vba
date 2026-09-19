@@ -33,6 +33,18 @@ export const REPO = 'ardelperal/codegraph-vba';
 export const NPM_PACKAGE = '@aroman22/codegraph-vba';
 const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/main`;
 export const INSTALL_SH_URL = `${RAW_BASE}/install.sh`;
+export const INSTALL_PS1_URL = `${RAW_BASE}/install.ps1`;
+
+/**
+ * The one-line shell command that installs the CLI from GitHub Releases on
+ * this platform (issue #326 — no npm). Used both to run the install and in
+ * user-facing hints, so the two can never disagree.
+ */
+export function cliInstallCommand(platform: NodeJS.Platform): string {
+  return platform === 'win32'
+    ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${INSTALL_PS1_URL} | iex"`
+    : `curl -fsSL ${INSTALL_SH_URL} | sh`;
+}
 
 // ---------------------------------------------------------------------------
 // Install-method detection (pure — fully unit-testable via injected probes)
@@ -794,6 +806,7 @@ function upgradeNpm(
       deps.log(c.dim('If this is a permissions error (EACCES), your global prefix needs sudo, or use a'));
       deps.log(c.dim('Node version manager (nvm/fnm) so global installs don’t require root.'));
     }
+    deps.log(c.dim(`Or switch to the standalone install, which needs no npm:  ${cliInstallCommand(deps.platform)}`));
     return 1;
   }
   deps.log('');

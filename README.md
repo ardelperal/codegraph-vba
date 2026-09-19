@@ -57,14 +57,14 @@ See [fork capabilities and lineage](docs/fork-capabilities.md) for the delivered
 
 **Why fork?** To add VBA / Access language support that does not exist upstream, so agents can navigate Microsoft Access projects managed by Dysflow the same way they navigate TypeScript or Python today. See the [VBA / Access + Dysflow integration](#vba--access--dysflow-integration) section below for the feature spec, the pattern table, and the hard invariants.
 
-**The fork is published to npm as `@aroman22/codegraph-vba`.** The upstream package `@colbymchenry/codegraph` does **not** have VBA / Access support — install `@aroman22/codegraph-vba` to get it:
+**The fork ships through [GitHub Releases](https://github.com/ardelperal/codegraph-vba/releases).** The upstream package `@colbymchenry/codegraph` does **not** have VBA / Access support — install this fork to get it:
 
 ```bash
-# Option A — install from npm (easiest; gets you the codegraph-vba CLI on PATH):
-npm i -g @aroman22/codegraph-vba
-# or with pnpm:
-pnpm add -g codegraph-vba
-# or the one-line OS installer (no Node required) — see Get Started below.
+# Option A — one-line installer from GitHub Releases (no Node, no npm):
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex
 ```
 
 ```bash
@@ -98,16 +98,14 @@ curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/insta
 irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex
 ```
 
-<details>
-<summary><b>Already have Node? Use npm instead (works on any version)</b></summary>
-
-```bash
-npm i -g @aroman22/codegraph-vba
-```
-
 <sub>CodeGraph bundles its own runtime — nothing to compile, no native build, works the same everywhere. The installer puts `codegraph-vba` on your PATH but **doesn't change your current shell** — open a new terminal before the next step so the command resolves.</sub>
 
 <sub>**Upgrade any time** with `codegraph-vba upgrade` — it detects how you installed (bundle, npm, or npx) and updates in place. Add `--check` to see if an update is available, or `codegraph-vba upgrade <version>` to pin one.</sub>
+
+<details>
+<summary><b>npm (legacy)</b></summary>
+
+The npm package `@aroman22/codegraph-vba` is published only on a best-effort basis and can lag behind GitHub Releases. Prefer the installer above; if you already installed through npm, re-run the installer to switch.
 
 </details>
 
@@ -119,7 +117,7 @@ In a **new terminal**, run the installer to connect CodeGraph to the agents you 
 codegraph-vba install
 ```
 
-<sub>Detects and auto-configures Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, and Kiro — wiring the CodeGraph MCP server into each. **This is the step that connects CodeGraph to your agent;** installing the CLI in step 1 does not do it on its own. It only wires up your agent — it does **not** index any code; building each project's graph is the separate `codegraph-vba init` in step 3. (Shortcut: `npx codegraph-vba` downloads and runs this in one go.)</sub>
+<sub>Detects and auto-configures Claude Code, Cursor, Codex CLI, opencode, Hermes Agent, Gemini CLI, Antigravity IDE, and Kiro — wiring the CodeGraph MCP server into each. **This is the step that connects CodeGraph to your agent;** installing the CLI in step 1 does not do it on its own. It only wires up your agent — it does **not** index any code; building each project's graph is the separate `codegraph-vba init` in step 3.</sub>
 
 ### 3. Initialize each project
 
@@ -552,8 +550,10 @@ payload as JSON.
 
 ### 1. Run the Installer
 
+Install the CLI (see [Get Started](#get-started)), then run:
+
 ```bash
-npx codegraph-vba
+codegraph-vba install
 ```
 
 The installer will:
@@ -600,9 +600,10 @@ That's it — your agent will use CodeGraph tools automatically when a `.codegra
 <details>
 <summary><strong>Manual Setup (Alternative)</strong></summary>
 
-**Install globally:**
+**Install the CLI:**
 ```bash
-npm i -g @aroman22/codegraph-vba
+curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh   # macOS / Linux
+irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex        # Windows
 ```
 
 **Add to `~/.claude.json`:**
@@ -883,9 +884,9 @@ compile) for all three desktop OSes, on both Intel/AMD (x64) and ARM (arm64):
 
 | Platform | Architectures | Install |
 |----------|---------------|---------|
-| Windows | x64, arm64 | PowerShell installer or npm |
-| macOS | x64, arm64 | shell installer or npm |
-| Linux | x64, arm64 | shell installer or npm |
+| Windows | x64, arm64 | PowerShell installer |
+| macOS | x64, arm64 | shell installer |
+| Linux | x64, arm64 | shell installer |
 
 See [Get Started](#get-started) for the one-line install commands.
 
@@ -972,7 +973,7 @@ Framework routing is validated the same way, on a canonical app per framework: E
 
 **MCP hits `database is locked`** — current builds shouldn't: CodeGraph bundles its own Node runtime and uses Node's built-in `node:sqlite` in WAL mode, where concurrent reads never block on a writer. If you still see it:
 
-- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex` (Windows), or `npm i -g @aroman22/codegraph-vba@latest`.
+- **You're on an old (pre-0.9) install.** Reinstall to get the bundled runtime — `curl -fsSL https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.sh | sh` (macOS/Linux), `irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 | iex` (Windows).
 - **`codegraph-vba status` shows `Journal:` other than `wal`** — WAL couldn't be enabled on this filesystem (common on network shares and WSL2 `/mnt`), so reads can block on writes. Move the project (with its `.codegraph/` folder) onto a local disk.
 
 **MCP server not connecting** — Your agent starts the server itself, so you don't launch it by hand. Make sure the project is initialized and indexed (`codegraph-vba status`) and that the path in your MCP config is correct. If it still won't connect, re-run `codegraph-vba install` to rewrite the config.

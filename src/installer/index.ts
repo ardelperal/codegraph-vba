@@ -29,6 +29,7 @@ import { watchDisabledReason } from '../sync/watch-policy';
 import { isGitRepo, isSyncHookInstalled, installGitSyncHook } from '../sync/git-hooks';
 import { getCodeGraphDir, codeGraphDirName } from '../directory';
 import { getTelemetry, TELEMETRY_DOCS } from '../telemetry';
+import { cliInstallCommand } from '../upgrade';
 
 // Backwards-compat: keep these named exports — downstream code may
 // import them. The shim in `config-writer.ts` continues to re-export
@@ -100,8 +101,8 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     return;
   }
 
-  // Step 2: install the codegraph npm package on PATH (always offered;
-  // matches existing behavior). Skipped when --yes (assume present).
+  // Step 2: install the CLI on PATH from GitHub Releases (always offered;
+  // no npm — issue #326). Skipped when --yes (assume present).
   if (!useDefaults) {
     const shouldInstallGlobally = await clack.confirm({
       message: 'Install the codegraph CLI on your PATH? (Required so agents can launch the MCP server)',
@@ -114,14 +115,15 @@ export async function runInstallerWithOptions(opts: RunInstallerOptions): Promis
     if (shouldInstallGlobally) {
       const s = clack.spinner();
       s.start('Installing codegraph CLI...');
+      const installCommand = cliInstallCommand(process.platform);
       try {
-        // Generous bound (slow networks / cold npm cache) — but bounded, so a
-        // wedged npm can't hang the interactive installer forever (#1139).
-        execSync('npm install -g @aroman22/codegraph-vba', { stdio: 'pipe', windowsHide: true, timeout: 120_000 });
+        // Generous bound (the bundle carries its own Node runtime) — but
+        // bounded, so a wedged download can't hang the installer forever (#1139).
+        execSync(installCommand, { stdio: 'pipe', windowsHide: true, timeout: 300_000 });
         s.stop('Installed codegraph CLI on PATH');
       } catch {
-        s.stop('Could not install (permission denied)');
-        clack.log.warn('Try: sudo npm install -g @aroman22/codegraph-vba');
+        s.stop('Could not install the codegraph CLI');
+        clack.log.warn(`Run it yourself: ${installCommand}`);
       }
     } else {
       clack.log.info('Skipped CLI install — agents will not be able to launch the MCP server without it');

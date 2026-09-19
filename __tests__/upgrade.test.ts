@@ -21,6 +21,9 @@ import {
   readInstalledPackageVersion,
   resolveNpmGlobalRoot,
   NPM_PACKAGE,
+  cliInstallCommand,
+  INSTALL_SH_URL,
+  INSTALL_PS1_URL,
   type InstallMethod,
   type UpgradeDeps,
 } from '../src/upgrade';
@@ -151,6 +154,18 @@ describe('detectInstallMethod', () => {
       exists: () => false,
     });
     expect(m.kind).toBe('unknown');
+  });
+});
+
+describe('cliInstallCommand (#326)', () => {
+  it('installs from this repo\'s GitHub installer script, never npm', () => {
+    expect(cliInstallCommand('win32')).toContain(`irm ${INSTALL_PS1_URL} | iex`);
+    expect(cliInstallCommand('linux')).toBe(`curl -fsSL ${INSTALL_SH_URL} | sh`);
+    expect(cliInstallCommand('darwin')).toBe(`curl -fsSL ${INSTALL_SH_URL} | sh`);
+    for (const platform of ['win32', 'linux', 'darwin'] as const) {
+      expect(cliInstallCommand(platform)).not.toMatch(/\bnpm\b/);
+    }
+    expect(INSTALL_PS1_URL).toBe('https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1');
   });
 });
 
@@ -403,6 +418,8 @@ describe('runUpgrade', () => {
     const code = await runUpgrade({}, deps);
     expect(code).toBe(1);
     expect(calls.errors.join('\n')).toMatch(/npm exited/i);
+    // The way out of a broken npm install is the npm-free installer (#326).
+    expect(calls.logs.join('\n')).toContain(cliInstallCommand('linux'));
   });
 
   it('npx: nothing to upgrade', async () => {

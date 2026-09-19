@@ -24,7 +24,10 @@ import {
 export function getMcpServerConfig(): { type: string; command: string; args: string[] } {
   return {
     type: 'stdio',
-    command: 'codegraph-vba',
+    // The canonical upstream command: gentle-ai and other harnesses only
+    // recognise an entry whose command is `codegraph` (issue #328). The
+    // bundle ships `codegraph` as a launcher of this fork.
+    command: 'codegraph',
     args: ['serve', '--mcp'],
   };
 }

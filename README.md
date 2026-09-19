@@ -612,7 +612,7 @@ irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 
   "mcpServers": {
     "codegraph": {
       "type": "stdio",
-      "command": "codegraph-vba",
+      "command": "codegraph",
       "args": ["serve", "--mcp"]
     }
   }

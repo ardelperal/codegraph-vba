@@ -251,8 +251,8 @@ function escapeRegExp(value: string): string {
 
 function renderCodeGraphMcpChild(): string[] {
   return [
-    '  codegraph-vba:',
-    '    command: codegraph-vba',
+    '  codegraph:',
+    '    command: codegraph',
     '    args:',
     '      - serve',
     '      - --mcp',
@@ -269,13 +269,29 @@ function renderCodeGraphMcpBlock(): string[] {
 function hasCodeGraphMcpServer(content: string): boolean {
   const lines = splitLines(content);
   const parent = topLevelRange(lines, 'mcp_servers');
-  return !!parent && !!childRange(lines, parent, 'codegraph-vba');
+  return !!parent && (!!childRange(lines, parent, 'codegraph') || !!childRange(lines, parent, LEGACY_MCP_KEY));
+}
+
+/**
+ * Key an earlier fork release wrote. Install migrates it to the canonical
+ * `codegraph` key and uninstall removes it, so a user never ends up with two
+ * servers (issue #328).
+ */
+const LEGACY_MCP_KEY = 'codegraph-vba';
+
+function removeChild(content: string, key: string): string {
+  const lines = splitLines(content);
+  const parent = topLevelRange(lines, 'mcp_servers');
+  const child = parent ? childRange(lines, parent, key) : null;
+  if (!child) return content;
+  lines.splice(child.start, child.end - child.start);
+  return joinLines(lines);
 }
 
 function upsertCodeGraphMcpServer(content: string): string {
-  const lines = splitLines(content);
+  const lines = splitLines(removeChild(content, LEGACY_MCP_KEY));
   const parent = topLevelRange(lines, 'mcp_servers');
-  const child = parent ? childRange(lines, parent, 'codegraph-vba') : null;
+  const child = parent ? childRange(lines, parent, 'codegraph') : null;
   const replacement = renderCodeGraphMcpChild();
 
   if (!parent) {
@@ -297,12 +313,7 @@ function upsertCodeGraphMcpServer(content: string): string {
 }
 
 function removeCodeGraphMcpServer(content: string): string {
-  const lines = splitLines(content);
-  const parent = topLevelRange(lines, 'mcp_servers');
-  const child = parent ? childRange(lines, parent, 'codegraph-vba') : null;
-  if (!child) return content;
-  lines.splice(child.start, child.end - child.start);
-  return joinLines(lines);
+  return removeChild(removeChild(content, 'codegraph'), LEGACY_MCP_KEY);
 }
 
 function upsertCodeGraphToolset(content: string): string {

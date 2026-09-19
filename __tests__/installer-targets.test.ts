@@ -143,7 +143,7 @@ describe('Installer targets — contract', () => {
             const after = JSON.parse(fs.readFileSync(jsonPath, 'utf-8'));
             if (target.id === 'opencode') {
               expect(after.mcp.other).toBeDefined();
-              expect(after.mcp['codegraph-vba']).toBeDefined();
+              expect(after.mcp.codegraph).toBeDefined();
             } else {
               expect(after.mcpServers.other).toBeDefined();
               expect(after.mcpServers.codegraph).toBeDefined();
@@ -285,7 +285,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(afterInstall).toContain('// top-level note about my opencode setup');
     expect(afterInstall).toContain('/* multi-line block comment');
     expect(afterInstall).toContain('// pinned');
-    expect(afterInstall).toContain('"codegraph-vba"');
+    expect(afterInstall).toContain('"codegraph"');
     expect(afterInstall).toContain('"providers"');
 
     // Idempotent re-run reports unchanged, file is byte-identical.
@@ -356,7 +356,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(fs.readFileSync(geminiMd, 'utf-8')).toContain('codegraph explore');
 
     const cfg = JSON.parse(fs.readFileSync(settings, 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toEqual({ type: 'stdio', command: 'codegraph-vba', args: ['serve', '--mcp'] });
+    expect(cfg.mcpServers.codegraph).toEqual({ type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'] });
   });
 
   it('gemini: install preserves pre-existing settings (security.auth survives)', () => {
@@ -423,7 +423,7 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(fs.existsSync(steering)).toBe(false);
 
     const cfg = JSON.parse(fs.readFileSync(mcp, 'utf-8'));
-    expect(cfg.mcpServers.codegraph).toEqual({ type: 'stdio', command: 'codegraph-vba', args: ['serve', '--mcp'] });
+    expect(cfg.mcpServers.codegraph).toEqual({ type: 'stdio', command: 'codegraph', args: ['serve', '--mcp'] });
   });
 
   it('kiro: install deletes a leftover steering codegraph.md (self-heal) (#529)', () => {
@@ -722,7 +722,7 @@ describe('Installer targets — partial-state idempotency', () => {
     const body = fs.readFileSync(config, 'utf-8');
     expect(body).toContain('model:\n  default: qwen-3.7');
     expect(body).toContain('mcp_servers:\n  other:\n    command: other');
-    expect(body).toContain('  codegraph-vba:\n    command: codegraph-vba');
+    expect(body).toContain('  codegraph:\n    command: codegraph');
     expect(body).toContain('    - hermes-cli');
     expect(body).toContain('    - mcp-codegraph');
     expect(body).toContain('  discord:\n    - hermes-discord');
@@ -816,7 +816,7 @@ describe('Installer targets — partial-state idempotency', () => {
     hermes.install('global', { autoAllow: true });
     const installed = fs.readFileSync(config, 'utf-8');
     expect(installed).toContain('- mcp-codegraph');
-    expect(installed).toContain('codegraph-vba:');
+    expect(installed).toContain('  codegraph:');
 
     hermes.uninstall('global');
     const body = fs.readFileSync(config, 'utf-8');
@@ -824,6 +824,63 @@ describe('Installer targets — partial-state idempotency', () => {
     expect(body).not.toContain('command: codegraph');
     expect(body).toContain('  cli:\n  - hermes-cli\n  - browser');
     expect(body).toContain('  telegram:\n  - hermes-telegram');
+  });
+
+  // gentle-ai only recognises `mcp.codegraph` with command
+  // ["codegraph","serve","--mcp"] (issue #328). An earlier fork release wrote
+  // `mcp["codegraph-vba"]`; a user may also already own `mcp.codegraph` with
+  // their own `environment` (e.g. CODEGRAPH_MCP_TOOLS).
+  it('opencode: install migrates the legacy codegraph-vba key and keeps the user environment', () => {
+    const opencode = getTarget('opencode')!;
+    const dir = path.join(tmpHome, '.config', 'opencode');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'opencode.json');
+    fs.writeFileSync(file, JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {
+        'codegraph-vba': { type: 'local', command: ['codegraph-vba', 'serve', '--mcp'], enabled: true },
+        codegraph: {
+          type: 'local', command: ['codegraph', 'serve', '--mcp'], enabled: true,
+          environment: { CODEGRAPH_MCP_TOOLS: 'explore,callers,impact' },
+        },
+      },
+    }, null, 2));
+
+    expect(opencode.detect('global').alreadyConfigured).toBe(true);
+    expect(opencode.install('global', { autoAllow: true }).files[0].action).toBe('updated');
+
+    const mcp = JSON.parse(fs.readFileSync(file, 'utf-8')).mcp;
+    expect(mcp['codegraph-vba']).toBeUndefined();
+    expect(mcp.codegraph).toEqual({
+      type: 'local', command: ['codegraph', 'serve', '--mcp'], enabled: true,
+      environment: { CODEGRAPH_MCP_TOOLS: 'explore,callers,impact' },
+    });
+    expect(opencode.install('global', { autoAllow: true }).files[0].action).toBe('unchanged');
+  });
+
+  it('hermes: install migrates the legacy codegraph-vba server and uninstall removes both keys', () => {
+    const hermes = getTarget('hermes')!;
+    const config = path.join(tmpHome, '.hermes', 'config.yaml');
+    fs.mkdirSync(path.dirname(config), { recursive: true });
+    fs.writeFileSync(config, [
+      'mcp_servers:',
+      '  codegraph-vba:',
+      '    command: codegraph-vba',
+      '    args:',
+      '      - serve',
+      '      - --mcp',
+      '',
+    ].join('\n'));
+
+    expect(hermes.detect('global').alreadyConfigured).toBe(true);
+    hermes.install('global', { autoAllow: true });
+    const installed = fs.readFileSync(config, 'utf-8');
+    expect(installed).not.toContain('codegraph-vba');
+    expect(installed).toContain('  codegraph:\n    command: codegraph');
+
+    fs.writeFileSync(config, installed.replace('mcp_servers:\n', 'mcp_servers:\n  codegraph-vba:\n    command: codegraph-vba\n'));
+    hermes.uninstall('global');
+    expect(fs.readFileSync(config, 'utf-8')).not.toMatch(/codegraph(-vba)?:/);
   });
 
   it('opencode: uninstall removes only mcp.codegraph, preserves comments and siblings', () => {
@@ -844,7 +901,7 @@ describe('Installer targets — partial-state idempotency', () => {
 
     opencode.install('global', { autoAllow: true });
     const afterInstall = fs.readFileSync(file, 'utf-8');
-    expect(afterInstall).toContain('"codegraph-vba"');
+    expect(afterInstall).toContain('"codegraph"');
     expect(afterInstall).toContain('"other"');
 
     opencode.uninstall('global');

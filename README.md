@@ -150,6 +150,16 @@ codegraph-vba uninstall
 
 ---
 
+### Canonical `codegraph` shim (Windows)
+
+The fork's npm binary is `codegraph-vba`. Tools that expect the canonical `codegraph` command (for example the gentle-ai installer) can use a small launcher that resolves `codegraph` to the installed `@aroman22/codegraph-vba` package:
+
+```powershell
+pwsh scripts/compat/install-codegraph-shim.ps1
+```
+
+The script builds `scripts/compat/codegraph-launcher.go` (Go required) into `%LOCALAPPDATA%\codegraph-vba-compat\bin` and adds that directory to your user `PATH`. Set `CODEGRAPH_NPM_SHIM` to an absolute `npm-shim.js` path to override the lookup.
+
 ## Why CodeGraph?
 
 When an AI agent needs to understand code — to answer a question or make a change — it discovers structure the slow way: grep, glob, and Read, one file at a time, rebuilding call paths and dependencies by hand. That's a pile of tool calls and round-trips before it even starts the real work.

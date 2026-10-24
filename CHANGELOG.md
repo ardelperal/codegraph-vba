@@ -9,6 +9,14 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `codegraph-vba upgrade` no longer rewrites agent instruction files, MCP entries or the Claude prompt hook by default. Add `--refresh-agents` to refresh them. (#332)
+
+### Fixes
+
+- `install` leaves an agent instruction file alone when gentle-ai manages it, so the two CodeGraph guidance blocks no longer contradict each other. (#332)
+
 
 ## [2.1.1] - 2026-09-19
 

@@ -102,6 +102,8 @@ irm https://raw.githubusercontent.com/ardelperal/codegraph-vba/main/install.ps1 
 
 <sub>**Upgrade any time** with `codegraph-vba upgrade` — it detects how you installed (bundle, npm, or npx) and updates in place. Add `--check` to see if an update is available, or `codegraph-vba upgrade <version>` to pin one.</sub>
 
+<sub>`upgrade` leaves agent instruction files, MCP entries and hooks alone. When gentle-ai manages CodeGraph guidance, the fork does not write a second block into those files. To refresh what a previous install wrote, run `codegraph-vba upgrade --refresh-agents`.</sub>
+
 <details>
 <summary><b>npm (legacy)</b></summary>
 
@@ -705,7 +707,7 @@ codegraph-vba impact <symbol>         # Analyze what code is affected by changin
 codegraph-vba affected [files...]     # Find test files affected by changes (see below)
 codegraph-vba daemon                  # Manage background daemons — pick one to stop (alias: daemons)
 codegraph-vba telemetry [on|off]      # Show or change anonymous usage telemetry
-codegraph-vba upgrade [version]       # Update to the latest release (--check, --force)
+codegraph-vba upgrade [version]       # Update to the latest release (--check, --force, --refresh-agents)
 codegraph-vba version                 # Print the installed version (also -v, --version)
 codegraph-vba stats vba-rules [--json] # List every VBA extractor rule (concern, id, description, pattern, counts)
 codegraph-vba help [command]          # Show help, optionally for one command

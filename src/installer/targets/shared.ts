@@ -176,6 +176,9 @@ export function replaceOrAppendMarkedSection(
   return 'appended';
 }
 
+/** Marker prefix gentle-ai writes around the CodeGraph guidance it manages. */
+export const GENTLE_AI_MARKER_PREFIX = '<!-- gentle-ai:';
+
 /**
  * Upsert the CodeGraph instructions block into an agent instructions
  * file (CLAUDE.md / AGENTS.md / GEMINI.md). The one write shared by
@@ -186,7 +189,12 @@ export function replaceOrAppendMarkedSection(
  * block exists (#704: subagents + non-MCP harnesses never see the MCP
  * initialize instructions).
  */
-export function upsertInstructionsEntry(file: string): { path: string; action: 'created' | 'updated' | 'unchanged' } {
+export function upsertInstructionsEntry(file: string): { path: string; action: 'created' | 'updated' | 'unchanged' | 'skipped' } {
+  // gentle-ai owns CodeGraph guidance in a file it has marked (issue #332);
+  // a second CODEGRAPH block there would contradict its guidance.
+  if (fs.existsSync(file) && fs.readFileSync(file, 'utf-8').includes(GENTLE_AI_MARKER_PREFIX)) {
+    return { path: file, action: 'skipped' };
+  }
   const action = replaceOrAppendMarkedSection(
     file,
     CODEGRAPH_INSTRUCTIONS_BLOCK,

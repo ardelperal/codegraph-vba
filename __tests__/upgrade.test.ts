@@ -497,7 +497,7 @@ describe('post-upgrade refresh of installed agent surfaces', () => {
       currentVersion: '0.9.8',
       hasCommand: (cmd) => cmd === 'codegraph',
     });
-    const code = await runUpgrade({}, deps);
+    const code = await runUpgrade({ refreshAgents: true }, deps);
     expect(code).toBe(0);
     // The refresh is spawned AFTER the binary swap, so the fresh install
     // (with the current templates) does the writing — not this process.
@@ -513,7 +513,7 @@ describe('post-upgrade refresh of installed agent surfaces', () => {
       platform: 'win32',
       hasCommand: (cmd) => cmd === 'codegraph',
     });
-    const code = await runUpgrade({}, deps);
+    const code = await runUpgrade({ refreshAgents: true }, deps);
     expect(code).toBe(0);
     const last = calls.runs[calls.runs.length - 1];
     expect(last?.cmd).toBe('cmd.exe');
@@ -526,7 +526,7 @@ describe('post-upgrade refresh of installed agent surfaces', () => {
       currentVersion: '0.9.8',
       // default hasCommand resolves only curl
     });
-    const code = await runUpgrade({}, deps);
+    const code = await runUpgrade({ refreshAgents: true }, deps);
     expect(code).toBe(0);
     expect(calls.runs.filter((r) => r.cmd === 'codegraph')).toHaveLength(0);
   });
@@ -541,7 +541,7 @@ describe('post-upgrade refresh of installed agent surfaces', () => {
       calls.runs.push({ cmd, args, env });
       return cmd === 'codegraph' ? 1 : 0;
     };
-    const code = await runUpgrade({}, deps);
+    const code = await runUpgrade({ refreshAgents: true }, deps);
     expect(code).toBe(0);
     expect(calls.logs.join('\n')).toMatch(/install --refresh/);
   });
@@ -568,7 +568,7 @@ describe('post-upgrade refresh of installed agent surfaces', () => {
         currentVersion: '0.9.8',
         hasCommand: (cmd) => cmd === 'codegraph',
       });
-      const code = await runUpgrade({}, deps);
+      const code = await runUpgrade({ refreshAgents: true }, deps);
       expect(code).toBe(0);
       expect(calls.runs.filter((r) => r.cmd === 'codegraph')).toHaveLength(0);
     } finally {
@@ -583,7 +583,7 @@ describe('post-upgrade refresh of installed agent surfaces', () => {
       hasCommand: (cmd) => cmd === 'codegraph',
       capture: () => ({ code: 0, stdout: '0.9.8\n' }), // PATH still serves the OLD version
     });
-    const code = await runUpgrade({}, deps);
+    const code = await runUpgrade({ refreshAgents: true }, deps);
     expect(code).toBe(0);
     // Spawning `codegraph install --refresh` would execute the shadowed stale
     // binary — the exact staleness the refresh exists to heal.

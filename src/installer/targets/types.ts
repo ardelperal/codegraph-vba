@@ -51,7 +51,7 @@ export interface DetectionResult {
 export interface WriteResult {
   files: Array<{
     path: string;
-    action: 'created' | 'updated' | 'unchanged' | 'removed' | 'not-found' | 'kept';
+    action: 'created' | 'updated' | 'unchanged' | 'removed' | 'not-found' | 'kept' | 'skipped';
   }>;
   /**
    * Optional one-line notes the orchestrator surfaces verbatim — e.g.

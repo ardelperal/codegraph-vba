@@ -292,6 +292,11 @@ export interface UpgradeOptions {
   check?: boolean;
   /** Reinstall even if already on the resolved version. */
   force?: boolean;
+  /**
+   * Opt in to refreshing agent instruction files, MCP entries and the Claude
+   * prompt hook (issue #332). Off by default: gentle-ai usually manages them.
+   */
+  refreshAgents?: boolean;
 }
 
 /** Injectable side-effects so the orchestrator stays unit-testable. */
@@ -498,23 +503,27 @@ export async function runUpgrade(opts: UpgradeOptions, deps: UpgradeDeps): Promi
     } catch {
       /* an inconclusive probe must not fail the upgrade */
     }
-    try {
-      await selfHealPromptHook(deps);
-    } catch {
-      /* a hook-wiring hiccup must not fail the upgrade */
-    }
-    // The refresh executes whatever `codegraph` PATH resolves. If the probe
-    // just proved that's a stale shadowed install, spawning it would rewrite
-    // the agent surfaces with the very templates the refresh exists to heal —
-    // skip, and point at the manual command for after the PATH is fixed.
-    if (probe !== 'mismatch') {
-      try {
-        selfHealInstalledSurfaces(deps);
-      } catch {
-        /* a refresh hiccup must not fail the upgrade */
-      }
+    if (!opts.refreshAgents) {
+      deps.log(c.dim('Not touched: agent instruction files, MCP entries, Claude prompt hook. Refresh them with `codegraph-vba upgrade --refresh-agents`.'));
     } else {
-      deps.log(c.dim('Skipped refreshing agent instructions/config — run `codegraph install --refresh` once the PATH is fixed.'));
+      try {
+        await selfHealPromptHook(deps);
+      } catch {
+        /* a hook-wiring hiccup must not fail the upgrade */
+      }
+      // The refresh executes whatever `codegraph` PATH resolves. If the probe
+      // just proved that's a stale shadowed install, spawning it would rewrite
+      // the agent surfaces with the very templates the refresh exists to heal —
+      // skip, and point at the manual command for after the PATH is fixed.
+      if (probe !== 'mismatch') {
+        try {
+          selfHealInstalledSurfaces(deps);
+        } catch {
+          /* a refresh hiccup must not fail the upgrade */
+        }
+      } else {
+        deps.log(c.dim('Skipped refreshing agent instructions/config — run `codegraph install --refresh` once the PATH is fixed.'));
+      }
     }
   }
   return code;

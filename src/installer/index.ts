@@ -383,6 +383,8 @@ export interface RefreshReport {
   status: RefreshStatus;
   /** Absolute paths created, updated, or removed by the refresh. */
   changedPaths: string[];
+  /** Absolute paths left alone because gentle-ai manages them (issue #332). */
+  skippedPaths: string[];
 }
 
 /**
@@ -411,19 +413,21 @@ export function refreshTargets(
   return targets.map((target) => {
     const base = { id: target.id, displayName: target.displayName, location };
     if (!target.supportsLocation(location)) {
-      return { ...base, status: 'unsupported' as const, changedPaths: [] };
+      return { ...base, status: 'unsupported' as const, changedPaths: [], skippedPaths: [] };
     }
     if (!target.detect(location).alreadyConfigured) {
-      return { ...base, status: 'not-configured' as const, changedPaths: [] };
+      return { ...base, status: 'not-configured' as const, changedPaths: [], skippedPaths: [] };
     }
     const result = target.install(location, { autoAllow: false, promptHook: undefined });
     const changedPaths = result.files
       .filter((f) => f.action === 'created' || f.action === 'updated' || f.action === 'removed')
       .map((f) => f.path);
+    const skippedPaths = result.files.filter((f) => f.action === 'skipped').map((f) => f.path);
     return {
       ...base,
       status: changedPaths.length > 0 ? ('refreshed' as const) : ('unchanged' as const),
       changedPaths,
+      skippedPaths,
     };
   });
 }

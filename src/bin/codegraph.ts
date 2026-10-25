@@ -2213,7 +2213,7 @@ program
   .option('-y, --yes', 'Non-interactive: defaults to --location=global --target=auto, auto-allow on')
   .option('--no-permissions', 'Skip writing the auto-allow permissions list (Claude Code only)')
   .option('--print-config <id>', 'Print MCP config snippet for the named agent and exit (no file writes)')
-  .option('--refresh', 'Rewrite what previous installs configured, for already-configured agents only (never adds new ones). Run automatically by `codegraph upgrade`')
+  .option('--refresh', 'Rewrite what previous installs configured, for already-configured agents only (never adds new ones). Run by `codegraph upgrade --refresh-agents`')
   .action(async (opts: {
     target?: string;
     location?: string;
@@ -2257,6 +2257,9 @@ program
           for (const p of report.changedPaths) {
             changed += 1;
             console.log(`  ${report.displayName}: refreshed ${p}`);
+          }
+          for (const p of report.skippedPaths) {
+            console.log(`  ${report.displayName}: skipped ${p} (managed by gentle-ai)`);
           }
         }
       }
@@ -2393,7 +2396,8 @@ program
   .description('Update CodeGraph to the latest release (or a specific version)')
   .option('--check', 'Check whether an update is available without installing')
   .option('-f, --force', 'Reinstall even if already on the target version')
-  .action(async (versionArg: string | undefined, options: { check?: boolean; force?: boolean }) => {
+  .option('--refresh-agents', 'Also refresh agent instruction files, MCP entries and the Claude prompt hook (off by default; gentle-ai usually manages them)')
+  .action(async (versionArg: string | undefined, options: { check?: boolean; force?: boolean; refreshAgents?: boolean }) => {
     const up = await import('../upgrade');
     const method = up.detectInstallMethod({
       filename: __filename,
@@ -2402,7 +2406,7 @@ program
     });
     const pin = versionArg || process.env.CODEGRAPH_VERSION || undefined;
     const code = await up.runUpgrade(
-      { version: pin, check: options.check, force: options.force },
+      { version: pin, check: options.check, force: options.force, refreshAgents: options.refreshAgents },
       {
         currentVersion: packageJson.version,
         method,
